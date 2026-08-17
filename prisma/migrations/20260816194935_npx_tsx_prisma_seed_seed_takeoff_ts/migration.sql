@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "takeoff_parts" ADD COLUMN     "paintAreaSqm" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "paintSides" INTEGER NOT NULL DEFAULT 2;

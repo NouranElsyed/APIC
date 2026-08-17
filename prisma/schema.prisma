@@ -1,0 +1,262 @@
+// ============================================================================
+// SteelFlow ERP — Prisma Schema
+// Phase 1: Core Platform (Auth, RBAC, Projects, Customers, Documents, Reports)
+//
+// Phase 2 note: Pricing / Scrap / Cost Reconciliation models are intentionally
+// NOT defined here. When Phase 2 begins, new models (e.g. Quotation,
+// MaterialItem, ScrapEntry, CostComponent, PriceList) will attach to Project
+// via a nullable/optional relation, so nothing in Phase 1 needs to change.
+// See: src/features/phase2-pricing and src/features/phase2-scrap (stubs).
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  MANAGER
+  ENGINEER
+  VIEWER
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum DocumentCategory {
+  DRAWING
+  SPECIFICATION
+  CONTRACT
+  PURCHASE_ORDER
+  TECHNICAL_DOCUMENT
+  OTHER
+}
+
+// ----------------------------------------------------------------------------
+// Core Models
+// ----------------------------------------------------------------------------
+
+model User {
+  id         String   @id @default(cuid())
+  name       String
+  email      String   @unique
+  password   String // bcrypt hash
+  role       Role     @default(VIEWER)
+  department String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  createdProjects  Project[]  @relation("ProjectCreatedBy")
+  uploadedDocs     Document[] @relation("DocumentUploadedBy")
+  activityLogs     ActivityLog[]
+
+  @@map("users")
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  contact   String?
+  email     String?
+  phone     String?
+  address   String?
+  taxNumber String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects Project[]
+
+  @@map("customers")
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  number      String        @unique
+  name        String
+  description String?
+  status      ProjectStatus @default(DRAFT)
+  revision    String        @default("Rev. 00")
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  createdById String
+  createdBy   User   @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  documents Document[]
+  takeoffDrawings TakeoffDrawing[]
+
+  // ---------------------------------------------------------------------
+  // Phase 2 extension point (do not remove): future models such as
+  // Quotation, MaterialUsage, ScrapEntry, CostSummary will each declare
+  // `projectId` and relate back here. No change to Project is required.
+  // ---------------------------------------------------------------------
+
+  @@map("projects")
+}
+
+// ----------------------------------------------------------------------------
+// Material Take-Off — Area & Weight (Phase 2, stage 1)
+// Mirrors the "Riser Duct Fabrication Drg" calculation sheet:
+//   unitArea (ext) = extWidth * extLength * 2   (both sides)
+//   unitArea (int) = intWidth * intLength * 2   (both sides)
+//   totalUnitArea  = extUnitArea + intUnitArea
+//   totalArea      = totalUnitArea * qty
+//   volume         = (totalArea / 2) * thicknessMm
+//   weight (kg)    = volume * 7.85
+// ----------------------------------------------------------------------------
+model TakeoffDrawing {
+  id            String   @id @default(cuid())
+  drawingNumber String // e.g. "13334036"
+  title         String // e.g. "Existing Riser Ø4657"
+  weightFromDwg Float? // reference weight from the drawing itself, for variance check
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  parts TakeoffPart[]
+
+  @@map("takeoff_drawings")
+}
+
+model TakeoffPart {
+  id          String  @id @default(cuid())
+  itemNo      Int
+  description String // e.g. "PL 20 mm", "FB 80 x 10"
+
+  extWidth  Float? // m
+  extLength Float? // m
+  intWidth  Float? // m
+  intLength Float? // m
+
+  qty         Int
+  thicknessMm Float
+
+  // Painting area is independent of the weight calculation: same geometry,
+  // but the user chooses whether painting covers 1 face or 2 faces of the
+  // part. Never affects volume/weightKg below.
+  paintSides Int @default(2) // 1 or 2
+
+  // How ext/int dimensions combine into an area. ADD = two separate
+  // surfaces (e.g. duct inner + outer wall) — the original sheet's
+  // convention. SUBTRACT = a flat plate with a hole/cut-out, where the
+  // internal dims are material removed from the external footprint.
+  areaMode TakeoffAreaMode @default(ADD)
+
+  // Stored (computed) results — recalculated server-side on every write
+  // so they always match the formulas above without relying on the client.
+  extUnitArea   Float // m2
+  intUnitArea   Float // m2
+  totalUnitArea Float // m2 (ext + int, two sides)
+  totalArea     Float // m2 (totalUnitArea * qty) — used for weight, always both faces
+  volume        Float // (totalArea / 2) * thicknessMm
+  weightKg      Float // volume * 7.85 — unaffected by paintSides
+  paintAreaSqm  Float @default(0) // (totalArea / 2) * paintSides — for painting/coating scope only
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  drawingId String
+  drawing   TakeoffDrawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+
+  @@map("takeoff_parts")
+}
+
+enum TakeoffAreaMode {
+  ADD
+  SUBTRACT
+}
+
+model Document {
+  id         String           @id @default(cuid())
+  title      String
+  category   DocumentCategory @default(OTHER)
+  revision   String           @default("Rev. 00")
+  filePath   String
+  fileName   String
+  fileSize   Int?
+  uploadDate DateTime         @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  uploadedById String
+  uploadedBy   User   @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@map("documents")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String // e.g. "CREATE", "UPDATE", "DELETE", "LOGIN"
+  entity    String // e.g. "PROJECT", "CUSTOMER", "DOCUMENT", "USER"
+  entityId  String?
+  detail    String?
+  timestamp DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("activity_logs")
+}
+
+// ----------------------------------------------------------------------------
+// Settings (single-row configuration table, admin managed)
+// ----------------------------------------------------------------------------
+
+model CompanySettings {
+  id      Int    @id @default(1)
+  name    String @default("SteelFlow Engineering Co.")
+  logoUrl String?
+  address String?
+  phone   String?
+  email   String?
+  timezone String @default("Africa/Cairo")
+
+  language           String  @default("en")
+  dateFormat         String  @default("DD/MM/YYYY")
+  currency           String  @default("EGP")
+  theme              String  @default("light")
+
+  defaultRevisionFormat String  @default("Rev. 00")
+  autoSave              Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("company_settings")
+}
+
+model ProjectStatusConfig {
+  id        String        @id @default(cuid())
+  status    ProjectStatus @unique
+  label     String
+  color     String        @default("gray")
+  isDefault Boolean       @default(false)
+  sortOrder Int           @default(0)
+
+  @@map("project_status_config")
+}

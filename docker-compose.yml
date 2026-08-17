@@ -1,0 +1,19 @@
+# Convenience Postgres instance for local development.
+# Run: docker compose up -d
+# Then point DATABASE_URL in .env at:
+#   postgresql://postgres:postgres@localhost:5432/steelflow?schema=public
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: steelflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - steelflow_pgdata:/var/lib/postgresql/data
+
+volumes:
+  steelflow_pgdata:
