@@ -1,33 +1,16 @@
-import NextAuth, { type DefaultSession } from "next-auth";
+import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/server/db/client";
-import type { Role } from "@prisma/client";
+import { authConfig } from "./edge-config";
 
-declare module "next-auth" {
-  interface Session {
-    user: {
-      id: string;
-      role: Role;
-      department: string | null;
-    } & DefaultSession["user"];
-  }
-  interface User {
-    role: Role;
-    department: string | null;
-  }
-}
-
-interface AppToken {
-  id: string;
-  role: Role;
-  department: string | null;
-  [key: string]: unknown;
-}
+// Full auth config — safe to import from API routes and Node.js server
+// code (Server Components, Server Actions, route handlers), but must
+// NEVER be imported from src/middleware.ts (Edge Runtime can't run
+// Prisma/bcrypt). Middleware uses `./edge-config` instead.
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  session: { strategy: "jwt" },
-  pages: { signIn: "/login" },
+  ...authConfig,
   providers: [
     Credentials({
       name: "Credentials",
@@ -60,24 +43,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      const t = token as AppToken;
-      if (user) {
-        t.id = user.id as string;
-        t.role = user.role;
-        t.department = user.department;
-      }
-      return t;
-    },
-    async session({ session, token }) {
-      const t = token as AppToken;
-      if (session.user) {
-        session.user.id = t.id;
-        session.user.role = t.role;
-        session.user.department = t.department;
-      }
-      return session;
-    },
-  },
 });

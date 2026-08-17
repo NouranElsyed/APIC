@@ -1,4 +1,4 @@
-import { auth } from "@/server/auth/config";
+import { auth } from "@/server/auth/edge-config";
 import { NextResponse } from "next/server";
 
 const ADMIN_ONLY_PREFIXES = ["/users", "/settings"];
