@@ -1,13 +1,20 @@
 "use client";
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Download } from "lucide-react";
+import { Plus, Download, ClipboardList, Bell, Users2, Mail } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { UploadForm } from "@/features/documents/upload-form";
 import { formatDate } from "@/lib/utils";
+
+const ICONS: Record<string, LucideIcon> = {
+  SCOPE_OF_WORK: ClipboardList,
+  NOTICE: Bell,
+  MEETING_MINUTES: Users2,
+  EMAIL: Mail,
+};
 
 export interface ProjectCorrespondenceDoc {
   id: string;
@@ -24,7 +31,6 @@ export function ProjectCorrespondenceSection({
   category,
   sectionTitle,
   emptyLabel,
-  icon: Icon,
   documents,
   canUpload,
 }: {
@@ -33,12 +39,12 @@ export function ProjectCorrespondenceSection({
   category: string;
   sectionTitle: string;
   emptyLabel: string;
-  icon: LucideIcon;
   documents: ProjectCorrespondenceDoc[];
   canUpload: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const router = useRouter();
+  const Icon = ICONS[category] ?? ClipboardList;
 
   return (
     <Card>
