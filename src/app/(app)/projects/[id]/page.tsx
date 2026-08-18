@@ -11,11 +11,15 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/shared/empty-state";
+import { auth } from "@/server/auth/config";
+import { can } from "@/server/rbac/permissions";
+import { ProjectDocumentUpload } from "@/features/projects/project-document-upload";
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const project = await getProject(id);
+  const [project, session] = await Promise.all([getProject(id), auth()]);
   if (!project) notFound();
+  const canUpload = can(session?.user.role, "documents.create");
 
   return (
     <div className="space-y-6">
@@ -79,10 +83,21 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       </div>
 
       <Card>
-        <CardHeader><CardTitle>Project Documents</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle>Project Documents</CardTitle>
+          <ProjectDocumentUpload
+            projectId={project.id}
+            projectLabel={`${project.number} — ${project.name}`}
+            canUpload={canUpload}
+          />
+        </CardHeader>
         <CardContent>
           {project.documents.length === 0 ? (
-            <EmptyState icon={FileText} title="No documents yet" description="Upload documents from the Documents module." />
+            <EmptyState
+              icon={FileText}
+              title="No documents yet"
+              description={canUpload ? "Upload the first document for this project." : "Upload documents from the Documents module."}
+            />
           ) : (
             <Table>
               <TableHeader>
