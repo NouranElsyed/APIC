@@ -29,9 +29,19 @@ enum Role {
   VIEWER
 }
 
+enum ProjectStage {
+  TENDERING
+  EXECUTION
+}
+
 enum ProjectStatus {
-  DRAFT
-  ACTIVE
+  // Tendering stage statuses
+  UNDER_STUDY
+  SUBMITTED
+  APOLOGIZED
+  CANCELLED
+  // Execution stage statuses
+  IN_PROGRESS
   ON_HOLD
   COMPLETED
   ARCHIVED
@@ -91,8 +101,10 @@ model Project {
   number      String        @unique
   name        String
   description String?
-  status      ProjectStatus @default(DRAFT)
+  stage       ProjectStage  @default(TENDERING)
+  status      ProjectStatus @default(UNDER_STUDY)
   revision    String        @default("Rev. 00")
+  dueDate     DateTime?
   startDate   DateTime?
   endDate     DateTime?
   createdAt   DateTime      @default(now())
