@@ -88,7 +88,7 @@ export function ProjectScopeSection({
 
         {items.length === 0 && !adding ? (
           <EmptyState
-            icon={ClipboardList}
+            icon={<ClipboardList className="h-5 w-5" />}
             title="No scope of work added"
             description={canManage ? "Nothing added yet — use Add to add a scope item." : "Nothing added yet."}
           />
