@@ -129,7 +129,7 @@ export function ProjectMeetingMinutesSection({
 
         {meetings.length === 0 && !adding ? (
           <EmptyState
-            icon={Users2}
+            icon={<Users2 className="h-5 w-5" />}
             title="No meeting minutes added"
             description={canManage ? "Nothing added yet — use Add to add a meeting." : "Nothing added yet."}
           />
