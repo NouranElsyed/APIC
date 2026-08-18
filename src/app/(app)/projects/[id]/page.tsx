@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Calendar, Building2, FileText, User } from "lucide-react";
+import { ArrowLeft, Calendar, Building2, FileText, User, ClipboardList, Bell, Users2, Mail } from "lucide-react";
 import { getProject } from "@/server/services/project.service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProjectStatusBadge, ProjectStageBadge } from "@/components/shared/status-badge";
@@ -14,12 +14,21 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
 import { ProjectDocumentUpload } from "@/features/projects/project-document-upload";
+import { ProjectCorrespondenceSection } from "@/features/projects/project-correspondence-section";
+
+const CORRESPONDENCE_CATEGORIES = ["SCOPE_OF_WORK", "NOTICE", "MEETING_MINUTES", "EMAIL"];
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const [project, session] = await Promise.all([getProject(id), auth()]);
   if (!project) notFound();
   const canUpload = can(session?.user.role, "documents.create");
+
+  const generalDocuments = project.documents.filter((d) => !CORRESPONDENCE_CATEGORIES.includes(d.category));
+  const scopeDocs = project.documents.filter((d) => d.category === "SCOPE_OF_WORK");
+  const noticeDocs = project.documents.filter((d) => d.category === "NOTICE");
+  const meetingDocs = project.documents.filter((d) => d.category === "MEETING_MINUTES");
+  const mailDocs = project.documents.filter((d) => d.category === "EMAIL");
 
   return (
     <div className="space-y-6">
@@ -92,7 +101,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           />
         </CardHeader>
         <CardContent>
-          {project.documents.length === 0 ? (
+          {generalDocuments.length === 0 ? (
             <EmptyState
               icon={FileText}
               title="No documents yet"
@@ -110,7 +119,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {project.documents.map((d: (typeof project.documents)[number]) => (
+                {generalDocuments.map((d: (typeof project.documents)[number]) => (
                   <TableRow key={d.id}>
                     <TableCell className="font-medium">{d.title}</TableCell>
                     <TableCell><Badge variant="secondary">{d.category.replace("_", " ")}</Badge></TableCell>
@@ -124,6 +133,49 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           )}
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <ProjectCorrespondenceSection
+          projectId={project.id}
+          projectLabel={`${project.number} — ${project.name}`}
+          category="SCOPE_OF_WORK"
+          sectionTitle="Our Scope"
+          emptyLabel="No scope of work added"
+          icon={ClipboardList}
+          documents={scopeDocs}
+          canUpload={canUpload}
+        />
+        <ProjectCorrespondenceSection
+          projectId={project.id}
+          projectLabel={`${project.number} — ${project.name}`}
+          category="NOTICE"
+          sectionTitle="Notices"
+          emptyLabel="No notices added"
+          icon={Bell}
+          documents={noticeDocs}
+          canUpload={canUpload}
+        />
+        <ProjectCorrespondenceSection
+          projectId={project.id}
+          projectLabel={`${project.number} — ${project.name}`}
+          category="MEETING_MINUTES"
+          sectionTitle="Meeting Minutes"
+          emptyLabel="No meeting minutes added"
+          icon={Users2}
+          documents={meetingDocs}
+          canUpload={canUpload}
+        />
+        <ProjectCorrespondenceSection
+          projectId={project.id}
+          projectLabel={`${project.number} — ${project.name}`}
+          category="EMAIL"
+          sectionTitle="Mails"
+          emptyLabel="No mails added"
+          icon={Mail}
+          documents={mailDocs}
+          canUpload={canUpload}
+        />
+      </div>
     </div>
   );
 }
