@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, FolderKanban, Users2, FileText, BarChart3, UserCog, Settings, Ruler,
+  LayoutDashboard, FolderKanban, Users2, UserCog, Settings, Ruler,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -14,10 +14,10 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Projects", href: "/projects", icon: FolderKanban },
-  { label: "Customers", href: "/customers", icon: Users2 },
-  { label: "Documents", href: "/documents", icon: FileText },
+  { label: "Clients", href: "/customers", icon: Users2 },
+  // { label: "Documents", href: "/documents", icon: FileText },
   { label: "Takeoff", href: "/takeoff", icon: Ruler },
-  { label: "Reports", href: "/reports", icon: BarChart3 },
+  // { label: "Reports", href: "/reports", icon: BarChart3 },
   { label: "Users", href: "/users", icon: UserCog, roles: ["ADMIN"] },
   { label: "Settings", href: "/settings", icon: Settings, roles: ["ADMIN"] },
 
