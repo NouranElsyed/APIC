@@ -16,6 +16,9 @@ export async function getProject(id: string) {
       customer: true,
       createdBy: { select: { name: true, email: true } },
       documents: { orderBy: { uploadDate: "desc" }, include: { uploadedBy: { select: { name: true } } } },
+      scopeItems: { orderBy: { createdAt: "desc" }, include: { createdBy: { select: { name: true } } } },
+      notices: { orderBy: { noticeDate: "desc" }, include: { createdBy: { select: { name: true } } } },
+      meetingMinutes: { orderBy: { meetingDate: "desc" }, include: { createdBy: { select: { name: true } } } },
     },
   });
 }
