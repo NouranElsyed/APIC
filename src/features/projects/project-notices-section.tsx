@@ -106,7 +106,7 @@ export function ProjectNoticesSection({
 
         {notices.length === 0 && !adding ? (
           <EmptyState
-            icon={Bell}
+            icon={<Bell className="h-5 w-5" />}
             title="No notices added"
             description={canManage ? "Nothing added yet — use Add to add a notice." : "Nothing added yet."}
           />
