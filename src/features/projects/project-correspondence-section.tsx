@@ -51,7 +51,7 @@ export function ProjectCorrespondenceSection({
       </CardHeader>
       <CardContent>
         {documents.length === 0 ? (
-          <EmptyState icon={Mail} title={emptyLabel} description={canUpload ? "Nothing added yet — use Add to upload one." : "Nothing added yet."} />
+          <EmptyState icon={<Mail className="h-5 w-5" />} title={emptyLabel} description={canUpload ? "Nothing added yet — use Add to upload one." : "Nothing added yet."} />
         ) : (
           <ul className="divide-y divide-border">
             {documents.map((d) => (
