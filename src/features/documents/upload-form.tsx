@@ -29,20 +29,23 @@ interface FormValues {
 }
 
 export function UploadForm({
-  open, onOpenChange, projects, onSaved,
+  open, onOpenChange, projects, onSaved, lockedProjectId, lockedProjectLabel,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   projects: { id: string; name: string; number: string }[];
   onSaved: () => void;
+  /** When set, the project field is pre-filled and locked (used from a project's own page). */
+  lockedProjectId?: string;
+  lockedProjectLabel?: string;
 }) {
   const { register, handleSubmit, control, reset, formState: { isSubmitting, errors } } = useForm<FormValues>({
-    defaultValues: { title: "", category: "OTHER", projectId: "", revision: "Rev. 00", file: null },
+    defaultValues: { title: "", category: "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null },
   });
 
   React.useEffect(() => {
-    if (open) reset({ title: "", category: "OTHER", projectId: "", revision: "Rev. 00", file: null });
-  }, [open, reset]);
+    if (open) reset({ title: "", category: "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null });
+  }, [open, reset, lockedProjectId]);
 
   async function onSubmit(values: FormValues) {
     if (!values.file || values.file.length === 0) { toast.error("Please choose a file"); return; }
@@ -93,20 +96,27 @@ export function UploadForm({
               <Input {...register("revision")} placeholder="Rev. 00" />
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label>Project</Label>
-            <Controller
-              control={control} name="projectId"
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-                  <SelectContent>
-                    {projects.map((p) => <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          {lockedProjectId ? (
+            <div className="space-y-1.5">
+              <Label>Project</Label>
+              <Input value={lockedProjectLabel ?? ""} disabled />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label>Project</Label>
+              <Controller
+                control={control} name="projectId"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
+                    <SelectContent>
+                      {projects.map((p) => <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label>File</Label>
             <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-6 text-center hover:bg-muted">
