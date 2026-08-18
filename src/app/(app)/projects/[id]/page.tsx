@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft, Calendar, Building2, FileText, User } from "lucide-react";
 import { getProject } from "@/server/services/project.service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ProjectStatusBadge } from "@/components/shared/status-badge";
+import { ProjectStatusBadge, ProjectStageBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold text-foreground">{project.name}</h2>
+            <ProjectStageBadge stage={project.stage} />
             <ProjectStatusBadge status={project.status} />
           </div>
           <p className="text-xs text-muted-foreground">{project.number} · {project.revision}</p>
@@ -38,12 +39,20 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">{project.description || "No description provided."}</p>
             <div className="grid grid-cols-2 gap-4 text-sm">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Calendar className="h-4 w-4" /> Start: <span className="text-foreground">{formatDate(project.startDate)}</span>
-              </div>
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Calendar className="h-4 w-4" /> End: <span className="text-foreground">{formatDate(project.endDate)}</span>
-              </div>
+              {project.stage === "TENDERING" ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Calendar className="h-4 w-4" /> Tender Due: <span className="text-foreground">{formatDate(project.dueDate)}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Calendar className="h-4 w-4" /> Start: <span className="text-foreground">{formatDate(project.startDate)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Calendar className="h-4 w-4" /> End: <span className="text-foreground">{formatDate(project.endDate)}</span>
+                  </div>
+                </>
+              )}
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-4 w-4" /> Created by: <span className="text-foreground">{project.createdBy.name}</span>
               </div>
@@ -55,13 +64,14 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Customer</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Client</CardTitle></CardHeader>
           <CardContent className="space-y-2 text-sm">
             <div className="flex items-center gap-2">
               <Building2 className="h-4 w-4 text-muted-foreground" />
               <span className="font-medium text-foreground">{project.customer.name}</span>
             </div>
             <Badge variant="outline">{project.customer.code}</Badge>
+            {project.customer.contact && <p className="text-xs font-medium text-foreground">{project.customer.contact}</p>}
             <p className="text-xs text-muted-foreground">{project.customer.email || "No email on file"}</p>
             <p className="text-xs text-muted-foreground">{project.customer.phone || "No phone on file"}</p>
           </CardContent>
