@@ -1,20 +1,12 @@
 "use client";
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Download, ClipboardList, Bell, Users2, Mail } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Plus, Download, Mail } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { UploadForm } from "@/features/documents/upload-form";
 import { formatDate } from "@/lib/utils";
-
-const ICONS: Record<string, LucideIcon> = {
-  SCOPE_OF_WORK: ClipboardList,
-  NOTICE: Bell,
-  MEETING_MINUTES: Users2,
-  EMAIL: Mail,
-};
 
 export interface ProjectCorrespondenceDoc {
   id: string;
@@ -44,13 +36,12 @@ export function ProjectCorrespondenceSection({
 }) {
   const [open, setOpen] = React.useState(false);
   const router = useRouter();
-  const Icon = ICONS[category] ?? ClipboardList;
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
         <CardTitle className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-muted-foreground" /> {sectionTitle}
+          <Mail className="h-4 w-4 text-muted-foreground" /> {sectionTitle}
         </CardTitle>
         {canUpload && (
           <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
@@ -60,7 +51,7 @@ export function ProjectCorrespondenceSection({
       </CardHeader>
       <CardContent>
         {documents.length === 0 ? (
-          <EmptyState icon={Icon} title={emptyLabel} description={canUpload ? "Nothing added yet — use Add to upload one." : "Nothing added yet."} />
+          <EmptyState icon={Mail} title={emptyLabel} description={canUpload ? "Nothing added yet — use Add to upload one." : "Nothing added yet."} />
         ) : (
           <ul className="divide-y divide-border">
             {documents.map((d) => (
