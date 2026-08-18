@@ -14,7 +14,7 @@ export interface ProjectCorrespondenceDoc {
   title: string;
   revision: string;
   filePath: string;
-  uploadDate: string;
+  uploadDate: string | Date;
   uploadedBy: { name: string };
 }
 
