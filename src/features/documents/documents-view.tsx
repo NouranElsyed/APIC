@@ -102,7 +102,7 @@ export function DocumentsView({ canCreate, canDelete }: { canCreate: boolean; ca
       {loading ? (
         <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">Loading documents…</div>
       ) : filtered.length === 0 ? (
-        <EmptyState icon={FileText} title="No documents found" description="Upload a document to attach it to a project." />
+        <EmptyState icon={<FileText className="h-5 w-5" />} title="No documents found" description="Upload a document to attach it to a project." />
       ) : (
         <DataTable columns={columns} data={filtered} pageSize={10} />
       )}
