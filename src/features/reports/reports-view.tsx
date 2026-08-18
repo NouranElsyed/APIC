@@ -44,7 +44,7 @@ export function ReportsView() {
   const documents = data.documents.filter((d) => withinRange(d.uploadDate));
   const activity = data.activity.filter((a) => withinRange(a.timestamp));
 
-  const byStatus = ["DRAFT", "ACTIVE", "ON_HOLD", "COMPLETED", "ARCHIVED"].map((s) => ({
+  const byStatus = ["UNDER_STUDY", "SUBMITTED", "APOLOGIZED", "CANCELLED", "IN_PROGRESS", "ON_HOLD", "COMPLETED", "ARCHIVED"].map((s) => ({
     status: s.replace("_", " "), count: projects.filter((p) => p.status === s).length,
   }));
 
