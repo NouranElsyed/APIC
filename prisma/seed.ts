@@ -1,4 +1,4 @@
-import { PrismaClient, Role, ProjectStatus, DocumentCategory } from "@prisma/client";
+import { PrismaClient, Role, ProjectStage, ProjectStatus, DocumentCategory } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
@@ -65,15 +65,23 @@ async function main() {
     "Boiler House Steel Frame", "Loading Bay Canopy Structure", "Substation Steel Structure",
     "Marine Jetty Steel Fenders", "Process Module Steel Frame",
   ];
-  const statuses: ProjectStatus[] = [ProjectStatus.DRAFT, ProjectStatus.ACTIVE, ProjectStatus.ON_HOLD, ProjectStatus.COMPLETED, ProjectStatus.ARCHIVED];
+  const executionStatuses: ProjectStatus[] = [ProjectStatus.IN_PROGRESS, ProjectStatus.ON_HOLD, ProjectStatus.COMPLETED, ProjectStatus.ARCHIVED];
+  const tenderingStatuses: ProjectStatus[] = [ProjectStatus.UNDER_STUDY, ProjectStatus.SUBMITTED, ProjectStatus.APOLOGIZED, ProjectStatus.CANCELLED];
 
   const projects = [];
   for (let i = 0; i < projectNames.length; i++) {
     const customer = customers[i % customers.length];
-    const status = statuses[i % statuses.length];
     const createdByUser = users[i % users.length];
     const start = new Date(2026, i % 6, 1 + (i % 20));
     const end = new Date(start.getTime() + 1000 * 60 * 60 * 24 * (60 + (i % 5) * 15));
+    // roughly 1 in 4 projects is still out for tender
+    const stage: ProjectStage = i % 4 === 0 ? ProjectStage.TENDERING : ProjectStage.EXECUTION;
+    const status = stage === ProjectStage.TENDERING
+      ? tenderingStatuses[i % tenderingStatuses.length]
+      : executionStatuses[i % executionStatuses.length];
+    const dueDate = stage === ProjectStage.TENDERING
+      ? new Date(2026, i % 12, 5 + (i % 20))
+      : null;
 
     const project = await prisma.project.upsert({
       where: { number: `PRJ-2026-${String(i + 1).padStart(3, "0")}` },
@@ -83,10 +91,12 @@ async function main() {
         name: projectNames[i],
         customerId: customer.id,
         description: `${projectNames[i]} for ${customer.name}. Includes detailed engineering, fabrication and site erection support.`,
+        stage,
         status,
         revision: `Rev. 0${(i % 3) + 1}`,
-        startDate: start,
-        endDate: end,
+        dueDate,
+        startDate: stage === ProjectStage.EXECUTION ? start : null,
+        endDate: stage === ProjectStage.EXECUTION ? end : null,
         createdById: createdByUser.id,
       },
     });
@@ -164,11 +174,14 @@ async function main() {
 
   // --- Project status config -----------------------------------------
   const statusConfig = [
-    { status: ProjectStatus.DRAFT, label: "Draft", color: "gray", sortOrder: 0, isDefault: true },
-    { status: ProjectStatus.ACTIVE, label: "Active", color: "green", sortOrder: 1, isDefault: false },
-    { status: ProjectStatus.ON_HOLD, label: "On Hold", color: "amber", sortOrder: 2, isDefault: false },
-    { status: ProjectStatus.COMPLETED, label: "Completed", color: "blue", sortOrder: 3, isDefault: false },
-    { status: ProjectStatus.ARCHIVED, label: "Archived", color: "slate", sortOrder: 4, isDefault: false },
+    { status: ProjectStatus.UNDER_STUDY, label: "Under Study", color: "gray", sortOrder: 0, isDefault: true },
+    { status: ProjectStatus.SUBMITTED, label: "Submitted", color: "blue", sortOrder: 1, isDefault: false },
+    { status: ProjectStatus.APOLOGIZED, label: "Apologized", color: "slate", sortOrder: 2, isDefault: false },
+    { status: ProjectStatus.CANCELLED, label: "Cancelled", color: "red", sortOrder: 3, isDefault: false },
+    { status: ProjectStatus.IN_PROGRESS, label: "In Progress", color: "green", sortOrder: 4, isDefault: false },
+    { status: ProjectStatus.ON_HOLD, label: "On Hold", color: "amber", sortOrder: 5, isDefault: false },
+    { status: ProjectStatus.COMPLETED, label: "Completed", color: "blue", sortOrder: 6, isDefault: false },
+    { status: ProjectStatus.ARCHIVED, label: "Archived", color: "slate", sortOrder: 7, isDefault: false },
   ];
   for (const s of statusConfig) {
     await prisma.projectStatusConfig.upsert({ where: { status: s.status }, update: s, create: s });
