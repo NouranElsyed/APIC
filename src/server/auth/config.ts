@@ -6,8 +6,10 @@ import { authConfig } from "./edge-config";
 
 // Full auth config — safe to import from API routes and Node.js server
 // code (Server Components, Server Actions, route handlers), but must
-// NEVER be imported from src/middleware.ts (Edge Runtime can't run
-// Prisma/bcrypt). Middleware uses `./edge-config` instead.
+// NEVER be imported from src/proxy.ts (Next.js 16's replacement for
+// middleware.ts). Even though Proxy now defaults to the Node.js runtime,
+// keep Prisma/bcrypt-dependent config out of it to keep the network
+// boundary lightweight. Proxy uses `./edge-config` instead.
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
