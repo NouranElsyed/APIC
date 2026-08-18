@@ -82,7 +82,7 @@ export function CustomersView({ canCreate, canEdit, canDelete }: { canCreate: bo
       {loading ? (
         <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">Loading customers…</div>
       ) : filtered.length === 0 ? (
-        <EmptyState icon={Users2} title="No customers found" description="Add your first customer to get started." />
+        <EmptyState icon={<Users2 className="h-5 w-5" />} title="No customers found" description="Add your first customer to get started." />
       ) : (
         <DataTable columns={columns} data={filtered} pageSize={10} />
       )}
