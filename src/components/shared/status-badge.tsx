@@ -1,8 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 
-const projectStatusStyle: Record<string, { label: string; variant: "secondary" | "success" | "warning" | "outline" | "gray" }> = {
-  DRAFT: { label: "Draft", variant: "gray" },
-  ACTIVE: { label: "Active", variant: "success" },
+const projectStatusStyle: Record<string, { label: string; variant: "secondary" | "success" | "warning" | "outline" | "gray" | "destructive" }> = {
+  // Tendering statuses
+  UNDER_STUDY: { label: "Under Study", variant: "gray" },
+  SUBMITTED: { label: "Submitted", variant: "secondary" },
+  APOLOGIZED: { label: "Apologized", variant: "outline" },
+  CANCELLED: { label: "Cancelled", variant: "destructive" },
+  // Execution statuses
+  IN_PROGRESS: { label: "In Progress", variant: "success" },
   ON_HOLD: { label: "On Hold", variant: "warning" },
   COMPLETED: { label: "Completed", variant: "secondary" },
   ARCHIVED: { label: "Archived", variant: "outline" },
@@ -10,6 +15,16 @@ const projectStatusStyle: Record<string, { label: string; variant: "secondary" |
 
 export function ProjectStatusBadge({ status }: { status: string }) {
   const s = projectStatusStyle[status] ?? { label: status, variant: "gray" as const };
+  return <Badge variant={s.variant}>{s.label}</Badge>;
+}
+
+const projectStageStyle: Record<string, { label: string; variant: "secondary" | "success" | "warning" | "outline" | "gray" }> = {
+  TENDERING: { label: "Tendering", variant: "warning" },
+  EXECUTION: { label: "In Execution", variant: "success" },
+};
+
+export function ProjectStageBadge({ stage }: { stage: string }) {
+  const s = projectStageStyle[stage] ?? { label: stage, variant: "gray" as const };
   return <Badge variant={s.variant}>{s.label}</Badge>;
 }
 
