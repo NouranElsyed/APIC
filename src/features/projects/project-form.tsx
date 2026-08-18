@@ -18,13 +18,30 @@ import { Loader2 } from "lucide-react";
 import type { CustomerOption, ProjectRow } from "./types";
 import { toast } from "sonner";
 
-const STATUS_OPTIONS = [
-  { value: "DRAFT", label: "Draft" },
-  { value: "ACTIVE", label: "Active" },
+const STAGE_OPTIONS = [
+  { value: "TENDERING", label: "Tendering" },
+  { value: "EXECUTION", label: "In Execution" },
+];
+
+const TENDER_STATUS_OPTIONS = [
+  { value: "UNDER_STUDY", label: "Under Study" },
+  { value: "SUBMITTED", label: "Submitted" },
+  { value: "APOLOGIZED", label: "Apologize" },
+  { value: "CANCELLED", label: "Cancelled" },
+];
+
+const EXECUTION_STATUS_OPTIONS = [
+  { value: "IN_PROGRESS", label: "In Progress" },
   { value: "ON_HOLD", label: "On Hold" },
   { value: "COMPLETED", label: "Completed" },
   { value: "ARCHIVED", label: "Archived" },
 ];
+
+const DEFAULTS: ProjectInput = {
+  number: "", name: "", customerId: "", description: "",
+  stage: "TENDERING", status: "UNDER_STUDY", revision: "Rev. 00",
+  dueDate: "", startDate: "", endDate: "",
+};
 
 export function ProjectForm({
   open,
@@ -32,22 +49,25 @@ export function ProjectForm({
   customers,
   project,
   onSaved,
+  defaultStage,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   customers: CustomerOption[];
   project?: ProjectRow | null;
   onSaved: () => void;
+  defaultStage?: "TENDERING" | "EXECUTION";
 }) {
   const isEdit = !!project;
   const {
-    register, handleSubmit, control, reset, formState: { errors, isSubmitting },
+    register, handleSubmit, control, reset, watch, formState: { errors, isSubmitting },
   } = useForm<ProjectInput>({
     resolver: zodResolver(projectSchema),
-    defaultValues: {
-      number: "", name: "", customerId: "", description: "", status: "DRAFT", revision: "Rev. 00", startDate: "", endDate: "",
-    },
+    defaultValues: DEFAULTS,
   });
+
+  const stage = watch("stage");
+  const statusOptions = stage === "TENDERING" ? TENDER_STATUS_OPTIONS : EXECUTION_STATUS_OPTIONS;
 
   React.useEffect(() => {
     if (open) {
@@ -58,15 +78,21 @@ export function ProjectForm({
               name: project.name,
               customerId: project.customer.id,
               description: project.description ?? "",
+              stage: project.stage,
               status: project.status,
               revision: project.revision,
+              dueDate: project.dueDate ? project.dueDate.slice(0, 10) : "",
               startDate: project.startDate ? project.startDate.slice(0, 10) : "",
               endDate: project.endDate ? project.endDate.slice(0, 10) : "",
             }
-          : { number: "", name: "", customerId: "", description: "", status: "DRAFT", revision: "Rev. 00", startDate: "", endDate: "" }
+          : {
+              ...DEFAULTS,
+              stage: defaultStage ?? "TENDERING",
+              status: (defaultStage ?? "TENDERING") === "TENDERING" ? "UNDER_STUDY" : "IN_PROGRESS",
+            }
       );
     }
-  }, [open, project, reset]);
+  }, [open, project, reset, defaultStage]);
 
   async function onSubmit(values: ProjectInput) {
     const url = isEdit ? `/api/projects/${project!.id}` : "/api/projects";
@@ -109,13 +135,13 @@ export function ProjectForm({
           </div>
 
           <div className="space-y-1.5">
-            <Label>Customer</Label>
+            <Label>Client</Label>
             <Controller
               control={control}
               name="customerId"
               render={({ field }) => (
                 <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger><SelectValue placeholder="Select a customer" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="Select a client" /></SelectTrigger>
                   <SelectContent>
                     {customers.map((c) => (
                       <SelectItem key={c.id} value={c.id}>{c.name} ({c.code})</SelectItem>
@@ -132,7 +158,27 @@ export function ProjectForm({
             <Textarea {...register("description")} rows={3} placeholder="Scope of work..." />
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Project Stage</Label>
+              <Controller
+                control={control}
+                name="stage"
+                render={({ field }) => (
+                  <Select
+                    value={field.value}
+                    onValueChange={(v) => {
+                      field.onChange(v);
+                    }}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {STAGE_OPTIONS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
             <div className="space-y-1.5">
               <Label>Status</Label>
               <Controller
@@ -142,21 +188,33 @@ export function ProjectForm({
                   <Select value={field.value} onValueChange={field.onChange}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      {STATUS_OPTIONS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                      {statusOptions.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 )}
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Start Date</Label>
-              <Input type="date" {...register("startDate")} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>End Date</Label>
-              <Input type="date" {...register("endDate")} />
+              {errors.status && <p className="text-xs text-destructive">{errors.status.message as string}</p>}
             </div>
           </div>
+
+          {stage === "TENDERING" ? (
+            <div className="space-y-1.5">
+              <Label>Tender Due Date</Label>
+              <Input type="date" {...register("dueDate")} />
+              {errors.dueDate && <p className="text-xs text-destructive">{errors.dueDate.message as string}</p>}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Start Date</Label>
+                <Input type="date" {...register("startDate")} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>End Date</Label>
+                <Input type="date" {...register("endDate")} />
+              </div>
+            </div>
+          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
