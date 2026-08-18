@@ -12,7 +12,7 @@ export async function GET() {
     projectStats(),
     prisma.customer.count(),
     prisma.document.count(),
-    prisma.project.count({ where: { status: "DRAFT" } }),
+    prisma.project.count({ where: { status: "UNDER_STUDY" } }),
     prisma.user.count(),
     getRecentActivity(8),
     prisma.project.findMany({ select: { createdAt: true } }),
