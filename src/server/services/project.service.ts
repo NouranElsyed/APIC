@@ -27,8 +27,10 @@ export async function createProject(data: ProjectInput, userId: string) {
       name: data.name,
       customerId: data.customerId,
       description: data.description || null,
+      stage: data.stage,
       status: data.status,
       revision: data.revision,
+      dueDate: data.dueDate ? new Date(data.dueDate) : null,
       startDate: data.startDate ? new Date(data.startDate) : null,
       endDate: data.endDate ? new Date(data.endDate) : null,
       createdById: userId,
@@ -46,8 +48,10 @@ export async function updateProject(id: string, data: ProjectInput, userId: stri
       name: data.name,
       customerId: data.customerId,
       description: data.description || null,
+      stage: data.stage,
       status: data.status,
       revision: data.revision,
+      dueDate: data.dueDate ? new Date(data.dueDate) : null,
       startDate: data.startDate ? new Date(data.startDate) : null,
       endDate: data.endDate ? new Date(data.endDate) : null,
     },
@@ -63,13 +67,14 @@ export async function deleteProject(id: string, userId: string) {
 }
 
 export async function projectStats() {
-  const [total, active, onHold, completed, draft, archived] = await Promise.all([
+  const [total, tendering, inProgress, onHold, completed, submitted, archived] = await Promise.all([
     prisma.project.count(),
-    prisma.project.count({ where: { status: "ACTIVE" } }),
+    prisma.project.count({ where: { stage: "TENDERING" } }),
+    prisma.project.count({ where: { status: "IN_PROGRESS" } }),
     prisma.project.count({ where: { status: "ON_HOLD" } }),
     prisma.project.count({ where: { status: "COMPLETED" } }),
-    prisma.project.count({ where: { status: "DRAFT" } }),
+    prisma.project.count({ where: { status: "SUBMITTED" } }),
     prisma.project.count({ where: { status: "ARCHIVED" } }),
   ]);
-  return { total, active, onHold, completed, draft, archived };
+  return { total, tendering, inProgress, onHold, completed, submitted, archived };
 }
