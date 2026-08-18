@@ -163,7 +163,7 @@ export function ProjectsView({ canCreate, canEdit, canDelete }: { canCreate: boo
         <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">Loading projects…</div>
       ) : filtered.length === 0 ? (
         <EmptyState
-          icon={FolderKanban}
+          icon={<FolderKanban className="h-5 w-5" />}
           title={tab === "TENDERING" ? "No tendering projects" : "No in-hand projects"}
           description={tab === "TENDERING" ? "Projects being tendered will show up here." : "Create your first project to get started."}
         />
