@@ -17,6 +17,10 @@ const CATEGORIES = [
   { value: "CONTRACT", label: "Contract" },
   { value: "PURCHASE_ORDER", label: "Purchase Order" },
   { value: "TECHNICAL_DOCUMENT", label: "Technical Document" },
+  { value: "SCOPE_OF_WORK", label: "Scope of Work" },
+  { value: "NOTICE", label: "Notice" },
+  { value: "MEETING_MINUTES", label: "Meeting Minutes" },
+  { value: "EMAIL", label: "Mail" },
   { value: "OTHER", label: "Other" },
 ];
 
@@ -29,7 +33,7 @@ interface FormValues {
 }
 
 export function UploadForm({
-  open, onOpenChange, projects, onSaved, lockedProjectId, lockedProjectLabel,
+  open, onOpenChange, projects, onSaved, lockedProjectId, lockedProjectLabel, lockedCategory, title, description,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -38,14 +42,18 @@ export function UploadForm({
   /** When set, the project field is pre-filled and locked (used from a project's own page). */
   lockedProjectId?: string;
   lockedProjectLabel?: string;
+  /** When set, the category field is pre-filled and locked (used from a dedicated section like Notices, Mails, Scope of Work). */
+  lockedCategory?: string;
+  title?: string;
+  description?: string;
 }) {
   const { register, handleSubmit, control, reset, formState: { isSubmitting, errors } } = useForm<FormValues>({
-    defaultValues: { title: "", category: "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null },
+    defaultValues: { title: "", category: lockedCategory ?? "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null },
   });
 
   React.useEffect(() => {
-    if (open) reset({ title: "", category: "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null });
-  }, [open, reset, lockedProjectId]);
+    if (open) reset({ title: "", category: lockedCategory ?? "OTHER", projectId: lockedProjectId ?? "", revision: "Rev. 00", file: null });
+  }, [open, reset, lockedProjectId, lockedCategory]);
 
   async function onSubmit(values: FormValues) {
     if (!values.file || values.file.length === 0) { toast.error("Please choose a file"); return; }
@@ -69,8 +77,8 @@ export function UploadForm({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Upload Document</DialogTitle>
-          <DialogDescription>Attach a document to a project. Files are stored locally in development.</DialogDescription>
+          <DialogTitle>{title ?? "Upload Document"}</DialogTitle>
+          <DialogDescription>{description ?? "Attach a document to a project. Files are stored locally in development."}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-1.5">
@@ -79,18 +87,20 @@ export function UploadForm({
             {errors.title && <p className="text-xs text-destructive">Title is required</p>}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Category</Label>
-              <Controller
-                control={control} name="category"
-                render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                )}
-              />
-            </div>
+            {!lockedCategory && (
+              <div className="space-y-1.5">
+                <Label>Category</Label>
+                <Controller
+                  control={control} name="category"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>Revision</Label>
               <Input {...register("revision")} placeholder="Rev. 00" />
