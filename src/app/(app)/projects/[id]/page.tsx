@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Calendar, Building2, FileText, User, ClipboardList, Bell, Users2, Mail } from "lucide-react";
+import { ArrowLeft, Calendar, Building2, FileText, User } from "lucide-react";
 import { getProject } from "@/server/services/project.service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProjectStatusBadge, ProjectStageBadge } from "@/components/shared/status-badge";
@@ -141,7 +141,6 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           category="SCOPE_OF_WORK"
           sectionTitle="Our Scope"
           emptyLabel="No scope of work added"
-          icon={ClipboardList}
           documents={scopeDocs}
           canUpload={canUpload}
         />
@@ -151,7 +150,6 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           category="NOTICE"
           sectionTitle="Notices"
           emptyLabel="No notices added"
-          icon={Bell}
           documents={noticeDocs}
           canUpload={canUpload}
         />
@@ -161,7 +159,6 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           category="MEETING_MINUTES"
           sectionTitle="Meeting Minutes"
           emptyLabel="No meeting minutes added"
-          icon={Users2}
           documents={meetingDocs}
           canUpload={canUpload}
         />
@@ -171,7 +168,6 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           category="EMAIL"
           sectionTitle="Mails"
           emptyLabel="No mails added"
-          icon={Mail}
           documents={mailDocs}
           canUpload={canUpload}
         />
