@@ -16,7 +16,7 @@ import { can } from "@/server/rbac/permissions";
 import { ProjectDocumentUpload } from "@/features/projects/project-document-upload";
 import { ProjectCorrespondenceSection } from "@/features/projects/project-correspondence-section";
 
-const CORRESPONDENCE_CATEGORIES = ["SCOPE_OF_WORK", "NOTICE", "MEETING_MINUTES", "EMAIL"];
+const CORRESPONDENCE_CATEGORIES: string[] = ["SCOPE_OF_WORK", "NOTICE", "MEETING_MINUTES", "EMAIL"];
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,11 +24,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   if (!project) notFound();
   const canUpload = can(session?.user.role, "documents.create");
 
-  const generalDocuments = project.documents.filter((d) => !CORRESPONDENCE_CATEGORIES.includes(d.category));
-  const scopeDocs = project.documents.filter((d) => d.category === "SCOPE_OF_WORK");
-  const noticeDocs = project.documents.filter((d) => d.category === "NOTICE");
-  const meetingDocs = project.documents.filter((d) => d.category === "MEETING_MINUTES");
-  const mailDocs = project.documents.filter((d) => d.category === "EMAIL");
+  const generalDocuments = project.documents.filter((d) => !CORRESPONDENCE_CATEGORIES.includes(d.category as string));
+  const scopeDocs = project.documents.filter((d) => (d.category as string) === "SCOPE_OF_WORK");
+  const noticeDocs = project.documents.filter((d) => (d.category as string) === "NOTICE");
+  const meetingDocs = project.documents.filter((d) => (d.category as string) === "MEETING_MINUTES");
+  const mailDocs = project.documents.filter((d) => (d.category as string) === "EMAIL");
 
   return (
     <div className="space-y-6">
