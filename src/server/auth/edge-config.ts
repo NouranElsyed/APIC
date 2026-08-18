@@ -2,11 +2,11 @@ import NextAuth, { type DefaultSession, type NextAuthConfig } from "next-auth";
 import type { Role } from "@prisma/client";
 
 // ⚠️ This file must stay free of Node-only imports (Prisma, bcryptjs, etc).
-// It is imported by src/middleware.ts, which runs on the Edge Runtime.
-// Prisma Client cannot run on the Edge Runtime, so any Prisma-dependent
-// logic (the Credentials `authorize` callback) lives only in
-// `./config.ts`, which is used by the API route handler and server code
-// that runs on the Node.js runtime.
+// It is imported by src/proxy.ts (Next.js 16's file convention for what
+// used to be src/middleware.ts). Any Prisma-dependent logic (the
+// Credentials `authorize` callback) lives only in `./config.ts`, which is
+// used by the API route handlers and server code that run on the
+// Node.js runtime.
 
 declare module "next-auth" {
   interface Session {
