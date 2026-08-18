@@ -17,9 +17,6 @@ const CATEGORIES = [
   { value: "CONTRACT", label: "Contract" },
   { value: "PURCHASE_ORDER", label: "Purchase Order" },
   { value: "TECHNICAL_DOCUMENT", label: "Technical Document" },
-  { value: "SCOPE_OF_WORK", label: "Scope of Work" },
-  { value: "NOTICE", label: "Notice" },
-  { value: "MEETING_MINUTES", label: "Meeting Minutes" },
   { value: "EMAIL", label: "Mail" },
   { value: "OTHER", label: "Other" },
 ];
