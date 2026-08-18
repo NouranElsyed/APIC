@@ -15,8 +15,9 @@ import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
 import { ProjectDocumentUpload } from "@/features/projects/project-document-upload";
 import { ProjectCorrespondenceSection } from "@/features/projects/project-correspondence-section";
-
-const CORRESPONDENCE_CATEGORIES: string[] = ["SCOPE_OF_WORK", "NOTICE", "MEETING_MINUTES", "EMAIL"];
+import { ProjectScopeSection } from "@/features/projects/project-scope-section";
+import { ProjectNoticesSection } from "@/features/projects/project-notices-section";
+import { ProjectMeetingMinutesSection } from "@/features/projects/project-meeting-minutes-section";
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,11 +25,8 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   if (!project) notFound();
   const canUpload = can(session?.user.role, "documents.create");
 
-  const generalDocuments = project.documents.filter((d) => !CORRESPONDENCE_CATEGORIES.includes(d.category as string));
-  const scopeDocs = project.documents.filter((d) => (d.category as string) === "SCOPE_OF_WORK");
-  const noticeDocs = project.documents.filter((d) => (d.category as string) === "NOTICE");
-  const meetingDocs = project.documents.filter((d) => (d.category as string) === "MEETING_MINUTES");
-  const mailDocs = project.documents.filter((d) => (d.category as string) === "EMAIL");
+  const generalDocuments = project.documents.filter((d) => d.category !== "EMAIL");
+  const mailDocs = project.documents.filter((d) => d.category === "EMAIL");
 
   return (
     <div className="space-y-6">
@@ -135,32 +133,20 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <ProjectCorrespondenceSection
+        <ProjectScopeSection
           projectId={project.id}
-          projectLabel={`${project.number} — ${project.name}`}
-          category="SCOPE_OF_WORK"
-          sectionTitle="Our Scope"
-          emptyLabel="No scope of work added"
-          documents={scopeDocs}
-          canUpload={canUpload}
+          items={project.scopeItems}
+          canManage={canUpload}
         />
-        <ProjectCorrespondenceSection
+        <ProjectNoticesSection
           projectId={project.id}
-          projectLabel={`${project.number} — ${project.name}`}
-          category="NOTICE"
-          sectionTitle="Notices"
-          emptyLabel="No notices added"
-          documents={noticeDocs}
-          canUpload={canUpload}
+          notices={project.notices}
+          canManage={canUpload}
         />
-        <ProjectCorrespondenceSection
+        <ProjectMeetingMinutesSection
           projectId={project.id}
-          projectLabel={`${project.number} — ${project.name}`}
-          category="MEETING_MINUTES"
-          sectionTitle="Meeting Minutes"
-          emptyLabel="No meeting minutes added"
-          documents={meetingDocs}
-          canUpload={canUpload}
+          meetings={project.meetingMinutes}
+          canManage={canUpload}
         />
         <ProjectCorrespondenceSection
           projectId={project.id}
