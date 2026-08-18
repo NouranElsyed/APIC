@@ -16,7 +16,7 @@ import {
 
 interface DashboardData {
   stats: {
-    total: number; active: number; onHold: number; completed: number; draft: number; archived: number;
+    total: number; tendering: number; inProgress: number; onHold: number; completed: number; submitted: number; archived: number;
     customers: number; documents: number; pendingReviews: number; users: number;
   };
   recentActivity: { id: string; action: string; entity: string; detail: string | null; timestamp: string; user: { name: string; role: string } }[];
@@ -24,8 +24,8 @@ interface DashboardData {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  Draft: "var(--color-chart-3)",
-  Active: "var(--color-chart-2)",
+  Tendering: "var(--color-chart-3)",
+  "In Progress": "var(--color-chart-2)",
   "On Hold": "var(--color-chart-4)",
   Completed: "var(--color-chart-1)",
   Archived: "var(--color-chart-5)",
@@ -42,8 +42,8 @@ export function DashboardView() {
 
   const { stats } = data;
   const statusData = [
-    { name: "Draft", value: stats.draft },
-    { name: "Active", value: stats.active },
+    { name: "Tendering", value: stats.tendering },
+    { name: "In Progress", value: stats.inProgress },
     { name: "On Hold", value: stats.onHold },
     { name: "Completed", value: stats.completed },
     { name: "Archived", value: stats.archived },
@@ -53,10 +53,10 @@ export function DashboardView() {
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
         <KpiCard label="Total Projects" value={stats.total} icon={FolderKanban} tone="primary" />
-        <KpiCard label="Active Projects" value={stats.active} icon={Activity} tone="accent" />
-        <KpiCard label="Customers" value={stats.customers} icon={Users2} tone="violet" />
+        <KpiCard label="In Progress" value={stats.inProgress} icon={Activity} tone="accent" />
+        <KpiCard label="Clients" value={stats.customers} icon={Users2} tone="violet" />
         <KpiCard label="Documents" value={stats.documents} icon={FileText} tone="slate" />
-        <KpiCard label="Pending Reviews" value={stats.pendingReviews} icon={ClipboardList} tone="warning" />
+        <KpiCard label="Under Study" value={stats.pendingReviews} icon={ClipboardList} tone="warning" />
         <KpiCard label="Users" value={stats.users} icon={UserCog} tone="primary" />
       </div>
 
