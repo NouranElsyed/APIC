@@ -101,7 +101,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         <CardContent>
           {generalDocuments.length === 0 ? (
             <EmptyState
-              icon={FileText}
+              icon={<FileText className="h-5 w-5" />}
               title="No documents yet"
               description={canUpload ? "Upload the first document for this project." : "Upload documents from the Documents module."}
             />
