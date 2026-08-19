@@ -376,11 +376,6 @@ export function PartForm({
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>Buy weight (kg) — optional, for scrap tracking</Label>
-            <Input type="number" step="any" value={f.buyWeightKg} onChange={(e) => set("buyWeightKg", e.target.value)} />
-          </div>
-
           <div className="rounded-md border border-border bg-primary/5 p-3">
             <button type="button" className="flex w-full items-center justify-between text-xs font-medium text-foreground" onClick={() => setShowEquation((v) => !v)}>
               <span className="flex items-center gap-1.5"><Sigma className="h-3.5 w-3.5" /> Equation preview</span>
