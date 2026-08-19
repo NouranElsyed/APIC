@@ -1,13 +1,14 @@
 "use client";
 import * as React from "react";
-import { Plus, Trash2, Ruler, FolderKanban, Layers } from "lucide-react";
+import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DrawingForm } from "./drawing-form";
 import { PartsGrid } from "./parts-grid";
-import type { TakeoffDrawingRow, ProjectOption } from "./types";
+import type { TakeoffDrawingRow, TakeoffPartRow, ProjectOption, PartType, PartSide } from "./types";
 import { toast } from "sonner";
 
 function fmt(n: number, digits = 2) {
@@ -18,11 +19,41 @@ function num(v: number | null | undefined): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
+const PART_TYPE_LABEL: Record<PartType, string> = {
+  PLATE: "Plate",
+  HOT_ROLLED: "Hot Rolled",
+  CONE: "Cone",
+  PIPE: "Pipe",
+};
+
+interface Filters {
+  type: PartType | "ALL";
+  thickness: string; // exact-match text, blank = any
+  description: string; // substring search, case-insensitive
+  side: PartSide | "ALL";
+}
+
+const emptyFilters: Filters = { type: "ALL", thickness: "", description: "", side: "ALL" };
+
+function matchesFilters(part: TakeoffPartRow, f: Filters): boolean {
+  if (f.type !== "ALL" && part.partType !== f.type) return false;
+  if (f.side !== "ALL" && part.side !== f.side) return false;
+  if (f.thickness.trim() !== "") {
+    const wanted = Number(f.thickness);
+    if (!Number.isFinite(wanted) || part.thicknessMm !== wanted) return false;
+  }
+  if (f.description.trim() !== "") {
+    if (!part.description.toLowerCase().includes(f.description.trim().toLowerCase())) return false;
+  }
+  return true;
+}
+
 export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canDelete: boolean }) {
   const [projects, setProjects] = React.useState<ProjectOption[]>([]);
   const [projectId, setProjectId] = React.useState<string>("");
   const [drawings, setDrawings] = React.useState<TakeoffDrawingRow[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [filters, setFilters] = React.useState<Filters>(emptyFilters);
 
   const [drawingFormOpen, setDrawingFormOpen] = React.useState(false);
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
@@ -58,6 +89,26 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
     loadDrawings(projectId);
   }
 
+  const filtersActive = filters.type !== "ALL" || filters.side !== "ALL" || filters.thickness.trim() !== "" || filters.description.trim() !== "";
+
+  // Filtered view of every drawing — filters apply across the whole
+  // project, not just one drawing, so grand totals below always reflect
+  // exactly what's visible on screen.
+  const filteredDrawings = React.useMemo(() => {
+    if (!filtersActive) return drawings;
+    return drawings.map((d) => ({ ...d, parts: d.parts.filter((p) => matchesFilters(p, filters)) }));
+  }, [drawings, filters, filtersActive]);
+
+  const allVisibleParts = React.useMemo(
+    () => filteredDrawings.flatMap((d) => d.parts),
+    [filteredDrawings],
+  );
+
+  const grandTotalWeight = allVisibleParts.reduce((s, p) => s + num(p.weightKg), 0);
+  const grandTotalArea = allVisibleParts.reduce((s, p) => s + num(p.totalArea), 0);
+  const grandExternalWeight = allVisibleParts.filter((p) => p.side === "EXTERNAL").reduce((s, p) => s + num(p.weightKg), 0);
+  const grandInternalWeight = allVisibleParts.filter((p) => p.side === "INTERNAL").reduce((s, p) => s + num(p.weightKg), 0);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -84,6 +135,59 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
         )}
       </div>
 
+      {projectId && drawings.length > 0 && (
+        <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex items-center gap-1.5 pb-2 text-xs font-medium text-muted-foreground">
+              <Filter className="h-3.5 w-3.5" /> Filter (all drawings)
+            </div>
+            <div className="w-36 space-y-1">
+              <label className="block text-xs text-muted-foreground">Type</label>
+              <Select value={filters.type} onValueChange={(v) => setFilters((f) => ({ ...f, type: v as Filters["type"] }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All types</SelectItem>
+                  {(Object.keys(PART_TYPE_LABEL) as PartType[]).map((pt) => (
+                    <SelectItem key={pt} value={pt}>{PART_TYPE_LABEL[pt]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-28 space-y-1">
+              <label className="block text-xs text-muted-foreground">Thk (mm)</label>
+              <Input type="number" step="any" placeholder="Any" value={filters.thickness} onChange={(e) => setFilters((f) => ({ ...f, thickness: e.target.value }))} />
+            </div>
+            <div className="w-56 space-y-1">
+              <label className="block text-xs text-muted-foreground">Description</label>
+              <Input placeholder="Search description…" value={filters.description} onChange={(e) => setFilters((f) => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div className="w-36 space-y-1">
+              <label className="block text-xs text-muted-foreground">Side</label>
+              <Select value={filters.side} onValueChange={(v) => setFilters((f) => ({ ...f, side: v as Filters["side"] }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">Both sides</SelectItem>
+                  <SelectItem value="EXTERNAL">External</SelectItem>
+                  <SelectItem value="INTERNAL">Internal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {filtersActive && (
+              <Button size="sm" variant="ghost" onClick={() => setFilters(emptyFilters)}>
+                <X className="h-3.5 w-3.5" /> Clear
+              </Button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-x-8 gap-y-1 border-t border-border pt-3 text-sm">
+            <span>Total Weight: <span className="font-semibold text-primary">{fmt(grandTotalWeight, 1)} kg</span></span>
+            <span>Total Area: <span className="font-semibold text-foreground">{fmt(grandTotalArea, 3)} m²</span></span>
+            <span>Total External: <span className="font-semibold text-foreground">{fmt(grandExternalWeight, 1)} kg</span></span>
+            <span>Total Internal: <span className="font-semibold text-foreground">{fmt(grandInternalWeight, 1)} kg</span></span>
+          </div>
+        </div>
+      )}
+
       {!projectId ? (
         <EmptyState icon={<FolderKanban className="h-5 w-5" />} title="No project selected" description="Choose a project above to see its material take-off data." />
       ) : loading ? (
@@ -97,7 +201,8 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
         />
       ) : (
         <div className="space-y-6">
-          {drawings.map((drawing) => {
+          {filteredDrawings.map((drawing) => {
+            if (filtersActive && drawing.parts.length === 0) return null;
             const totalArea = drawing.parts.reduce((s, p) => s + num(p.totalArea), 0);
             const totalWeight = drawing.parts.reduce((s, p) => s + num(p.weightKg), 0);
             const totalPaintArea = drawing.parts.reduce((s, p) => s + num(p.paintAreaSqm), 0);
