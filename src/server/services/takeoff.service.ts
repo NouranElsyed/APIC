@@ -1,13 +1,27 @@
 import { prisma } from "@/server/db/client";
-import { computeTakeoffPart } from "@/server/calc/takeoff";
+import { computeTakeoffPart, buildDefaultAreaFormula } from "@/server/calc/takeoff";
 import type { TakeoffDrawingInput, TakeoffPartInputData } from "@/server/validators/takeoff";
 import { logActivity } from "./activity-log.service";
 
 // computeTakeoffPart() returns a `formulaError` field for the UI's benefit —
 // it isn't a persisted column, so it's stripped out before every write.
-function persistedComputedFields(data: TakeoffPartInputData | Omit<TakeoffPartInputData, "drawingId">) {
-  const { formulaError: _formulaError, ...rest } = computeTakeoffPart(data);
-  return rest;
+// The area formula is resolved to whatever was actually used (falling back
+// to the type's default) so the stored value always matches the numbers,
+// and stays editable Excel-style afterwards.
+function persistedFields(data: TakeoffPartInputData) {
+  const resolvedAreaFormula = data.partType === "HOT_ROLLED"
+    ? null
+    : (data.areaFormula?.trim() || buildDefaultAreaFormula(data.partType, data.geometry));
+  const { formulaError: _formulaError, ...computed } = computeTakeoffPart({
+    partType: data.partType,
+    geometry: data.geometry,
+    qty: data.qty,
+    thicknessMm: data.thicknessMm ?? null,
+    paintSides: data.paintSides,
+    areaFormula: resolvedAreaFormula,
+    buyWeightKg: data.buyWeightKg,
+  });
+  return { resolvedAreaFormula, computed };
 }
 
 export async function listDrawingsForProject(projectId: string) {
@@ -52,21 +66,20 @@ export async function deleteDrawing(id: string, userId: string) {
 }
 
 export async function createPart(data: TakeoffPartInputData, userId: string) {
-  const computed = persistedComputedFields(data);
+  const { resolvedAreaFormula, computed } = persistedFields(data);
   const part = await prisma.takeoffPart.create({
     data: {
       drawingId: data.drawingId,
       itemNo: data.itemNo,
       description: data.description,
-      extWidth: data.extWidth ?? null,
-      extLength: data.extLength ?? null,
-      intWidth: data.intWidth ?? null,
-      intLength: data.intLength ?? null,
+      partType: data.partType,
+      side: data.side,
       qty: data.qty,
-      thicknessMm: data.thicknessMm,
+      thicknessMm: data.thicknessMm ?? null,
+      geometry: data.geometry,
+      areaFormula: resolvedAreaFormula,
       paintSides: data.paintSides,
-      areaMode: data.areaMode,
-      customFormula: data.areaMode === "CUSTOM" ? data.customFormula ?? null : null,
+      buyWeightKg: data.buyWeightKg ?? null,
       ...computed,
     },
   });
@@ -80,58 +93,21 @@ export async function createPart(data: TakeoffPartInputData, userId: string) {
   return part;
 }
 
-// Excel-style grid entry: create many parts under one drawing in a single
-// call, in the order given. Each row is computed the same way as a single
-// createPart (server-side recompute, never trusts client-sent totals).
-export async function createPartsBulk(drawingId: string, rows: Omit<TakeoffPartInputData, "drawingId">[], userId: string) {
-  const created = [];
-  for (const row of rows) {
-    const computed = persistedComputedFields(row);
-    const part = await prisma.takeoffPart.create({
-      data: {
-        drawingId,
-        itemNo: row.itemNo,
-        description: row.description,
-        extWidth: row.extWidth ?? null,
-        extLength: row.extLength ?? null,
-        intWidth: row.intWidth ?? null,
-        intLength: row.intLength ?? null,
-        qty: row.qty,
-        thicknessMm: row.thicknessMm,
-        paintSides: row.paintSides,
-        areaMode: row.areaMode,
-        customFormula: row.areaMode === "CUSTOM" ? row.customFormula ?? null : null,
-        ...computed,
-      },
-    });
-    created.push(part);
-  }
-  await logActivity({
-    userId,
-    action: "CREATE",
-    entity: "TAKEOFF_PART",
-    entityId: drawingId,
-    detail: `Grid entry: added ${created.length} part(s)`,
-  });
-  return created;
-}
-
 export async function updatePart(id: string, data: TakeoffPartInputData, userId: string) {
-  const computed = persistedComputedFields(data);
+  const { resolvedAreaFormula, computed } = persistedFields(data);
   const part = await prisma.takeoffPart.update({
     where: { id },
     data: {
       itemNo: data.itemNo,
       description: data.description,
-      extWidth: data.extWidth ?? null,
-      extLength: data.extLength ?? null,
-      intWidth: data.intWidth ?? null,
-      intLength: data.intLength ?? null,
+      partType: data.partType,
+      side: data.side,
       qty: data.qty,
-      thicknessMm: data.thicknessMm,
+      thicknessMm: data.thicknessMm ?? null,
+      geometry: data.geometry,
+      areaFormula: resolvedAreaFormula,
       paintSides: data.paintSides,
-      areaMode: data.areaMode,
-      customFormula: data.areaMode === "CUSTOM" ? data.customFormula ?? null : null,
+      buyWeightKg: data.buyWeightKg ?? null,
       ...computed,
     },
   });
