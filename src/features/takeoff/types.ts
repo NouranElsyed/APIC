@@ -1,19 +1,17 @@
+export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
+export type PartSide = "INTERNAL" | "EXTERNAL";
+
 export interface TakeoffPartRow {
   id: string;
   itemNo: number;
   description: string;
-  extWidth: number | null;
-  extLength: number | null;
-  intWidth: number | null;
-  intLength: number | null;
+  partType: PartType;
+  side: PartSide;
   qty: number;
-  thicknessMm: number;
+  thicknessMm: number | null;
+  geometry: Record<string, unknown>;
+  areaFormula: string | null;
   paintSides: number;
-  areaMode: "ADD" | "SUBTRACT" | "CUSTOM";
-  customFormula: string | null;
-  extUnitArea: number;
-  intUnitArea: number;
-  totalUnitArea: number;
   totalArea: number;
   volume: number;
   weightKg: number;
