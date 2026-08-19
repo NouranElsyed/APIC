@@ -49,7 +49,7 @@ export function DataTable<TData extends object, TValue>({
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
 
   if (data.length === 0) {
-    return <EmptyState icon={Inbox} title={emptyTitle} description={emptyDescription} />;
+    return <EmptyState icon={<Inbox className="h-5 w-5" />} title={emptyTitle} description={emptyDescription} />;
   }
 
   return (

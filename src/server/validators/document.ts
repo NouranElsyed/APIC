@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const documentCategoryEnum = z.enum([
-  "DRAWING", "SPECIFICATION", "CONTRACT", "PURCHASE_ORDER", "TECHNICAL_DOCUMENT", "OTHER",
+  "DRAWING", "SPECIFICATION", "CONTRACT", "PURCHASE_ORDER", "TECHNICAL_DOCUMENT", "EMAIL", "OTHER",
 ]);
 
 export const documentSchema = z.object({

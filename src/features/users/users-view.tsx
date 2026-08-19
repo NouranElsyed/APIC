@@ -87,7 +87,7 @@ export function UsersView() {
       {loading ? (
         <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">Loading users…</div>
       ) : filtered.length === 0 ? (
-        <EmptyState icon={UserCog} title="No users found" />
+        <EmptyState icon={<UserCog className="h-5 w-5" />} title="No users found" />
       ) : (
         <DataTable columns={columns} data={filtered} pageSize={10} />
       )}

@@ -85,12 +85,12 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
       </div>
 
       {!projectId ? (
-        <EmptyState icon={FolderKanban} title="No project selected" description="Choose a project above to see its material take-off data." />
+        <EmptyState icon={<FolderKanban className="h-5 w-5" />} title="No project selected" description="Choose a project above to see its material take-off data." />
       ) : loading ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">Loading…</div>
       ) : drawings.length === 0 ? (
         <EmptyState
-          icon={Ruler}
+          icon={<Ruler className="h-5 w-5" />}
           title="No drawings yet"
           description={`Add the first fabrication drawing for ${selectedProject?.number ?? "this project"} to start entering parts.`}
           action={canCreate ? <Button onClick={() => setDrawingFormOpen(true)}><Plus className="h-4 w-4" /> Add Drawing</Button> : undefined}

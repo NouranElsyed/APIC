@@ -11,11 +11,22 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/shared/empty-state";
+import { auth } from "@/server/auth/config";
+import { can } from "@/server/rbac/permissions";
+import { ProjectDocumentUpload } from "@/features/projects/project-document-upload";
+import { ProjectCorrespondenceSection } from "@/features/projects/project-correspondence-section";
+import { ProjectScopeSection } from "@/features/projects/project-scope-section";
+import { ProjectNoticesSection } from "@/features/projects/project-notices-section";
+import { ProjectMeetingMinutesSection } from "@/features/projects/project-meeting-minutes-section";
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const project = await getProject(id);
+  const [project, session] = await Promise.all([getProject(id), auth()]);
   if (!project) notFound();
+  const canUpload = can(session?.user.role, "documents.create");
+
+  const generalDocuments = project.documents.filter((d) => d.category !== "EMAIL");
+  const mailDocs = project.documents.filter((d) => d.category === "EMAIL");
 
   return (
     <div className="space-y-6">
@@ -79,10 +90,21 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       </div>
 
       <Card>
-        <CardHeader><CardTitle>Project Documents</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle>Project Documents</CardTitle>
+          <ProjectDocumentUpload
+            projectId={project.id}
+            projectLabel={`${project.number} — ${project.name}`}
+            canUpload={canUpload}
+          />
+        </CardHeader>
         <CardContent>
-          {project.documents.length === 0 ? (
-            <EmptyState icon={FileText} title="No documents yet" description="Upload documents from the Documents module." />
+          {generalDocuments.length === 0 ? (
+            <EmptyState
+              icon={<FileText className="h-5 w-5" />}
+              title="No documents yet"
+              description={canUpload ? "Upload the first document for this project." : "Upload documents from the Documents module."}
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -95,7 +117,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {project.documents.map((d: (typeof project.documents)[number]) => (
+                {generalDocuments.map((d: (typeof project.documents)[number]) => (
                   <TableRow key={d.id}>
                     <TableCell className="font-medium">{d.title}</TableCell>
                     <TableCell><Badge variant="secondary">{d.category.replace("_", " ")}</Badge></TableCell>
@@ -109,6 +131,33 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           )}
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <ProjectScopeSection
+          projectId={project.id}
+          items={project.scopeItems}
+          canManage={canUpload}
+        />
+        <ProjectNoticesSection
+          projectId={project.id}
+          notices={project.notices}
+          canManage={canUpload}
+        />
+        <ProjectMeetingMinutesSection
+          projectId={project.id}
+          meetings={project.meetingMinutes}
+          canManage={canUpload}
+        />
+        <ProjectCorrespondenceSection
+          projectId={project.id}
+          projectLabel={`${project.number} — ${project.name}`}
+          category="EMAIL"
+          sectionTitle="Mails"
+          emptyLabel="No mails added"
+          documents={mailDocs}
+          canUpload={canUpload}
+        />
+      </div>
     </div>
   );
 }

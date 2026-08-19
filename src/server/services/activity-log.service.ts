@@ -3,7 +3,7 @@ import { prisma } from "@/server/db/client";
 export async function logActivity(params: {
   userId: string;
   action: "CREATE" | "UPDATE" | "DELETE" | "LOGIN" | "ACTIVATE" | "DEACTIVATE" | "RESET_PASSWORD";
-  entity: "PROJECT" | "CUSTOMER" | "DOCUMENT" | "USER" | "SETTINGS" | "TAKEOFF_DRAWING" | "TAKEOFF_PART";
+  entity: "PROJECT" | "CUSTOMER" | "DOCUMENT" | "USER" | "SETTINGS" | "TAKEOFF_DRAWING" | "TAKEOFF_PART" | "SCOPE_ITEM" | "NOTICE" | "MEETING_MINUTE";
   entityId?: string;
   detail?: string;
 }) {
