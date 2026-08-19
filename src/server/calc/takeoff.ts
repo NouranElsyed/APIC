@@ -1,65 +1,73 @@
-// Mirrors "Riser Duct Fabrication Drg" sheet formulas, plus an alternate
-// area mode for parts that aren't ducts (plate with a cut-out hole), plus
-// a per-row custom-formula override, plus scrap tracking against a bought
-// stock weight (mirrors the "pricing" sheet's Used/Buy/Scrap columns).
+// Mirrors the redesigned TakeoffPart model (see prisma/schema.prisma):
+// every part has an explicit `partType` (PLATE / HOT_ROLLED / CONE / PIPE)
+// which drives which geometry fields are relevant and what the default
+// area formula looks like. The formula is always stored on the row
+// (`areaFormula`) and is Excel-style editable by the user — this module
+// only supplies the *default* so the popup isn't blank on first open.
 //
-// areaMode "ADD" (default, matches the original Excel sheet — duct walls,
-// where external and internal are two SEPARATE surfaces to add together):
-//   extUnitArea   = extWidth * extLength * 2        (both faces)
-//   intUnitArea   = intWidth * intLength * 2        (both faces)
-//   totalUnitArea = extUnitArea + intUnitArea
+// Sheet-based types (PLATE / CONE / PIPE):
+//   unitArea  = evalFormula(areaFormula, geometryVars)   -- single-face
+//               net area for ONE piece (already nets out any cut-out)
+//   totalArea = unitArea * qty
+//   volume    = totalArea * thicknessMm        (m2 * mm)
+//   weightKg  = volume * STEEL_DENSITY_KG_PER_M2_MM
+//   paintAreaSqm = totalArea * paintSides       (1 or 2 faces painted)
 //
-// areaMode "SUBTRACT" (a flat plate with a hole/cut-out in it — internal
-// dims describe material REMOVED from the external footprint, not a
-// second surface):
-//   netFaceArea   = max(extWidth*extLength - intWidth*intLength, 0)
-//   totalUnitArea = netFaceArea * 2                 (kept *2 so the shared
-//                                                     pipeline below stays
-//                                                     identical between modes)
-//
-// areaMode "CUSTOM" (a row whose geometry doesn't fit ADD/SUBTRACT — e.g. a
-// circumference-based ring like the sheet's `=PI()*(4.657+0.22*2)`):
-//   totalUnitArea = evalFormula(customFormula, { extW, extL, intW, intL, qty, thk })
-//   (extUnitArea/intUnitArea are just reported as the raw ext/int rectangle
-//   areas for reference; they don't feed the pipeline in this mode)
-//
-// Either way, from totalUnitArea on the pipeline is the same:
-//   totalArea  = totalUnitArea * qty          (CUSTOM formulas should NOT
-//                                               already multiply by qty)
-//   volume     = (totalArea / 2) * thicknessMm   (halved back to single-face area)
-//   weightKg   = volume * STEEL_DENSITY
+// HOT_ROLLED (rolled section — IPE/FB/angle/etc): weight is per metre of
+// profile, not area x thickness x density, and there's no thicknessMm.
+//   weightKg     = weightPerMeter * length * qty
+//   paintAreaSqm = (paintAreaPerMeter ?? 0) * length * qty
+//   totalArea / volume = 0 (not meaningful for a rolled section)
 //
 // Steel density constant: 7.85 kg per (m2 * mm) — the standard plate-weight
-// factor (kg/m2 per mm of thickness), taken directly from the source sheet.
+// factor (kg/m2 per mm of thickness).
 //
 // Scrap: buyWeightKg is a manual entry — the actual stock weight bought/
-// allocated for this row (plates and bars come in fixed stock sizes, so
-// buy weight is normally >= used weight). scrapKg/scrapPct are only
-// present once buyWeightKg is set; both are null otherwise (never 0, so
-// "no data entered yet" is distinguishable from "zero scrap").
+// allocated for this row. scrapKg/scrapPct are only present once
+// buyWeightKg is set; both are null otherwise (never 0, so "no data
+// entered yet" is distinguishable from "zero scrap").
 import { evalFormula, FormulaError } from "./formula";
 
 export const STEEL_DENSITY_KG_PER_M2_MM = 7.85;
 
-export type TakeoffAreaMode = "ADD" | "SUBTRACT" | "CUSTOM";
+export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
+export type PartSide = "INTERNAL" | "EXTERNAL";
+
+export interface PlateGeometry {
+  width: number;
+  length: number;
+  cutoffFormula?: string | null; // e.g. "PI()*0.15^2" — area removed for a cut-out/hole
+}
+export interface ConeGeometry {
+  d1: number; // base diameter
+  d2: number; // top diameter
+  height: number;
+}
+export interface PipeGeometry {
+  od: number; // outer diameter
+  length: number;
+}
+export interface HotRolledGeometry {
+  profile: string; // e.g. "IPE 120"
+  length: number; // metres
+  weightPerMeter: number; // kg/m, from the steel tables
+  paintAreaPerMeter?: number | null; // m2/m, optional
+}
+
+export type TakeoffGeometry = PlateGeometry | ConeGeometry | PipeGeometry | HotRolledGeometry;
 
 export interface TakeoffPartInput {
-  extWidth?: number | null;
-  extLength?: number | null;
-  intWidth?: number | null;
-  intLength?: number | null;
+  partType: PartType;
+  geometry: Record<string, unknown> | null | undefined;
   qty: number;
-  thicknessMm: number;
+  thicknessMm?: number | null; // required for PLATE/CONE/PIPE, irrelevant for HOT_ROLLED
   paintSides?: number | null; // 1 or 2, defaults to 2 (both faces)
-  areaMode?: TakeoffAreaMode | null; // defaults to ADD
-  customFormula?: string | null; // used when areaMode = CUSTOM
+  areaFormula?: string | null; // sheet-based types only, Excel-style, editable
   buyWeightKg?: number | null; // manual: purchased/allocated stock weight
 }
 
 export interface TakeoffPartComputed {
-  extUnitArea: number;
-  intUnitArea: number;
-  totalUnitArea: number;
+  unitArea: number; // single piece, single face
   totalArea: number;
   volume: number;
   weightKg: number;
@@ -67,73 +75,74 @@ export interface TakeoffPartComputed {
   buyWeightKg: number | null;
   scrapKg: number | null;
   scrapPct: number | null;
-  formulaError: string | null; // set when areaMode=CUSTOM and the formula failed to evaluate
+  formulaError: string | null; // set when the area formula failed to evaluate
 }
 
-function n(v: number | null | undefined): number {
+function n(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
-function rawArea(width?: number | null, length?: number | null) {
-  const w = n(width);
-  const l = n(length);
-  if (!w || !l) return 0;
-  return w * l;
+// The default formula pre-filled into the "Add Item" popup for each part
+// type — always visible and editable afterwards, Excel-style.
+export function buildDefaultAreaFormula(partType: PartType, geometry: Record<string, unknown> | null | undefined): string {
+  const g = (geometry ?? {}) as Record<string, unknown>;
+  switch (partType) {
+    case "PLATE": {
+      const cutoff = typeof g.cutoffFormula === "string" ? g.cutoffFormula.trim() : "";
+      return cutoff ? `width*length-(${cutoff})` : "width*length";
+    }
+    case "CONE":
+      // Lateral surface area of a frustum (slant height via Pythagoras).
+      return "PI()*((d1+d2)/2)*sqrt(height^2+((d1-d2)/2)^2)";
+    case "PIPE":
+      return "PI()*od*length";
+    case "HOT_ROLLED":
+    default:
+      return "";
+  }
 }
 
-export function resolveAreaMode(mode?: TakeoffAreaMode | null): TakeoffAreaMode {
-  if (mode === "SUBTRACT") return "SUBTRACT";
-  if (mode === "CUSTOM") return "CUSTOM";
-  return "ADD";
+function geometryVars(partType: PartType, geometry: Record<string, unknown> | null | undefined, thk: number, qty: number): Record<string, number> {
+  const g = (geometry ?? {}) as Record<string, unknown>;
+  const base = { thk, qty };
+  if (partType === "PLATE") return { ...base, width: n(g.width), length: n(g.length) };
+  if (partType === "CONE") return { ...base, d1: n(g.d1), d2: n(g.d2), height: n(g.height) };
+  if (partType === "PIPE") return { ...base, od: n(g.od), length: n(g.length) };
+  return base;
 }
 
 export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed {
-  const mode = resolveAreaMode(input.areaMode);
   const qty = n(input.qty);
-  const thicknessMm = n(input.thicknessMm);
+  const thk = n(input.thicknessMm);
+  const paintSides = input.paintSides === 1 ? 1 : 2;
+  const g = (input.geometry ?? {}) as Record<string, unknown>;
 
-  let extUnitArea: number;
-  let intUnitArea: number;
-  let totalUnitArea: number;
+  let unitArea = 0;
+  let totalArea = 0;
+  let volume = 0;
+  let weightKg = 0;
+  let paintAreaSqm = 0;
   let formulaError: string | null = null;
 
-  if (mode === "SUBTRACT") {
-    // Outer footprint minus the cut-out — a single net face, not two
-    // separate surfaces. *2 here only to reuse the shared /2 pipeline below.
-    extUnitArea = rawArea(input.extWidth, input.extLength);
-    intUnitArea = rawArea(input.intWidth, input.intLength);
-    const netFaceArea = Math.max(extUnitArea - intUnitArea, 0);
-    totalUnitArea = netFaceArea * 2;
-  } else if (mode === "CUSTOM") {
-    extUnitArea = rawArea(input.extWidth, input.extLength);
-    intUnitArea = rawArea(input.intWidth, input.intLength);
-    const vars = {
-      extW: n(input.extWidth), extL: n(input.extLength),
-      intW: n(input.intWidth), intL: n(input.intLength),
-      qty, thk: thicknessMm,
-    };
+  if (input.partType === "HOT_ROLLED") {
+    const weightPerMeter = n(g.weightPerMeter);
+    const length = n(g.length);
+    weightKg = weightPerMeter * length * qty;
+    paintAreaSqm = n(g.paintAreaPerMeter) * length * qty;
+  } else {
+    const formula = (input.areaFormula ?? "").trim() || buildDefaultAreaFormula(input.partType, g);
+    const vars = geometryVars(input.partType, g, thk, qty);
     try {
-      totalUnitArea = input.customFormula ? evalFormula(input.customFormula, vars) : 0;
+      unitArea = formula ? evalFormula(formula, vars) : 0;
     } catch (err) {
-      totalUnitArea = 0;
+      unitArea = 0;
       formulaError = err instanceof FormulaError ? err.message : "Invalid formula";
     }
-  } else {
-    extUnitArea = rawArea(input.extWidth, input.extLength) * 2;
-    intUnitArea = rawArea(input.intWidth, input.intLength) * 2;
-    totalUnitArea = extUnitArea + intUnitArea;
+    totalArea = unitArea * qty;
+    volume = totalArea * thk;
+    weightKg = volume * STEEL_DENSITY_KG_PER_M2_MM;
+    paintAreaSqm = totalArea * paintSides;
   }
-
-  const totalArea = totalUnitArea * qty;
-  const volume = (totalArea / 2) * thicknessMm;
-  const weightKg = volume * STEEL_DENSITY_KG_PER_M2_MM;
-
-  // Painting scope only — never feeds into volume/weightKg above.
-  // totalArea always represents both physical faces (the *2 above, in
-  // either mode), so totalArea / 2 is the area of ONE face; multiply by
-  // 1 or 2 depending on how many faces get painted.
-  const paintSides = input.paintSides === 1 ? 1 : 2;
-  const paintAreaSqm = (totalArea / 2) * paintSides;
 
   const buyWeightKg = typeof input.buyWeightKg === "number" && Number.isFinite(input.buyWeightKg)
     ? input.buyWeightKg
@@ -141,17 +150,13 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
   const scrapKg = buyWeightKg !== null ? buyWeightKg - weightKg : null;
   const scrapPct = buyWeightKg !== null && buyWeightKg > 0 ? (scrapKg as number) / buyWeightKg : null;
 
-  return {
-    extUnitArea, intUnitArea, totalUnitArea, totalArea, volume, weightKg, paintAreaSqm,
-    buyWeightKg, scrapKg, scrapPct, formulaError,
-  };
+  return { unitArea, totalArea, volume, weightKg, paintAreaSqm, buyWeightKg, scrapKg, scrapPct, formulaError };
 }
 
 // Human-readable, numbers-substituted breakdown of exactly how a row's
 // numbers were produced — used by the UI so the user can see (and check)
 // the equation for a specific row instead of trusting a black box.
 export interface TakeoffPartExplanation {
-  mode: TakeoffAreaMode;
   lines: { label: string; formula: string; result: string }[];
 }
 
@@ -160,63 +165,42 @@ function fmtNum(v: number, digits = 4) {
 }
 
 export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanation {
-  const mode = resolveAreaMode(input.areaMode);
   const c = computeTakeoffPart(input);
-  const extW = n(input.extWidth), extL = n(input.extLength);
-  const intW = n(input.intWidth), intL = n(input.intLength);
-  const qty = n(input.qty), thk = n(input.thicknessMm);
+  const qty = n(input.qty);
+  const thk = n(input.thicknessMm);
   const paintSides = input.paintSides === 1 ? 1 : 2;
-
   const lines: TakeoffPartExplanation["lines"] = [];
 
-  if (mode === "CUSTOM") {
+  if (input.partType === "HOT_ROLLED") {
+    const g = (input.geometry ?? {}) as Record<string, unknown>;
     lines.push({
-      label: "Custom formula",
-      formula: input.customFormula?.trim() || "(empty)",
-      result: c.formulaError ? `Error: ${c.formulaError}` : `${fmtNum(c.totalUnitArea)} m²`,
+      label: "Weight (per metre × length × qty)",
+      formula: `${fmtNum(n(g.weightPerMeter))} × ${fmtNum(n(g.length))} × ${qty}`,
+      result: `${fmtNum(c.weightKg, 2)} kg`,
     });
-  } else if (mode === "SUBTRACT") {
-    lines.push({
-      label: "Ext. area (outer footprint)",
-      formula: `${fmtNum(extW)} × ${fmtNum(extL)}`,
-      result: `${fmtNum(c.extUnitArea)} m²`,
-    });
-    lines.push({
-      label: "Int. area (cut-out, removed)",
-      formula: `${fmtNum(intW)} × ${fmtNum(intL)}`,
-      result: `${fmtNum(c.intUnitArea)} m²`,
-    });
-    lines.push({
-      label: "Net face area",
-      formula: `${fmtNum(c.extUnitArea)} − ${fmtNum(c.intUnitArea)}`,
-      result: `${fmtNum(c.totalUnitArea / 2)} m²`,
-    });
-  } else {
-    lines.push({
-      label: "Ext. unit area (both faces)",
-      formula: `${fmtNum(extW)} × ${fmtNum(extL)} × 2`,
-      result: `${fmtNum(c.extUnitArea)} m²`,
-    });
-    lines.push({
-      label: "Int. unit area (both faces)",
-      formula: `${fmtNum(intW)} × ${fmtNum(intL)} × 2`,
-      result: `${fmtNum(c.intUnitArea)} m²`,
-    });
-    lines.push({
-      label: "Total unit area",
-      formula: `${fmtNum(c.extUnitArea)} + ${fmtNum(c.intUnitArea)}`,
-      result: `${fmtNum(c.totalUnitArea)} m²`,
-    });
+    if (n(g.paintAreaPerMeter) > 0) {
+      lines.push({
+        label: "Paint area (per metre × length × qty)",
+        formula: `${fmtNum(n(g.paintAreaPerMeter))} × ${fmtNum(n(g.length))} × ${qty}`,
+        result: `${fmtNum(c.paintAreaSqm)} m²`,
+      });
+    }
+    return { lines };
   }
 
   lines.push({
+    label: "Unit area (per piece, single face)",
+    formula: (input.areaFormula ?? "").trim() || buildDefaultAreaFormula(input.partType, input.geometry),
+    result: c.formulaError ? `Error: ${c.formulaError}` : `${fmtNum(c.unitArea)} m²`,
+  });
+  lines.push({
     label: "Total area (× qty)",
-    formula: `${fmtNum(c.totalUnitArea)} × ${qty}`,
+    formula: `${fmtNum(c.unitArea)} × ${qty}`,
     result: `${fmtNum(c.totalArea)} m²`,
   });
   lines.push({
     label: "Volume",
-    formula: `(${fmtNum(c.totalArea)} / 2) × ${fmtNum(thk)}`,
+    formula: `${fmtNum(c.totalArea)} × ${fmtNum(thk)}`,
     result: `${fmtNum(c.volume)}`,
   });
   lines.push({
@@ -226,7 +210,7 @@ export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanat
   });
   lines.push({
     label: `Paint area (${paintSides} side${paintSides > 1 ? "s" : ""})`,
-    formula: `(${fmtNum(c.totalArea)} / 2) × ${paintSides}`,
+    formula: `${fmtNum(c.totalArea)} × ${paintSides}`,
     result: `${fmtNum(c.paintAreaSqm)} m²`,
   });
 
@@ -238,7 +222,7 @@ export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanat
     });
   }
 
-  return { mode, lines };
+  return { lines };
 }
 
 export function sumDrawingWeight(parts: { weightKg: number | null | undefined }[]) {
