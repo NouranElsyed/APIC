@@ -101,6 +101,8 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
             const totalArea = drawing.parts.reduce((s, p) => s + num(p.totalArea), 0);
             const totalWeight = drawing.parts.reduce((s, p) => s + num(p.weightKg), 0);
             const totalPaintArea = drawing.parts.reduce((s, p) => s + num(p.paintAreaSqm), 0);
+            const scrapRows = drawing.parts.filter((p) => typeof p.scrapKg === "number");
+            const totalScrap = scrapRows.length > 0 ? scrapRows.reduce((s, p) => s + num(p.scrapKg), 0) : null;
             const variance = drawing.weightFromDwg != null ? totalWeight - drawing.weightFromDwg : null;
 
             return (
@@ -114,6 +116,11 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
                         Total Area: <span className="font-medium text-foreground">{fmt(totalArea, 3)} m²</span>
                         {"  ·  "}Paint Area: <span className="font-medium text-foreground">{fmt(totalPaintArea, 3)} m²</span>
                         {"  ·  "}Total Weight: <span className="font-medium text-foreground">{fmt(totalWeight, 1)} kg</span>
+                        {totalScrap !== null && (
+                          <>
+                            {"  ·  "}Scrap: <span className="font-medium text-amber-600">{fmt(totalScrap, 1)} kg</span>
+                          </>
+                        )}
                         {variance !== null && (
                           <>
                             {"  ·  "}vs. Drawing: <span className={variance === 0 ? "text-foreground" : variance > 0 ? "text-destructive" : "text-emerald-600"}>

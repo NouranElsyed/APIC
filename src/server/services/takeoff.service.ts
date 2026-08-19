@@ -3,6 +3,13 @@ import { computeTakeoffPart } from "@/server/calc/takeoff";
 import type { TakeoffDrawingInput, TakeoffPartInputData } from "@/server/validators/takeoff";
 import { logActivity } from "./activity-log.service";
 
+// computeTakeoffPart() returns a `formulaError` field for the UI's benefit —
+// it isn't a persisted column, so it's stripped out before every write.
+function persistedComputedFields(data: TakeoffPartInputData | Omit<TakeoffPartInputData, "drawingId">) {
+  const { formulaError: _formulaError, ...rest } = computeTakeoffPart(data);
+  return rest;
+}
+
 export async function listDrawingsForProject(projectId: string) {
   return prisma.takeoffDrawing.findMany({
     where: { projectId },
@@ -45,7 +52,7 @@ export async function deleteDrawing(id: string, userId: string) {
 }
 
 export async function createPart(data: TakeoffPartInputData, userId: string) {
-  const computed = computeTakeoffPart(data);
+  const computed = persistedComputedFields(data);
   const part = await prisma.takeoffPart.create({
     data: {
       drawingId: data.drawingId,
@@ -59,6 +66,7 @@ export async function createPart(data: TakeoffPartInputData, userId: string) {
       thicknessMm: data.thicknessMm,
       paintSides: data.paintSides,
       areaMode: data.areaMode,
+      customFormula: data.areaMode === "CUSTOM" ? data.customFormula ?? null : null,
       ...computed,
     },
   });
@@ -78,7 +86,7 @@ export async function createPart(data: TakeoffPartInputData, userId: string) {
 export async function createPartsBulk(drawingId: string, rows: Omit<TakeoffPartInputData, "drawingId">[], userId: string) {
   const created = [];
   for (const row of rows) {
-    const computed = computeTakeoffPart(row);
+    const computed = persistedComputedFields(row);
     const part = await prisma.takeoffPart.create({
       data: {
         drawingId,
@@ -92,6 +100,7 @@ export async function createPartsBulk(drawingId: string, rows: Omit<TakeoffPartI
         thicknessMm: row.thicknessMm,
         paintSides: row.paintSides,
         areaMode: row.areaMode,
+        customFormula: row.areaMode === "CUSTOM" ? row.customFormula ?? null : null,
         ...computed,
       },
     });
@@ -108,7 +117,7 @@ export async function createPartsBulk(drawingId: string, rows: Omit<TakeoffPartI
 }
 
 export async function updatePart(id: string, data: TakeoffPartInputData, userId: string) {
-  const computed = computeTakeoffPart(data);
+  const computed = persistedComputedFields(data);
   const part = await prisma.takeoffPart.update({
     where: { id },
     data: {
@@ -122,6 +131,7 @@ export async function updatePart(id: string, data: TakeoffPartInputData, userId:
       thicknessMm: data.thicknessMm,
       paintSides: data.paintSides,
       areaMode: data.areaMode,
+      customFormula: data.areaMode === "CUSTOM" ? data.customFormula ?? null : null,
       ...computed,
     },
   });

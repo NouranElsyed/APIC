@@ -9,7 +9,8 @@ export interface TakeoffPartRow {
   qty: number;
   thicknessMm: number;
   paintSides: number;
-  areaMode: "ADD" | "SUBTRACT";
+  areaMode: "ADD" | "SUBTRACT" | "CUSTOM";
+  customFormula: string | null;
   extUnitArea: number;
   intUnitArea: number;
   totalUnitArea: number;
@@ -17,6 +18,9 @@ export interface TakeoffPartRow {
   volume: number;
   weightKg: number;
   paintAreaSqm: number;
+  buyWeightKg: number | null;
+  scrapKg: number | null;
+  scrapPct: number | null;
 }
 
 export interface TakeoffDrawingRow {

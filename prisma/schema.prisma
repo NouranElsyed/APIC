@@ -192,17 +192,33 @@ model TakeoffPart {
   // surfaces (e.g. duct inner + outer wall) — the original sheet's
   // convention. SUBTRACT = a flat plate with a hole/cut-out, where the
   // internal dims are material removed from the external footprint.
+  // CUSTOM = totalUnitArea is produced by evaluating `customFormula`
+  // instead, for rows whose geometry doesn't fit ADD/SUBTRACT (e.g. a
+  // circumference-based ring: PI()*(4.657+0.22*2)).
   areaMode TakeoffAreaMode @default(ADD)
+
+  // Only used when areaMode = CUSTOM. A small arithmetic expression
+  // evaluated with extW, extL, intW, intL, qty, thk as variables (plus
+  // PI() and sqrt()/abs() functions) to produce totalUnitArea directly.
+  customFormula String?
 
   // Stored (computed) results — recalculated server-side on every write
   // so they always match the formulas above without relying on the client.
   extUnitArea   Float // m2
   intUnitArea   Float // m2
-  totalUnitArea Float // m2 (ext + int, two sides)
+  totalUnitArea Float // m2 (ext + int, two sides — or the custom formula's result)
   totalArea     Float // m2 (totalUnitArea * qty) — used for weight, always both faces
   volume        Float // (totalArea / 2) * thicknessMm
   weightKg      Float // volume * 7.85 — unaffected by paintSides
   paintAreaSqm  Float @default(0) // (totalArea / 2) * paintSides — for painting/coating scope only
+
+  // Scrap tracking: buyWeightKg is the actual purchased/allocated stock
+  // weight for this row (manual entry — a plate or bar is bought in a
+  // fixed stock size, not exactly the net weight used). scrapKg/scrapPct
+  // are derived and only present once buyWeightKg is set.
+  buyWeightKg Float? // kg — weight of stock material purchased for this row
+  scrapKg     Float? // buyWeightKg - weightKg
+  scrapPct    Float? // scrapKg / buyWeightKg
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -216,6 +232,7 @@ model TakeoffPart {
 enum TakeoffAreaMode {
   ADD
   SUBTRACT
+  CUSTOM
 }
 
 model Document {
