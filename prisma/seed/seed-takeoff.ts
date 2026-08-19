@@ -96,20 +96,29 @@ async function main() {
       const isPlainInt = /^\d+$/.test(p.itemLabel);
       const description = isPlainInt ? p.description : `${p.description} [item ${p.itemLabel}]`;
 
+      // The sheet's own ext/int rectangle dims don't map cleanly onto the
+      // single-area-formula PartType model below — kept as reference-only
+      // fields inside `geometry`. The Excel sheet's own computed totals
+      // (totalArea/volume/weightKg) are written directly rather than
+      // recomputed, so every number in the DB matches the spreadsheet
+      // exactly (see file header).
       await prisma.takeoffPart.create({
         data: {
           drawingId: drawing.id,
           itemNo: isPlainInt ? parseInt(p.itemLabel, 10) : itemNo,
           description,
-          extWidth: p.extWidth,
-          extLength: p.extLength,
-          intWidth: p.intWidth,
-          intLength: p.intLength,
+          partType: "PLATE",
+          side: "EXTERNAL",
           qty: p.qty,
           thicknessMm: p.thicknessMm,
-          extUnitArea: p.extUnitArea ?? 0,
-          intUnitArea: p.intUnitArea ?? 0,
-          totalUnitArea: p.totalUnitArea ?? 0,
+          geometry: {
+            width: p.extWidth ?? 0,
+            length: p.extLength ?? 0,
+            intWidth: p.intWidth ?? 0,
+            intLength: p.intLength ?? 0,
+            _source: "excel-sheet-reference",
+          },
+          areaFormula: null,
           totalArea: p.totalArea ?? 0,
           volume: p.volume ?? 0,
           weightKg: p.weightKg,
@@ -117,9 +126,6 @@ async function main() {
           // faces), which for paintSides=2 means paintAreaSqm == totalArea.
           paintSides: 2,
           paintAreaSqm: p.totalArea ?? 0,
-          // All rows in this sheet are duct wall segments (ext + int as two
-          // separate surfaces) — the original ADD convention.
-          areaMode: "ADD",
         },
       });
       itemNo++;
