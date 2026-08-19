@@ -1,5 +1,7 @@
 // Mirrors "Riser Duct Fabrication Drg" sheet formulas, plus an alternate
-// area mode for parts that aren't ducts (plate with a cut-out hole).
+// area mode for parts that aren't ducts (plate with a cut-out hole), plus
+// a per-row custom-formula override, plus scrap tracking against a bought
+// stock weight (mirrors the "pricing" sheet's Used/Buy/Scrap columns).
 //
 // areaMode "ADD" (default, matches the original Excel sheet — duct walls,
 // where external and internal are two SEPARATE surfaces to add together):
@@ -15,16 +17,31 @@
 //                                                     pipeline below stays
 //                                                     identical between modes)
 //
+// areaMode "CUSTOM" (a row whose geometry doesn't fit ADD/SUBTRACT — e.g. a
+// circumference-based ring like the sheet's `=PI()*(4.657+0.22*2)`):
+//   totalUnitArea = evalFormula(customFormula, { extW, extL, intW, intL, qty, thk })
+//   (extUnitArea/intUnitArea are just reported as the raw ext/int rectangle
+//   areas for reference; they don't feed the pipeline in this mode)
+//
 // Either way, from totalUnitArea on the pipeline is the same:
-//   totalArea  = totalUnitArea * qty
+//   totalArea  = totalUnitArea * qty          (CUSTOM formulas should NOT
+//                                               already multiply by qty)
 //   volume     = (totalArea / 2) * thicknessMm   (halved back to single-face area)
 //   weightKg   = volume * STEEL_DENSITY
 //
 // Steel density constant: 7.85 kg per (m2 * mm) — the standard plate-weight
 // factor (kg/m2 per mm of thickness), taken directly from the source sheet.
+//
+// Scrap: buyWeightKg is a manual entry — the actual stock weight bought/
+// allocated for this row (plates and bars come in fixed stock sizes, so
+// buy weight is normally >= used weight). scrapKg/scrapPct are only
+// present once buyWeightKg is set; both are null otherwise (never 0, so
+// "no data entered yet" is distinguishable from "zero scrap").
+import { evalFormula, FormulaError } from "./formula";
+
 export const STEEL_DENSITY_KG_PER_M2_MM = 7.85;
 
-export type TakeoffAreaMode = "ADD" | "SUBTRACT";
+export type TakeoffAreaMode = "ADD" | "SUBTRACT" | "CUSTOM";
 
 export interface TakeoffPartInput {
   extWidth?: number | null;
@@ -35,6 +52,8 @@ export interface TakeoffPartInput {
   thicknessMm: number;
   paintSides?: number | null; // 1 or 2, defaults to 2 (both faces)
   areaMode?: TakeoffAreaMode | null; // defaults to ADD
+  customFormula?: string | null; // used when areaMode = CUSTOM
+  buyWeightKg?: number | null; // manual: purchased/allocated stock weight
 }
 
 export interface TakeoffPartComputed {
@@ -45,6 +64,10 @@ export interface TakeoffPartComputed {
   volume: number;
   weightKg: number;
   paintAreaSqm: number;
+  buyWeightKg: number | null;
+  scrapKg: number | null;
+  scrapPct: number | null;
+  formulaError: string | null; // set when areaMode=CUSTOM and the formula failed to evaluate
 }
 
 function n(v: number | null | undefined): number {
@@ -59,7 +82,9 @@ function rawArea(width?: number | null, length?: number | null) {
 }
 
 export function resolveAreaMode(mode?: TakeoffAreaMode | null): TakeoffAreaMode {
-  return mode === "SUBTRACT" ? "SUBTRACT" : "ADD";
+  if (mode === "SUBTRACT") return "SUBTRACT";
+  if (mode === "CUSTOM") return "CUSTOM";
+  return "ADD";
 }
 
 export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed {
@@ -70,6 +95,7 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
   let extUnitArea: number;
   let intUnitArea: number;
   let totalUnitArea: number;
+  let formulaError: string | null = null;
 
   if (mode === "SUBTRACT") {
     // Outer footprint minus the cut-out — a single net face, not two
@@ -78,6 +104,20 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
     intUnitArea = rawArea(input.intWidth, input.intLength);
     const netFaceArea = Math.max(extUnitArea - intUnitArea, 0);
     totalUnitArea = netFaceArea * 2;
+  } else if (mode === "CUSTOM") {
+    extUnitArea = rawArea(input.extWidth, input.extLength);
+    intUnitArea = rawArea(input.intWidth, input.intLength);
+    const vars = {
+      extW: n(input.extWidth), extL: n(input.extLength),
+      intW: n(input.intWidth), intL: n(input.intLength),
+      qty, thk: thicknessMm,
+    };
+    try {
+      totalUnitArea = input.customFormula ? evalFormula(input.customFormula, vars) : 0;
+    } catch (err) {
+      totalUnitArea = 0;
+      formulaError = err instanceof FormulaError ? err.message : "Invalid formula";
+    }
   } else {
     extUnitArea = rawArea(input.extWidth, input.extLength) * 2;
     intUnitArea = rawArea(input.intWidth, input.intLength) * 2;
@@ -95,7 +135,16 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
   const paintSides = input.paintSides === 1 ? 1 : 2;
   const paintAreaSqm = (totalArea / 2) * paintSides;
 
-  return { extUnitArea, intUnitArea, totalUnitArea, totalArea, volume, weightKg, paintAreaSqm };
+  const buyWeightKg = typeof input.buyWeightKg === "number" && Number.isFinite(input.buyWeightKg)
+    ? input.buyWeightKg
+    : null;
+  const scrapKg = buyWeightKg !== null ? buyWeightKg - weightKg : null;
+  const scrapPct = buyWeightKg !== null && buyWeightKg > 0 ? (scrapKg as number) / buyWeightKg : null;
+
+  return {
+    extUnitArea, intUnitArea, totalUnitArea, totalArea, volume, weightKg, paintAreaSqm,
+    buyWeightKg, scrapKg, scrapPct, formulaError,
+  };
 }
 
 // Human-readable, numbers-substituted breakdown of exactly how a row's
@@ -120,7 +169,13 @@ export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanat
 
   const lines: TakeoffPartExplanation["lines"] = [];
 
-  if (mode === "SUBTRACT") {
+  if (mode === "CUSTOM") {
+    lines.push({
+      label: "Custom formula",
+      formula: input.customFormula?.trim() || "(empty)",
+      result: c.formulaError ? `Error: ${c.formulaError}` : `${fmtNum(c.totalUnitArea)} m²`,
+    });
+  } else if (mode === "SUBTRACT") {
     lines.push({
       label: "Ext. area (outer footprint)",
       formula: `${fmtNum(extW)} × ${fmtNum(extL)}`,
@@ -175,6 +230,14 @@ export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanat
     result: `${fmtNum(c.paintAreaSqm)} m²`,
   });
 
+  if (c.buyWeightKg !== null) {
+    lines.push({
+      label: "Scrap",
+      formula: `${fmtNum(c.buyWeightKg, 1)} − ${fmtNum(c.weightKg, 1)}`,
+      result: `${fmtNum(c.scrapKg ?? 0, 1)} kg${c.scrapPct !== null ? ` (${fmtNum(c.scrapPct * 100, 1)}%)` : ""}`,
+    });
+  }
+
   return { mode, lines };
 }
 
@@ -184,4 +247,10 @@ export function sumDrawingWeight(parts: { weightKg: number | null | undefined }[
 
 export function sumDrawingArea(parts: { totalArea: number | null | undefined }[]) {
   return parts.reduce((sum, p) => sum + n(p.totalArea), 0);
+}
+
+export function sumDrawingScrap(parts: { scrapKg: number | null | undefined }[]) {
+  const withScrap = parts.filter((p) => typeof p.scrapKg === "number" && Number.isFinite(p.scrapKg));
+  if (withScrap.length === 0) return null;
+  return withScrap.reduce((sum, p) => sum + n(p.scrapKg), 0);
 }
