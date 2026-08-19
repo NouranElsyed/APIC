@@ -22,7 +22,9 @@ interface GridRowState {
   qty: string;
   thicknessMm: string;
   paintSides: "1" | "2";
-  areaMode: "ADD" | "SUBTRACT";
+  areaMode: "ADD" | "SUBTRACT" | "CUSTOM";
+  customFormula: string;
+  buyWeightKg: string;
 }
 
 let blankSeq = 0;
@@ -41,6 +43,8 @@ function blankRow(itemNo: number): GridRowState {
     thicknessMm: "",
     paintSides: "2",
     areaMode: "ADD",
+    customFormula: "",
+    buyWeightKg: "",
   };
 }
 
@@ -57,7 +61,9 @@ function fromPart(part: TakeoffPartRow): GridRowState {
     qty: String(part.qty),
     thicknessMm: String(part.thicknessMm),
     paintSides: part.paintSides === 1 ? "1" : "2",
-    areaMode: part.areaMode === "SUBTRACT" ? "SUBTRACT" : "ADD",
+    areaMode: part.areaMode === "SUBTRACT" ? "SUBTRACT" : part.areaMode === "CUSTOM" ? "CUSTOM" : "ADD",
+    customFormula: part.customFormula ?? "",
+    buyWeightKg: part.buyWeightKg?.toString() ?? "",
   };
 }
 
@@ -71,6 +77,8 @@ function toCalcInput(row: GridRowState) {
     thicknessMm: Number(row.thicknessMm) || 0,
     paintSides: Number(row.paintSides),
     areaMode: row.areaMode,
+    customFormula: row.customFormula || null,
+    buyWeightKg: row.buyWeightKg ? Number(row.buyWeightKg) : null,
   };
 }
 
@@ -79,7 +87,10 @@ function toComputed(row: GridRowState) {
 }
 
 function isRowUsable(row: GridRowState) {
-  return row.description.trim() !== "" && Number(row.qty) > 0 && Number(row.thicknessMm) > 0;
+  const basics = row.description.trim() !== "" && Number(row.qty) > 0 && Number(row.thicknessMm) > 0;
+  if (!basics) return false;
+  if (row.areaMode === "CUSTOM") return row.customFormula.trim() !== "";
+  return true;
 }
 
 function toPayload(row: GridRowState) {
@@ -94,6 +105,8 @@ function toPayload(row: GridRowState) {
     thicknessMm: Number(row.thicknessMm) || 0,
     paintSides: (Number(row.paintSides) === 1 ? 1 : 2) as 1 | 2,
     areaMode: row.areaMode,
+    customFormula: row.areaMode === "CUSTOM" ? row.customFormula.trim() : null,
+    buyWeightKg: row.buyWeightKg ? Number(row.buyWeightKg) : null,
   };
 }
 
@@ -207,6 +220,8 @@ export function PartsGrid({
   const totalArea = usableSaved.reduce((s, r) => s + n(toComputed(r).totalArea), 0);
   const totalWeight = usableSaved.reduce((s, r) => s + n(toComputed(r).weightKg), 0);
   const totalPaintArea = usableSaved.reduce((s, r) => s + n(toComputed(r).paintAreaSqm), 0);
+  const scrapRows = usableSaved.filter((r) => r.buyWeightKg.trim() !== "");
+  const totalScrap = scrapRows.length > 0 ? scrapRows.reduce((s, r) => s + n(toComputed(r).scrapKg), 0) : null;
 
   return (
     <div>
@@ -227,6 +242,8 @@ export function PartsGrid({
               <th className="w-24 border-b border-l border-border px-2 py-2 text-right">T. Area (m²)</th>
               <th className="w-24 border-b border-border px-2 py-2 text-right">Paint Area (m²)</th>
               <th className="w-24 border-b border-border px-2 py-2 text-right">Weight (kg)</th>
+              <th className="w-24 border-b border-l border-border px-2 py-2 text-right" title="Purchased/allocated stock weight for this row — optional">Buy Wt (kg)</th>
+              <th className="w-24 border-b border-border px-2 py-2 text-right" title="Buy weight − Weight">Scrap (kg)</th>
               <th className="w-9 border-b border-border" />
               {(canCreate || canDelete) && <th className="w-16 border-b border-border" />}
             </tr>
@@ -273,6 +290,7 @@ export function PartsGrid({
                       >
                         <option value="ADD">Ext + Int</option>
                         <option value="SUBTRACT">Ext − Int</option>
+                        <option value="CUSTOM">Custom formula</option>
                       </select>
                     </td>
                     <td className="border-l border-border px-1 py-0.5">
@@ -300,6 +318,21 @@ export function PartsGrid({
                     </td>
                     <td className={`px-2 py-0.5 text-right font-medium tabular-nums ${usable ? "text-primary" : "text-muted-foreground/50"}`}>
                       {usable ? computed.weightKg.toFixed(1) : "—"}
+                    </td>
+                    <td className="border-l border-border px-1 py-0.5">
+                      <Input
+                        className={`${cellInputClass} text-right`}
+                        type="number" step="any" placeholder="—"
+                        value={row.buyWeightKg}
+                        disabled={!canCreate}
+                        title="Purchased/allocated stock weight for this row — leave blank if unknown"
+                        onChange={(e) => onField(row.id, "buyWeightKg", e.target.value)}
+                      />
+                    </td>
+                    <td className={`px-2 py-0.5 text-right tabular-nums ${computed.scrapKg !== null ? (computed.scrapKg < 0 ? "text-destructive" : "text-amber-600") : "text-muted-foreground/50"}`}>
+                      {computed.scrapKg !== null
+                        ? `${computed.scrapKg.toFixed(1)}${computed.scrapPct !== null ? ` (${(computed.scrapPct * 100).toFixed(0)}%)` : ""}`
+                        : "—"}
                     </td>
                     <td className="px-1 py-0.5 text-center">
                       <Button
@@ -337,9 +370,33 @@ export function PartsGrid({
                       </td>
                     )}
                   </tr>
+                  {row.areaMode === "CUSTOM" && (
+                    <tr className="border-b border-border bg-amber-50 dark:bg-amber-950/20">
+                      <td colSpan={16} className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="shrink-0 text-xs font-medium text-muted-foreground">
+                            Formula for T. Area (unit, before × qty):
+                          </span>
+                          <Input
+                            className="h-7 max-w-xl font-mono text-xs"
+                            value={row.customFormula}
+                            disabled={!canCreate}
+                            placeholder="e.g. PI()*(4.657+0.22*2)"
+                            onChange={(e) => onField(row.id, "customFormula", e.target.value)}
+                          />
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            vars: extW, extL, intW, intL, qty, thk — functions: PI(), sqrt(), abs()
+                          </span>
+                          {computed.formulaError && (
+                            <span className="shrink-0 text-xs font-medium text-destructive">{computed.formulaError}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {isExpanded && explanation && (
                     <tr className="border-b border-border bg-primary/5">
-                      <td colSpan={14} className="px-4 py-3">
+                      <td colSpan={16} className="px-4 py-3">
                         <div className="flex flex-wrap gap-x-8 gap-y-1.5 text-xs">
                           {explanation.lines.map((line) => (
                             <div key={line.label} className="min-w-[180px]">
@@ -370,6 +427,9 @@ export function PartsGrid({
           <span>Total Area: <span className="font-semibold text-foreground">{totalArea.toFixed(3)} m²</span></span>
           <span>Paint Area: <span className="font-semibold text-foreground">{totalPaintArea.toFixed(3)} m²</span></span>
           <span>Total Weight: <span className="font-semibold text-primary">{totalWeight.toFixed(1)} kg</span></span>
+          {totalScrap !== null && (
+            <span>Scrap: <span className="font-semibold text-amber-600">{totalScrap.toFixed(1)} kg</span></span>
+          )}
         </div>
       </div>
     </div>
