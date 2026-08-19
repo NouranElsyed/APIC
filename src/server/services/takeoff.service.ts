@@ -79,7 +79,6 @@ export async function createPart(data: TakeoffPartInputData, userId: string) {
       geometry: data.geometry,
       areaFormula: resolvedAreaFormula,
       paintSides: data.paintSides,
-      buyWeightKg: data.buyWeightKg ?? null,
       ...computed,
     },
   });
@@ -107,7 +106,6 @@ export async function updatePart(id: string, data: TakeoffPartInputData, userId:
       geometry: data.geometry,
       areaFormula: resolvedAreaFormula,
       paintSides: data.paintSides,
-      buyWeightKg: data.buyWeightKg ?? null,
       ...computed,
     },
   });
