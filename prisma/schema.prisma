@@ -173,49 +173,55 @@ model TakeoffDrawing {
 model TakeoffPart {
   id          String  @id @default(cuid())
   itemNo      Int
-  description String // e.g. "PL 20 mm", "FB 80 x 10"
+  description String // e.g. "PL 20 mm", "IPE 120", free text label
 
-  extWidth  Float? // m
-  extLength Float? // m
-  intWidth  Float? // m
-  intLength Float? // m
+  // What kind of item this is — drives which fields are relevant and what
+  // the default area/weight formula looks like:
+  //   PLATE      — flat sheet: width x length x thickness, optional cut-out
+  //   HOT_ROLLED — rolled section (IPE/FB/angle/etc): weight is per-metre
+  //                of the profile, not area x thickness x density
+  //   CONE       — frustum shell: D1, D2, height, thickness
+  //   PIPE       — cylindrical shell: OD, wall thickness, length
+  partType PartType
+
+  // Internal vs external scope item (e.g. duct inner wall vs outer wall).
+  // Purely descriptive/filterable — does not affect the calculation.
+  side PartSide @default(EXTERNAL)
 
   qty         Int
-  thicknessMm Float
+  thicknessMm Float? // required for PLATE/CONE/PIPE, irrelevant for HOT_ROLLED
+
+  // Raw, type-specific inputs the user typed in the "Add Item" popup —
+  // kept as JSON so each partType can have its own shape without a schema
+  // migration per field. Populated by the client-side default-formula
+  // builder in src/server/calc/takeoff.ts (`buildDefaultGeometryFormula`).
+  //   PLATE:      { width, length, cutoffFormula? }
+  //   CONE:       { d1, d2, height }
+  //   PIPE:       { od, length }
+  //   HOT_ROLLED: { profile, length, weightPerMeter, paintAreaPerMeter? }
+  geometry Json
+
+  // The area formula actually used to compute totalArea for sheet-based
+  // types (PLATE/CONE/PIPE) — pre-filled from `geometry` with a sensible
+  // default (e.g. "width*length" for a plate) but always visible and
+  // editable by the user, Excel-style. Not used for HOT_ROLLED, whose
+  // weight comes directly from weightPerMeter x length.
+  areaFormula String?
 
   // Painting area is independent of the weight calculation: same geometry,
-  // but the user chooses whether painting covers 1 face or 2 faces of the
-  // part. Never affects volume/weightKg below.
+  // but the user chooses whether painting covers 1 face or 2 faces.
   paintSides Int @default(2) // 1 or 2
 
-  // How ext/int dimensions combine into an area. ADD = two separate
-  // surfaces (e.g. duct inner + outer wall) — the original sheet's
-  // convention. SUBTRACT = a flat plate with a hole/cut-out, where the
-  // internal dims are material removed from the external footprint.
-  // CUSTOM = totalUnitArea is produced by evaluating `customFormula`
-  // instead, for rows whose geometry doesn't fit ADD/SUBTRACT (e.g. a
-  // circumference-based ring: PI()*(4.657+0.22*2)).
-  areaMode TakeoffAreaMode @default(ADD)
-
-  // Only used when areaMode = CUSTOM. A small arithmetic expression
-  // evaluated with extW, extL, intW, intL, qty, thk as variables (plus
-  // PI() and sqrt()/abs() functions) to produce totalUnitArea directly.
-  customFormula String?
-
   // Stored (computed) results — recalculated server-side on every write
-  // so they always match the formulas above without relying on the client.
-  extUnitArea   Float // m2
-  intUnitArea   Float // m2
-  totalUnitArea Float // m2 (ext + int, two sides — or the custom formula's result)
-  totalArea     Float // m2 (totalUnitArea * qty) — used for weight, always both faces
-  volume        Float // (totalArea / 2) * thicknessMm
-  weightKg      Float // volume * 7.85 — unaffected by paintSides
-  paintAreaSqm  Float @default(0) // (totalArea / 2) * paintSides — for painting/coating scope only
+  // so they always match geometry/areaFormula without relying on the client.
+  totalArea    Float // m2 — single-face net area (already includes any cut-out)
+  volume       Float // totalArea * thicknessMm (sheet-based only, else 0)
+  weightKg     Float
+  paintAreaSqm Float @default(0) // totalArea * paintSides (sheet-based) — for HOT_ROLLED, paintAreaPerMeter * length * qty
 
   // Scrap tracking: buyWeightKg is the actual purchased/allocated stock
-  // weight for this row (manual entry — a plate or bar is bought in a
-  // fixed stock size, not exactly the net weight used). scrapKg/scrapPct
-  // are derived and only present once buyWeightKg is set.
+  // weight for this row (manual entry). scrapKg/scrapPct are derived and
+  // only present once buyWeightKg is set.
   buyWeightKg Float? // kg — weight of stock material purchased for this row
   scrapKg     Float? // buyWeightKg - weightKg
   scrapPct    Float? // scrapKg / buyWeightKg
@@ -229,10 +235,16 @@ model TakeoffPart {
   @@map("takeoff_parts")
 }
 
-enum TakeoffAreaMode {
-  ADD
-  SUBTRACT
-  CUSTOM
+enum PartType {
+  PLATE
+  HOT_ROLLED
+  CONE
+  PIPE
+}
+
+enum PartSide {
+  INTERNAL
+  EXTERNAL
 }
 
 model Document {
