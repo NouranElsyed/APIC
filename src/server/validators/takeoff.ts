@@ -8,41 +8,68 @@ export const takeoffDrawingSchema = z.object({
 });
 export type TakeoffDrawingInput = z.infer<typeof takeoffDrawingSchema>;
 
-const requireFormulaWhenCustom = <T extends { areaMode: string; customFormula?: string | null }>(
-  schema: z.ZodType<T>
-) =>
-  schema.refine((data) => data.areaMode !== "CUSTOM" || !!data.customFormula?.trim(), {
-    message: "Custom formula is required when Area Mode is Custom",
-    path: ["customFormula"],
-  });
-
-const takeoffPartBaseSchema = z.object({
+const commonFields = {
   drawingId: z.string().min(1),
   itemNo: z.number().int().nonnegative(),
   description: z.string().min(1, "Description is required"),
-  extWidth: z.number().nonnegative().optional().nullable(),
-  extLength: z.number().nonnegative().optional().nullable(),
-  intWidth: z.number().nonnegative().optional().nullable(),
-  intLength: z.number().nonnegative().optional().nullable(),
+  side: z.enum(["INTERNAL", "EXTERNAL"]).default("EXTERNAL"),
   qty: z.number().int().positive(),
-  thicknessMm: z.number().positive(),
   paintSides: z.union([z.literal(1), z.literal(2)]).default(2),
-  areaMode: z.enum(["ADD", "SUBTRACT", "CUSTOM"]).default("ADD"),
-  customFormula: z.string().max(300).optional().nullable(),
   buyWeightKg: z.number().nonnegative().optional().nullable(),
+};
+
+const plateSchema = z.object({
+  ...commonFields,
+  partType: z.literal("PLATE"),
+  thicknessMm: z.number().positive("Thickness is required"),
+  geometry: z.object({
+    width: z.number().positive("Width is required"),
+    length: z.number().positive("Length is required"),
+    cutoffFormula: z.string().max(200).optional().nullable(),
+  }),
+  areaFormula: z.string().max(300).optional().nullable(),
 });
 
-export const takeoffPartSchema = requireFormulaWhenCustom(takeoffPartBaseSchema);
+const coneSchema = z.object({
+  ...commonFields,
+  partType: z.literal("CONE"),
+  thicknessMm: z.number().positive("Thickness is required"),
+  geometry: z.object({
+    d1: z.number().positive("D1 is required"),
+    d2: z.number().positive("D2 is required"),
+    height: z.number().positive("Height is required"),
+  }),
+  areaFormula: z.string().max(300).optional().nullable(),
+});
+
+const pipeSchema = z.object({
+  ...commonFields,
+  partType: z.literal("PIPE"),
+  thicknessMm: z.number().positive("Thickness is required"),
+  geometry: z.object({
+    od: z.number().positive("OD is required"),
+    length: z.number().positive("Length is required"),
+  }),
+  areaFormula: z.string().max(300).optional().nullable(),
+});
+
+const hotRolledSchema = z.object({
+  ...commonFields,
+  partType: z.literal("HOT_ROLLED"),
+  thicknessMm: z.number().positive().optional().nullable(),
+  geometry: z.object({
+    profile: z.string().min(1, "Profile is required"),
+    length: z.number().positive("Length is required"),
+    weightPerMeter: z.number().positive("Weight per metre is required"),
+    paintAreaPerMeter: z.number().nonnegative().optional().nullable(),
+  }),
+  areaFormula: z.string().optional().nullable(),
+});
+
+export const takeoffPartSchema = z.discriminatedUnion("partType", [
+  plateSchema,
+  coneSchema,
+  pipeSchema,
+  hotRolledSchema,
+]);
 export type TakeoffPartInputData = z.infer<typeof takeoffPartSchema>;
-
-// Grid entry: same row shape, minus drawingId (supplied once for the whole batch).
-export const takeoffPartGridRowSchema = requireFormulaWhenCustom(
-  takeoffPartBaseSchema.omit({ drawingId: true })
-);
-export type TakeoffPartGridRow = z.infer<typeof takeoffPartGridRowSchema>;
-
-export const takeoffPartBulkSchema = z.object({
-  drawingId: z.string().min(1),
-  rows: z.array(takeoffPartGridRowSchema).min(1, "Add at least one row"),
-});
-export type TakeoffPartBulkInput = z.infer<typeof takeoffPartBulkSchema>;
