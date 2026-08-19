@@ -1,125 +1,42 @@
 "use client";
 import * as React from "react";
-import { Check, Trash2, Plus, Sigma, X } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
-import { computeTakeoffPart, explainTakeoffPart } from "@/server/calc/takeoff";
-import type { TakeoffPartRow } from "./types";
+import { explainTakeoffPart } from "@/server/calc/takeoff";
+import { PartForm } from "./part-form";
+import type { TakeoffPartRow, PartType } from "./types";
 
-// A row is either an existing saved part (id starts with a real cuid) or a
-// fresh blank buffer row (id starts with "new:"). Both are edited the same
-// way; only the save action differs (PATCH vs POST).
-interface GridRowState {
-  id: string;
-  isNew: boolean;
-  itemNo: string;
-  description: string;
-  extWidth: string;
-  extLength: string;
-  intWidth: string;
-  intLength: string;
-  qty: string;
-  thicknessMm: string;
-  paintSides: "1" | "2";
-  areaMode: "ADD" | "SUBTRACT" | "CUSTOM";
-  customFormula: string;
-  buyWeightKg: string;
-}
-
-let blankSeq = 0;
-function blankRow(itemNo: number): GridRowState {
-  blankSeq += 1;
-  return {
-    id: `new:${blankSeq}`,
-    isNew: true,
-    itemNo: String(itemNo),
-    description: "",
-    extWidth: "",
-    extLength: "",
-    intWidth: "",
-    intLength: "",
-    qty: "1",
-    thicknessMm: "",
-    paintSides: "2",
-    areaMode: "ADD",
-    customFormula: "",
-    buyWeightKg: "",
-  };
-}
-
-function fromPart(part: TakeoffPartRow): GridRowState {
-  return {
-    id: part.id,
-    isNew: false,
-    itemNo: String(part.itemNo),
-    description: part.description,
-    extWidth: part.extWidth?.toString() ?? "",
-    extLength: part.extLength?.toString() ?? "",
-    intWidth: part.intWidth?.toString() ?? "",
-    intLength: part.intLength?.toString() ?? "",
-    qty: String(part.qty),
-    thicknessMm: String(part.thicknessMm),
-    paintSides: part.paintSides === 1 ? "1" : "2",
-    areaMode: part.areaMode === "SUBTRACT" ? "SUBTRACT" : part.areaMode === "CUSTOM" ? "CUSTOM" : "ADD",
-    customFormula: part.customFormula ?? "",
-    buyWeightKg: part.buyWeightKg?.toString() ?? "",
-  };
-}
-
-function toCalcInput(row: GridRowState) {
-  return {
-    extWidth: row.extWidth ? Number(row.extWidth) : null,
-    extLength: row.extLength ? Number(row.extLength) : null,
-    intWidth: row.intWidth ? Number(row.intWidth) : null,
-    intLength: row.intLength ? Number(row.intLength) : null,
-    qty: Number(row.qty) || 0,
-    thicknessMm: Number(row.thicknessMm) || 0,
-    paintSides: Number(row.paintSides),
-    areaMode: row.areaMode,
-    customFormula: row.customFormula || null,
-    buyWeightKg: row.buyWeightKg ? Number(row.buyWeightKg) : null,
-  };
-}
-
-function toComputed(row: GridRowState) {
-  return computeTakeoffPart(toCalcInput(row));
-}
-
-function isRowUsable(row: GridRowState) {
-  const basics = row.description.trim() !== "" && Number(row.qty) > 0 && Number(row.thicknessMm) > 0;
-  if (!basics) return false;
-  if (row.areaMode === "CUSTOM") return row.customFormula.trim() !== "";
-  return true;
-}
-
-function toPayload(row: GridRowState) {
-  return {
-    itemNo: Number(row.itemNo) || 0,
-    description: row.description,
-    extWidth: row.extWidth ? Number(row.extWidth) : null,
-    extLength: row.extLength ? Number(row.extLength) : null,
-    intWidth: row.intWidth ? Number(row.intWidth) : null,
-    intLength: row.intLength ? Number(row.intLength) : null,
-    qty: Number(row.qty) || 0,
-    thicknessMm: Number(row.thicknessMm) || 0,
-    paintSides: (Number(row.paintSides) === 1 ? 1 : 2) as 1 | 2,
-    areaMode: row.areaMode,
-    customFormula: row.areaMode === "CUSTOM" ? row.customFormula.trim() : null,
-    buyWeightKg: row.buyWeightKg ? Number(row.buyWeightKg) : null,
-  };
-}
-
-// Defensive: legacy rows saved before a field existed (e.g. before a
-// migration backfilled it) can come back from the API as null — never let
-// that turn a running total into NaN.
+// Defensive: legacy/partial rows can come back from the API as null —
+// never let that turn a running total into NaN.
 function n(v: number | null | undefined): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
-const BUFFER_ROWS = 3;
-const cellInputClass =
-  "h-8 w-full border-0 bg-transparent px-2 text-sm shadow-none focus-visible:ring-1 focus-visible:ring-primary";
+const PART_TYPE_LABEL: Record<PartType, string> = {
+  PLATE: "Plate",
+  HOT_ROLLED: "Hot Rolled",
+  CONE: "Cone",
+  PIPE: "Pipe",
+};
+
+function geometrySummary(part: TakeoffPartRow): string {
+  const g = (part.geometry ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" ? v : Number(v));
+  switch (part.partType) {
+    case "PLATE":
+      return `${num(g.width) || "—"} × ${num(g.length) || "—"} m${g.cutoffFormula ? ", cut-out" : ""}`;
+    case "CONE":
+      return `D1 ${num(g.d1) || "—"} / D2 ${num(g.d2) || "—"} / H ${num(g.height) || "—"} m`;
+    case "PIPE":
+      return `OD ${num(g.od) || "—"} m × L ${num(g.length) || "—"} m`;
+    case "HOT_ROLLED":
+      return `${String(g.profile ?? "—")}, L ${num(g.length) || "—"} m`;
+    default:
+      return "—";
+  }
+}
 
 export function PartsGrid({
   drawingId, parts, canCreate, canDelete, onChanged,
@@ -130,273 +47,128 @@ export function PartsGrid({
   canDelete: boolean;
   onChanged: () => void;
 }) {
-  const [savedRows, setSavedRows] = React.useState<GridRowState[]>(() => parts.map(fromPart));
-  const [blanks, setBlanks] = React.useState<GridRowState[]>(() =>
-    Array.from({ length: BUFFER_ROWS }, (_, i) => blankRow(parts.length + i + 1))
-  );
-  const [dirty, setDirty] = React.useState<Set<string>>(new Set());
-  const [savingId, setSavingId] = React.useState<string | null>(null);
-  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [formOpen, setFormOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<TakeoffPartRow | null>(null);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = React.useState(false);
 
-  // Re-sync from the server whenever the parent's parts list changes
-  // (e.g. after a delete, or a save that came from this same component).
-  React.useEffect(() => {
-    setSavedRows(parts.map(fromPart));
-    setDirty(new Set());
-  }, [parts]);
+  const nextItemNo = parts.reduce((max, p) => Math.max(max, p.itemNo), 0) + 1;
 
-  function updateSaved(id: string, field: keyof GridRowState, value: string) {
-    setSavedRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
-    setDirty((prev) => new Set(prev).add(id));
+  function openAdd() {
+    setEditing(null);
+    setFormOpen(true);
   }
 
-  function updateBlank(id: string, field: keyof GridRowState, value: string) {
-    setBlanks((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  function openEdit(part: TakeoffPartRow) {
+    setEditing(part);
+    setFormOpen(true);
   }
 
-  async function saveExisting(row: GridRowState) {
-    if (!isRowUsable(row)) { toast.error("Description, qty and thickness are required"); return; }
-    setSavingId(row.id);
-    const res = await fetch(`/api/takeoff/parts/${row.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ drawingId, ...toPayload(row) }),
-    });
-    setSavingId(null);
-    if (!res.ok) { toast.error("Failed to save row"); return; }
-    setDirty((prev) => { const next = new Set(prev); next.delete(row.id); return next; });
-    toast.success("Saved");
-    onChanged();
-  }
-
-  async function saveNew(row: GridRowState) {
-    if (!isRowUsable(row)) { toast.error("Description, qty and thickness are required"); return; }
-    setSavingId(row.id);
-    const res = await fetch("/api/takeoff/parts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ drawingId, ...toPayload(row) }),
-    });
-    setSavingId(null);
-    if (!res.ok) { toast.error("Failed to add row"); return; }
-    // Replace this blank with a fresh one so the grid always has empty
-    // rows ready — no "Add Part" click needed.
-    setBlanks((prev) => {
-      const rest = prev.filter((r) => r.id !== row.id);
-      return [...rest, blankRow(savedRows.length + blanks.length + 1)];
-    });
-    toast.success("Part added");
-    onChanged();
-  }
-
-  async function handleDelete(id: string) {
-    setDeletingId(id);
-    const res = await fetch(`/api/takeoff/parts/${id}`, { method: "DELETE" });
+  async function handleDelete() {
+    if (!deletingId) return;
+    setDeleteLoading(true);
+    const res = await fetch(`/api/takeoff/parts/${deletingId}`, { method: "DELETE" });
+    setDeleteLoading(false);
+    if (!res.ok) { toast.error("Failed to delete item"); return; }
+    toast.success("Item deleted");
     setDeletingId(null);
-    if (!res.ok) { toast.error("Failed to delete part"); return; }
-    toast.success("Part deleted");
     onChanged();
   }
 
-  function removeBlank(id: string) {
-    setBlanks((prev) => {
-      const rest = prev.filter((r) => r.id !== id);
-      // keep at least BUFFER_ROWS blanks available
-      return rest.length >= BUFFER_ROWS ? rest : [...rest, blankRow(savedRows.length + rest.length + 1)];
-    });
-  }
-
-  function addBlankRow() {
-    setBlanks((prev) => [...prev, blankRow(savedRows.length + prev.length + 1)]);
-  }
-
-  const allRows: { row: GridRowState; kind: "saved" | "blank" }[] = [
-    ...savedRows.map((row) => ({ row, kind: "saved" as const })),
-    ...blanks.map((row) => ({ row, kind: "blank" as const })),
-  ];
-
-  const usableSaved = savedRows.filter(isRowUsable);
-  const totalArea = usableSaved.reduce((s, r) => s + n(toComputed(r).totalArea), 0);
-  const totalWeight = usableSaved.reduce((s, r) => s + n(toComputed(r).weightKg), 0);
-  const totalPaintArea = usableSaved.reduce((s, r) => s + n(toComputed(r).paintAreaSqm), 0);
-  const scrapRows = usableSaved.filter((r) => r.buyWeightKg.trim() !== "");
-  const totalScrap = scrapRows.length > 0 ? scrapRows.reduce((s, r) => s + n(toComputed(r).scrapKg), 0) : null;
+  const totalArea = parts.reduce((s, p) => s + n(p.totalArea), 0);
+  const totalPaintArea = parts.reduce((s, p) => s + n(p.paintAreaSqm), 0);
+  const totalWeight = parts.reduce((s, p) => s + n(p.weightKg), 0);
+  const scrapRows = parts.filter((p) => typeof p.scrapKg === "number");
+  const totalScrap = scrapRows.length > 0 ? scrapRows.reduce((s, p) => s + n(p.scrapKg), 0) : null;
 
   return (
     <div>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
-          <thead className="bg-muted/40 text-xs text-muted-foreground">
-            <tr>
-              <th className="w-14 border-b border-border px-2 py-2 text-left">Item</th>
-              <th className="min-w-[160px] border-b border-border px-2 py-2 text-left">Description</th>
-              <th className="w-20 border-b border-l border-border px-2 py-2 text-right">Ext W</th>
-              <th className="w-20 border-b border-border px-2 py-2 text-right">Ext L</th>
-              <th className="w-20 border-b border-l border-border px-2 py-2 text-right">Int W</th>
-              <th className="w-20 border-b border-border px-2 py-2 text-right">Int L</th>
-              <th className="w-28 border-b border-l border-border px-2 py-2 text-center">Area Mode</th>
-              <th className="w-14 border-b border-l border-border px-2 py-2 text-right">Qty</th>
-              <th className="w-16 border-b border-border px-2 py-2 text-right">Thk</th>
-              <th className="w-24 border-b border-l border-border px-2 py-2 text-center">Paint Sides</th>
-              <th className="w-24 border-b border-l border-border px-2 py-2 text-right">T. Area (m²)</th>
-              <th className="w-24 border-b border-border px-2 py-2 text-right">Paint Area (m²)</th>
-              <th className="w-24 border-b border-border px-2 py-2 text-right">Weight (kg)</th>
-              <th className="w-24 border-b border-l border-border px-2 py-2 text-right" title="Purchased/allocated stock weight for this row — optional">Buy Wt (kg)</th>
-              <th className="w-24 border-b border-border px-2 py-2 text-right" title="Buy weight − Weight">Scrap (kg)</th>
-              <th className="w-9 border-b border-border" />
-              {(canCreate || canDelete) && <th className="w-16 border-b border-border" />}
+          <thead>
+            <tr className="border-b border-border bg-muted/20 text-left text-xs text-muted-foreground">
+              <th className="px-2 py-1.5 font-medium">Item</th>
+              <th className="px-2 py-1.5 font-medium">Description</th>
+              <th className="border-l border-border px-2 py-1.5 font-medium">Type</th>
+              <th className="px-2 py-1.5 font-medium">Geometry</th>
+              <th className="border-l border-border px-2 py-1.5 font-medium">Side</th>
+              <th className="px-2 py-1.5 text-right font-medium">Qty</th>
+              <th className="px-2 py-1.5 text-right font-medium">Thk (mm)</th>
+              <th className="px-2 py-1.5 text-center font-medium">Paint</th>
+              <th className="border-l border-border px-2 py-1.5 text-right font-medium">Total Area</th>
+              <th className="px-2 py-1.5 text-right font-medium">Paint Area</th>
+              <th className="px-2 py-1.5 text-right font-medium">Weight (kg)</th>
+              <th className="border-l border-border px-2 py-1.5 text-right font-medium">Buy (kg)</th>
+              <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
+              <th className="px-1 py-1.5" />
+              <th className="px-1 py-1.5" />
             </tr>
           </thead>
           <tbody>
-            {allRows.map(({ row, kind }) => {
-              const computed = toComputed(row);
-              const usable = isRowUsable(row);
-              const isDirty = kind === "saved" && dirty.has(row.id);
-              const showSave = kind === "blank" ? usable : isDirty;
-              const onField = kind === "saved" ? updateSaved : updateBlank;
-              const isBusy = savingId === row.id || deletingId === row.id;
-              const isExpanded = expandedId === row.id;
-              const explanation = isExpanded ? explainTakeoffPart(toCalcInput(row)) : null;
-
+            {parts.length === 0 && (
+              <tr>
+                <td colSpan={15} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  No items yet — use &quot;Add Item&quot; to enter the first part.
+                </td>
+              </tr>
+            )}
+            {parts.map((part) => {
+              const isExpanded = expandedId === part.id;
+              const explanation = isExpanded
+                ? explainTakeoffPart({
+                    partType: part.partType,
+                    geometry: part.geometry,
+                    qty: part.qty,
+                    thicknessMm: part.thicknessMm,
+                    paintSides: part.paintSides,
+                    areaFormula: part.areaFormula,
+                    buyWeightKg: part.buyWeightKg,
+                  })
+                : null;
               return (
-                <React.Fragment key={row.id}>
-                  <tr className={`border-b border-border last:border-b-0 hover:bg-muted/30 ${kind === "blank" ? "bg-muted/10" : ""} ${isExpanded ? "bg-primary/5" : ""}`}>
-                    <td className="px-1 py-0.5">
-                      <Input className={cellInputClass} value={row.itemNo} disabled={!canCreate} onChange={(e) => onField(row.id, "itemNo", e.target.value)} />
-                    </td>
-                    <td className="px-1 py-0.5">
-                      <Input className={cellInputClass} value={row.description} placeholder={kind === "blank" ? "PL 20 mm" : undefined} disabled={!canCreate} onChange={(e) => onField(row.id, "description", e.target.value)} />
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" step="any" value={row.extWidth} disabled={!canCreate} onChange={(e) => onField(row.id, "extWidth", e.target.value)} />
-                    </td>
-                    <td className="px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" step="any" value={row.extLength} disabled={!canCreate} onChange={(e) => onField(row.id, "extLength", e.target.value)} />
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" step="any" value={row.intWidth} disabled={!canCreate} onChange={(e) => onField(row.id, "intWidth", e.target.value)} />
-                    </td>
-                    <td className="px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" step="any" value={row.intLength} disabled={!canCreate} onChange={(e) => onField(row.id, "intLength", e.target.value)} />
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5 text-center">
-                      <select
-                        className="h-8 w-full rounded-md border-0 bg-transparent px-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                        value={row.areaMode}
-                        disabled={!canCreate}
-                        title="Add: ext + int (e.g. duct inner+outer walls). Subtract: ext − int (e.g. plate with a hole)."
-                        onChange={(e) => onField(row.id, "areaMode", e.target.value)}
-                      >
-                        <option value="ADD">Ext + Int</option>
-                        <option value="SUBTRACT">Ext − Int</option>
-                        <option value="CUSTOM">Custom formula</option>
-                      </select>
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" value={row.qty} disabled={!canCreate} onChange={(e) => onField(row.id, "qty", e.target.value)} />
-                    </td>
-                    <td className="px-1 py-0.5">
-                      <Input className={`${cellInputClass} text-right`} type="number" step="any" value={row.thicknessMm} disabled={!canCreate} onChange={(e) => onField(row.id, "thicknessMm", e.target.value)} />
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5 text-center">
-                      <select
-                        className="h-8 w-full rounded-md border-0 bg-transparent px-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                        value={row.paintSides}
-                        disabled={!canCreate}
-                        onChange={(e) => onField(row.id, "paintSides", e.target.value)}
-                      >
-                        <option value="1">1 side</option>
-                        <option value="2">2 sides</option>
-                      </select>
-                    </td>
-                    <td className={`border-l border-border px-2 py-0.5 text-right tabular-nums ${usable ? "text-foreground" : "text-muted-foreground/50"}`}>
-                      {usable ? computed.totalArea.toFixed(3) : "—"}
-                    </td>
-                    <td className={`px-2 py-0.5 text-right tabular-nums ${usable ? "text-foreground" : "text-muted-foreground/50"}`}>
-                      {usable ? computed.paintAreaSqm.toFixed(3) : "—"}
-                    </td>
-                    <td className={`px-2 py-0.5 text-right font-medium tabular-nums ${usable ? "text-primary" : "text-muted-foreground/50"}`}>
-                      {usable ? computed.weightKg.toFixed(1) : "—"}
-                    </td>
-                    <td className="border-l border-border px-1 py-0.5">
-                      <Input
-                        className={`${cellInputClass} text-right`}
-                        type="number" step="any" placeholder="—"
-                        value={row.buyWeightKg}
-                        disabled={!canCreate}
-                        title="Purchased/allocated stock weight for this row — leave blank if unknown"
-                        onChange={(e) => onField(row.id, "buyWeightKg", e.target.value)}
-                      />
-                    </td>
-                    <td className={`px-2 py-0.5 text-right tabular-nums ${computed.scrapKg !== null ? (computed.scrapKg < 0 ? "text-destructive" : "text-amber-600") : "text-muted-foreground/50"}`}>
-                      {computed.scrapKg !== null
-                        ? `${computed.scrapKg.toFixed(1)}${computed.scrapPct !== null ? ` (${(computed.scrapPct * 100).toFixed(0)}%)` : ""}`
+                <React.Fragment key={part.id}>
+                  <tr className="border-b border-border hover:bg-muted/10">
+                    <td className="px-2 py-1.5 tabular-nums">{part.itemNo}</td>
+                    <td className="px-2 py-1.5">{part.description}</td>
+                    <td className="border-l border-border px-2 py-1.5">{PART_TYPE_LABEL[part.partType]}</td>
+                    <td className="px-2 py-1.5 text-xs text-muted-foreground">{geometrySummary(part)}</td>
+                    <td className="border-l border-border px-2 py-1.5 text-xs">{part.side === "INTERNAL" ? "Internal" : "External"}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{part.qty}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{part.thicknessMm ?? "—"}</td>
+                    <td className="px-2 py-1.5 text-center text-xs">{part.paintSides === 1 ? "1 side" : "2 sides"}</td>
+                    <td className="border-l border-border px-2 py-1.5 text-right tabular-nums">{n(part.totalArea).toFixed(3)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{n(part.paintAreaSqm).toFixed(3)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium tabular-nums text-primary">{n(part.weightKg).toFixed(1)}</td>
+                    <td className="border-l border-border px-2 py-1.5 text-right tabular-nums">{part.buyWeightKg != null ? part.buyWeightKg.toFixed(1) : "—"}</td>
+                    <td className={`px-2 py-1.5 text-right tabular-nums ${part.scrapKg != null ? (part.scrapKg < 0 ? "text-destructive" : "text-amber-600") : "text-muted-foreground/50"}`}>
+                      {part.scrapKg != null
+                        ? `${part.scrapKg.toFixed(1)}${part.scrapPct != null ? ` (${(part.scrapPct * 100).toFixed(0)}%)` : ""}`
                         : "—"}
                     </td>
-                    <td className="px-1 py-0.5 text-center">
-                      <Button
-                        size="icon" variant="ghost" className="h-7 w-7"
-                        title="Show the equation for this row"
-                        onClick={() => setExpandedId(isExpanded ? null : row.id)}
-                      >
+                    <td className="px-1 py-1.5 text-center">
+                      <Button size="icon" variant="ghost" className="h-7 w-7" title="Show the equation for this row" onClick={() => setExpandedId(isExpanded ? null : part.id)}>
                         {isExpanded ? <X className="h-3.5 w-3.5 text-muted-foreground" /> : <Sigma className="h-3.5 w-3.5 text-muted-foreground" />}
                       </Button>
                     </td>
-                    {(canCreate || canDelete) && (
-                      <td className="px-1 py-0.5">
-                        <div className="flex items-center justify-end gap-1">
-                          {canCreate && showSave && (
-                            <Button
-                              size="icon" variant="ghost" className="h-7 w-7"
-                              disabled={isBusy}
-                              onClick={() => (kind === "saved" ? saveExisting(row) : saveNew(row))}
-                              title="Save row"
-                            >
-                              <Check className="h-3.5 w-3.5 text-emerald-600" />
-                            </Button>
-                          )}
-                          {canDelete && kind === "saved" && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7" disabled={isBusy} onClick={() => handleDelete(row.id)} title="Delete part">
-                              <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                            </Button>
-                          )}
-                          {canCreate && kind === "blank" && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeBlank(row.id)} title="Remove empty row">
-                              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                    )}
+                    <td className="px-1 py-1.5">
+                      <div className="flex items-center justify-end gap-1">
+                        {canCreate && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(part)} title="Edit item">
+                            <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setDeletingId(part.id)} title="Delete item">
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
-                  {row.areaMode === "CUSTOM" && (
-                    <tr className="border-b border-border bg-amber-50 dark:bg-amber-950/20">
-                      <td colSpan={16} className="px-4 py-2">
-                        <div className="flex items-center gap-2">
-                          <span className="shrink-0 text-xs font-medium text-muted-foreground">
-                            Formula for T. Area (unit, before × qty):
-                          </span>
-                          <Input
-                            className="h-7 max-w-xl font-mono text-xs"
-                            value={row.customFormula}
-                            disabled={!canCreate}
-                            placeholder="e.g. PI()*(4.657+0.22*2)"
-                            onChange={(e) => onField(row.id, "customFormula", e.target.value)}
-                          />
-                          <span className="shrink-0 text-xs text-muted-foreground">
-                            vars: extW, extL, intW, intL, qty, thk — functions: PI(), sqrt(), abs()
-                          </span>
-                          {computed.formulaError && (
-                            <span className="shrink-0 text-xs font-medium text-destructive">{computed.formulaError}</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                   {isExpanded && explanation && (
                     <tr className="border-b border-border bg-primary/5">
-                      <td colSpan={16} className="px-4 py-3">
+                      <td colSpan={15} className="px-4 py-3">
                         <div className="flex flex-wrap gap-x-8 gap-y-1.5 text-xs">
                           {explanation.lines.map((line) => (
                             <div key={line.label} className="min-w-[180px]">
@@ -419,8 +191,8 @@ export function PartsGrid({
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/20 px-3 py-2">
         {canCreate ? (
-          <Button size="sm" variant="ghost" onClick={addBlankRow}>
-            <Plus className="h-3.5 w-3.5" /> Add Row
+          <Button size="sm" variant="ghost" onClick={openAdd}>
+            <Plus className="h-3.5 w-3.5" /> Add Item
           </Button>
         ) : <span />}
         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
@@ -432,6 +204,27 @@ export function PartsGrid({
           )}
         </div>
       </div>
+
+      {canCreate && (
+        <PartForm
+          open={formOpen}
+          onOpenChange={setFormOpen}
+          drawingId={drawingId}
+          editing={editing}
+          nextItemNo={nextItemNo}
+          onSaved={onChanged}
+        />
+      )}
+
+      <ConfirmDialog
+        open={!!deletingId}
+        onOpenChange={(v) => !v && setDeletingId(null)}
+        title="Delete item?"
+        description="This will remove this part from the drawing. This cannot be undone."
+        confirmLabel="Delete"
+        loading={deleteLoading}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }
