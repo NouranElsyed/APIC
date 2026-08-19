@@ -12,7 +12,7 @@ function persistedFields(data: TakeoffPartInputData) {
   const resolvedAreaFormula = data.partType === "HOT_ROLLED"
     ? null
     : (data.areaFormula?.trim() || buildDefaultAreaFormula(data.partType, data.geometry));
-  const { formulaError: _formulaError, ...computed } = computeTakeoffPart({
+  const { formulaError: _formulaError, unitArea: _unitArea, ...computed } = computeTakeoffPart({
     partType: data.partType,
     geometry: data.geometry,
     qty: data.qty,
