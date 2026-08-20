@@ -1,6 +1,20 @@
 export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
 export type PartSide = "INTERNAL" | "EXTERNAL";
 
+export interface PartDxfInfo {
+  id: string;
+  fileName: string;
+  filePath: string;
+  valid: boolean;
+  errorMessage: string | null;
+  unitsDetected: string | null;
+  areaSqm: number | null;
+  bboxWidthMm: number | null;
+  bboxHeightMm: number | null;
+  outerContourCount: number | null;
+  holeCount: number | null;
+}
+
 export interface TakeoffPartRow {
   id: string;
   itemNo: number;
@@ -19,6 +33,7 @@ export interface TakeoffPartRow {
   buyWeightKg: number | null;
   scrapKg: number | null;
   scrapPct: number | null;
+  dxf: PartDxfInfo | null;
 }
 
 export interface TakeoffDrawingRow {
