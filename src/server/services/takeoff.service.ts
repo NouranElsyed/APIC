@@ -1,80 +1,134 @@
-import { z } from "zod";
+import { prisma } from "@/server/db/client";
+import { computeTakeoffPart, buildDefaultAreaFormula } from "@/server/calc/takeoff";
+import type { TakeoffDrawingInput, TakeoffPartInputData } from "@/server/validators/takeoff";
+import { logActivity } from "./activity-log.service";
 
-export const takeoffDrawingSchema = z.object({
-  projectId: z.string().min(1, "Project is required"),
-  drawingNumber: z.string().min(1, "Drawing number is required"),
-  title: z.string().min(1, "Title is required"),
-  weightFromDwg: z.number().nonnegative().optional().nullable(),
-});
-export type TakeoffDrawingInput = z.infer<typeof takeoffDrawingSchema>;
+// computeTakeoffPart() returns a `formulaError` field for the UI's benefit —
+// it isn't a persisted column, so it's stripped out before every write.
+// The area formula is resolved to whatever was actually used (falling back
+// to the type's default) so the stored value always matches the numbers,
+// and stays editable Excel-style afterwards.
+function persistedFields(data: TakeoffPartInputData) {
+  const resolvedAreaFormula = data.partType === "HOT_ROLLED"
+    ? null
+    : (data.areaFormula?.trim() || buildDefaultAreaFormula(data.partType, data.geometry));
+  const { formulaError: _formulaError, unitArea: _unitArea, ...computed } = computeTakeoffPart({
+    partType: data.partType,
+    geometry: data.geometry,
+    qty: data.qty,
+    thicknessMm: data.thicknessMm ?? null,
+    paintSides: data.paintSides,
+    areaFormula: resolvedAreaFormula,
+    buyWeightKg: data.buyWeightKg,
+  });
+  return { resolvedAreaFormula, computed };
+}
 
-const commonFields = {
-  drawingId: z.string().min(1),
-  itemNo: z.number().int().nonnegative(),
-  description: z.string().min(1, "Description is required"),
-  // Per-part material — the authoritative material for THIS part. Optional
-  // because existing rows predate this field; a part with no material is
-  // treated as "Missing material" by the nesting grouping logic, never
-  // silently inherited from anything else.
-  material: z.string().trim().min(1).optional().nullable(),
-  side: z.enum(["INTERNAL", "EXTERNAL"]).default("EXTERNAL"),
-  qty: z.number().int().positive(),
-  paintSides: z.union([z.literal(1), z.literal(2)]).default(2),
-  buyWeightKg: z.number().nonnegative().optional().nullable(),
-};
+export async function listDrawingsForProject(projectId: string) {
+  return prisma.takeoffDrawing.findMany({
+    where: { projectId },
+    include: { parts: { orderBy: { itemNo: "asc" }, include: { dxf: true } } },
+    orderBy: { sortOrder: "asc" },
+  });
+}
 
-const plateSchema = z.object({
-  ...commonFields,
-  partType: z.literal("PLATE"),
-  thicknessMm: z.number().positive("Thickness is required"),
-  geometry: z.object({
-    width: z.number().positive("Width is required"),
-    length: z.number().positive("Length is required"),
-    cutoffFormula: z.string().max(200).optional().nullable(),
-  }),
-  areaFormula: z.string().max(300).optional().nullable(),
-});
+export async function createDrawing(data: TakeoffDrawingInput, userId: string) {
+  const count = await prisma.takeoffDrawing.count({ where: { projectId: data.projectId } });
+  const drawing = await prisma.takeoffDrawing.create({
+    data: {
+      projectId: data.projectId,
+      drawingNumber: data.drawingNumber,
+      title: data.title,
+      weightFromDwg: data.weightFromDwg ?? null,
+      sortOrder: count,
+    },
+  });
+  await logActivity({
+    userId,
+    action: "CREATE",
+    entity: "TAKEOFF_DRAWING",
+    entityId: drawing.id,
+    detail: `${drawing.drawingNumber} — ${drawing.title}`,
+  });
+  return drawing;
+}
 
-const coneSchema = z.object({
-  ...commonFields,
-  partType: z.literal("CONE"),
-  thicknessMm: z.number().positive("Thickness is required"),
-  geometry: z.object({
-    d1: z.number().positive("D1 is required"),
-    d2: z.number().positive("D2 is required"),
-    height: z.number().positive("Height is required"),
-  }),
-  areaFormula: z.string().max(300).optional().nullable(),
-});
+export async function deleteDrawing(id: string, userId: string) {
+  const drawing = await prisma.takeoffDrawing.delete({ where: { id } });
+  await logActivity({
+    userId,
+    action: "DELETE",
+    entity: "TAKEOFF_DRAWING",
+    entityId: id,
+    detail: `${drawing.drawingNumber} — ${drawing.title}`,
+  });
+  return drawing;
+}
 
-const pipeSchema = z.object({
-  ...commonFields,
-  partType: z.literal("PIPE"),
-  thicknessMm: z.number().positive("Thickness is required"),
-  geometry: z.object({
-    od: z.number().positive("OD is required"),
-    length: z.number().positive("Length is required"),
-  }),
-  areaFormula: z.string().max(300).optional().nullable(),
-});
+export async function createPart(data: TakeoffPartInputData, userId: string) {
+  const { resolvedAreaFormula, computed } = persistedFields(data);
+  const part = await prisma.takeoffPart.create({
+    data: {
+      drawingId: data.drawingId,
+      itemNo: data.itemNo,
+      description: data.description,
+      material: data.material ?? null,
+      partType: data.partType,
+      side: data.side,
+      qty: data.qty,
+      thicknessMm: data.thicknessMm ?? null,
+      geometry: data.geometry,
+      areaFormula: resolvedAreaFormula,
+      paintSides: data.paintSides,
+      ...computed,
+    },
+  });
+  await logActivity({
+    userId,
+    action: "CREATE",
+    entity: "TAKEOFF_PART",
+    entityId: part.id,
+    detail: part.description,
+  });
+  return part;
+}
 
-const hotRolledSchema = z.object({
-  ...commonFields,
-  partType: z.literal("HOT_ROLLED"),
-  thicknessMm: z.number().positive().optional().nullable(),
-  geometry: z.object({
-    profile: z.string().min(1, "Profile is required"),
-    length: z.number().positive("Length is required"),
-    weightPerMeter: z.number().positive("Weight per metre is required"),
-    paintAreaPerMeter: z.number().nonnegative().optional().nullable(),
-  }),
-  areaFormula: z.string().optional().nullable(),
-});
+export async function updatePart(id: string, data: TakeoffPartInputData, userId: string) {
+  const { resolvedAreaFormula, computed } = persistedFields(data);
+  const part = await prisma.takeoffPart.update({
+    where: { id },
+    data: {
+      itemNo: data.itemNo,
+      description: data.description,
+      material: data.material ?? null,
+      partType: data.partType,
+      side: data.side,
+      qty: data.qty,
+      thicknessMm: data.thicknessMm ?? null,
+      geometry: data.geometry,
+      areaFormula: resolvedAreaFormula,
+      paintSides: data.paintSides,
+      ...computed,
+    },
+  });
+  await logActivity({
+    userId,
+    action: "UPDATE",
+    entity: "TAKEOFF_PART",
+    entityId: part.id,
+    detail: part.description,
+  });
+  return part;
+}
 
-export const takeoffPartSchema = z.discriminatedUnion("partType", [
-  plateSchema,
-  coneSchema,
-  pipeSchema,
-  hotRolledSchema,
-]);
-export type TakeoffPartInputData = z.infer<typeof takeoffPartSchema>;
+export async function deletePart(id: string, userId: string) {
+  const part = await prisma.takeoffPart.delete({ where: { id } });
+  await logActivity({
+    userId,
+    action: "DELETE",
+    entity: "TAKEOFF_PART",
+    entityId: id,
+    detail: part.description,
+  });
+  return part;
+}
