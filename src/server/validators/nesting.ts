@@ -8,8 +8,11 @@ export const nestingJobSchema = z.object({
 });
 export type NestingJobInput = z.infer<typeof nestingJobSchema>;
 
-export const nestingJobItemSchema = z.object({
-  takeoffPartId: z.string().min(1),
-  qtyOverride: z.number().int().positive().optional().nullable(),
+export const nestingSourceSchema = z.object({
+  material: z.string().min(1, "Material is required").max(120),
+  thicknessMm: z.number().positive("Thickness must be greater than 0"),
+  widthMm: z.number().positive("Width must be greater than 0"),
+  lengthMm: z.number().positive("Length must be greater than 0"),
+  availableQty: z.number().int().positive("Available quantity must be at least 1"),
 });
-export type NestingJobItemInput = z.infer<typeof nestingJobItemSchema>;
+export type NestingSourceInput = z.infer<typeof nestingSourceSchema>;
