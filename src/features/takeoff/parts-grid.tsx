@@ -79,8 +79,6 @@ export function PartsGrid({
   const totalArea = parts.reduce((s, p) => s + n(p.totalArea), 0);
   const totalPaintArea = parts.reduce((s, p) => s + n(p.paintAreaSqm), 0);
   const totalWeight = parts.reduce((s, p) => s + n(p.weightKg), 0);
-  const scrapRows = parts.filter((p) => typeof p.scrapKg === "number");
-  const totalScrap = scrapRows.length > 0 ? scrapRows.reduce((s, p) => s + n(p.scrapKg), 0) : null;
 
   return (
     <div>
@@ -99,8 +97,6 @@ export function PartsGrid({
               <th className="border-l border-border px-2 py-1.5 text-right font-medium">Total Area</th>
               <th className="px-2 py-1.5 text-right font-medium">Paint Area</th>
               <th className="px-2 py-1.5 text-right font-medium">Weight (kg)</th>
-              <th className="border-l border-border px-2 py-1.5 text-right font-medium">Buy (kg)</th>
-              <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
               <th className="px-1 py-1.5" />
               <th className="px-1 py-1.5" />
             </tr>
@@ -108,7 +104,7 @@ export function PartsGrid({
           <tbody>
             {parts.length === 0 && (
               <tr>
-                <td colSpan={15} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={13} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No items yet — use &quot;Add Item&quot; to enter the first part.
                 </td>
               </tr>
@@ -140,12 +136,6 @@ export function PartsGrid({
                     <td className="border-l border-border px-2 py-1.5 text-right tabular-nums">{n(part.totalArea).toFixed(3)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{n(part.paintAreaSqm).toFixed(3)}</td>
                     <td className="px-2 py-1.5 text-right font-medium tabular-nums text-primary">{n(part.weightKg).toFixed(1)}</td>
-                    <td className="border-l border-border px-2 py-1.5 text-right tabular-nums">{part.buyWeightKg != null ? part.buyWeightKg.toFixed(1) : "—"}</td>
-                    <td className={`px-2 py-1.5 text-right tabular-nums ${part.scrapKg != null ? (part.scrapKg < 0 ? "text-destructive" : "text-amber-600") : "text-muted-foreground/50"}`}>
-                      {part.scrapKg != null
-                        ? `${part.scrapKg.toFixed(1)}${part.scrapPct != null ? ` (${(part.scrapPct * 100).toFixed(0)}%)` : ""}`
-                        : "—"}
-                    </td>
                     <td className="px-1 py-1.5 text-center">
                       <Button size="icon" variant="ghost" className="h-7 w-7" title="Show the equation for this row" onClick={() => setExpandedId(isExpanded ? null : part.id)}>
                         {isExpanded ? <X className="h-3.5 w-3.5 text-muted-foreground" /> : <Sigma className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -168,7 +158,7 @@ export function PartsGrid({
                   </tr>
                   {isExpanded && explanation && (
                     <tr className="border-b border-border bg-primary/5">
-                      <td colSpan={15} className="px-4 py-3">
+                      <td colSpan={13} className="px-4 py-3">
                         <div className="flex flex-wrap gap-x-8 gap-y-1.5 text-xs">
                           {explanation.lines.map((line) => (
                             <div key={line.label} className="min-w-[180px]">
@@ -199,9 +189,6 @@ export function PartsGrid({
           <span>Total Area: <span className="font-semibold text-foreground">{totalArea.toFixed(3)} m²</span></span>
           <span>Paint Area: <span className="font-semibold text-foreground">{totalPaintArea.toFixed(3)} m²</span></span>
           <span>Total Weight: <span className="font-semibold text-primary">{totalWeight.toFixed(1)} kg</span></span>
-          {totalScrap !== null && (
-            <span>Scrap: <span className="font-semibold text-amber-600">{totalScrap.toFixed(1)} kg</span></span>
-          )}
         </div>
       </div>
 
