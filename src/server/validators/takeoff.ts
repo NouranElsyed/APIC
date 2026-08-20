@@ -12,6 +12,11 @@ const commonFields = {
   drawingId: z.string().min(1),
   itemNo: z.number().int().nonnegative(),
   description: z.string().min(1, "Description is required"),
+  // Per-part material — the authoritative material for THIS part. Optional
+  // because existing rows predate this field; a part with no material is
+  // treated as "Missing material" by the nesting grouping logic, never
+  // silently inherited from anything else.
+  material: z.string().trim().min(1).optional().nullable(),
   side: z.enum(["INTERNAL", "EXTERNAL"]).default("EXTERNAL"),
   qty: z.number().int().positive(),
   paintSides: z.union([z.literal(1), z.literal(2)]).default(2),
