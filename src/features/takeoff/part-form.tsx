@@ -17,6 +17,7 @@ import type { TakeoffPartRow, PartType, PartSide } from "./types";
 interface FormState {
   itemNo: string;
   description: string;
+  material: string;
   partType: PartType;
   side: PartSide;
   qty: string;
@@ -36,6 +37,7 @@ function emptyForm(itemNo: number): FormState {
   return {
     itemNo: String(itemNo),
     description: "",
+    material: "",
     partType: "PLATE",
     side: "EXTERNAL",
     qty: "1",
@@ -57,6 +59,7 @@ function fromPart(part: TakeoffPartRow): FormState {
   return {
     itemNo: String(part.itemNo),
     description: part.description,
+    material: part.material ?? "",
     partType: part.partType,
     side: part.side,
     qty: String(part.qty),
@@ -128,6 +131,7 @@ function toPayload(f: FormState, drawingId: string) {
     drawingId,
     itemNo: Number(f.itemNo) || 0,
     description: f.description.trim(),
+    material: f.material.trim() || null,
     side: f.side,
     qty: num(f.qty),
     paintSides: (f.paintSides === "1" ? 1 : 2) as 1 | 2,
@@ -241,9 +245,15 @@ export function PartForm({
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>Description</Label>
-            <Input value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="e.g. PL 20 mm end cap" />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Description</Label>
+              <Input value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="e.g. PL 20 mm end cap" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Material</Label>
+              <Input value={f.material} onChange={(e) => set("material", e.target.value)} placeholder="e.g. Steel, Stainless Steel" />
+            </div>
           </div>
 
           {/* Type-specific geometry */}
