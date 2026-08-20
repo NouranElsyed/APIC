@@ -27,7 +27,7 @@ function persistedFields(data: TakeoffPartInputData) {
 export async function listDrawingsForProject(projectId: string) {
   return prisma.takeoffDrawing.findMany({
     where: { projectId },
-    include: { parts: { orderBy: { itemNo: "asc" } } },
+    include: { parts: { orderBy: { itemNo: "asc" }, include: { dxf: true } } },
     orderBy: { sortOrder: "asc" },
   });
 }
