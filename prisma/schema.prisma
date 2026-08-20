@@ -333,7 +333,8 @@ model NestingJob {
   createdById String
   createdBy   User   @relation("NestingJobCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
-  items NestingJobItem[]
+  items   NestingJobItem[] // superseded, see model doc comment — kept for compatibility, unused
+  sources NestingSource[]
 
   @@map("nesting_jobs")
 }
@@ -342,6 +343,14 @@ model NestingJob {
 // case where fewer than the full TakeoffPart quantity should go into this
 // specific nesting run; description/thickness/material stay owned by the
 // TakeoffPart.
+//
+// ⚠️ Superseded (kept for backward compatibility only): eligible parts are
+// now collected automatically per-project (see getEligibleNestingParts in
+// nesting.service.ts) instead of being manually added one by one. This
+// table and its API routes are no longer written to by the app — it's left
+// in place, untouched and unused, so no data is lost and nothing has to be
+// dropped from the database. A future reproducibility/snapshot model can
+// reuse or replace it when the real nesting engine ships.
 model NestingJobItem {
   id          String   @id @default(cuid())
   qtyOverride Int? // null = use the full TakeoffPart.qty
@@ -355,6 +364,25 @@ model NestingJobItem {
 
   @@unique([nestingJobId, takeoffPartId])
   @@map("nesting_job_items")
+}
+
+// User-declared available source sheets for a Nesting Job — the one piece
+// of information Phase 1b genuinely needs manual input for. Parts are
+// collected automatically; source material is not (the system has no way
+// to know what stock is available).
+model NestingSource {
+  id           String   @id @default(cuid())
+  material     String
+  thicknessMm  Float
+  widthMm      Float
+  lengthMm     Float
+  availableQty Int
+  createdAt    DateTime @default(now())
+
+  nestingJobId String
+  nestingJob   NestingJob @relation(fields: [nestingJobId], references: [id], onDelete: Cascade)
+
+  @@map("nesting_sources")
 }
 
 model Document {
