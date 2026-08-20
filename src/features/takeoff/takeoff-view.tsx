@@ -1,6 +1,7 @@
 "use client";
 import * as React from "react";
 import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -111,6 +112,13 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   return (
     <div className="space-y-6">
+      <div className="flex gap-2 border-b border-border">
+        <div className="border-b-2 border-primary px-1 pb-2 text-sm font-semibold text-foreground">Standard Calculations</div>
+        <Link href="/takeoff/nesting" className="px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground">
+          DXF Nesting
+        </Link>
+      </div>
+
       <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -245,6 +253,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
                 <PartsGrid
                   drawingId={drawing.id}
+                  projectId={projectId}
                   parts={drawing.parts}
                   canCreate={canCreate}
                   canDelete={canDelete}
