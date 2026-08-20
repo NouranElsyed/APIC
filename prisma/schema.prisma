@@ -178,6 +178,12 @@ model TakeoffPart {
   itemNo      Int
   description String // e.g. "PL 20 mm", "IPE 120", free text label
 
+  // Per-part material (e.g. "Steel", "Stainless Steel"). Optional because
+  // existing rows predate this field. This is the authoritative source of
+  // material for DXF Nesting grouping — never NestingJob.material, which is
+  // legacy job-level metadata only (see NestingJob doc comment below).
+  material String?
+
   // What kind of item this is — drives which fields are relevant and what
   // the default area/weight formula looks like:
   //   PLATE      — flat sheet: width x length x thickness, optional cut-out
@@ -319,8 +325,13 @@ enum NestingJobStatus {
 // eventually run against. Phase 1 only supports creating the job and
 // assigning parts to it.
 model NestingJob {
-  id          String           @id @default(cuid())
-  name        String
+  id   String @id @default(cuid())
+  name String
+  // ⚠️ Legacy, optional job-level metadata only — kept for backward
+  // compatibility with old records. NOT the source of truth for any part's
+  // material/thickness. Nesting Groups / Source Coverage always resolve
+  // material and thickness per TakeoffPart (see getEligibleNestingParts in
+  // nesting.service.ts). Never read these two fields for grouping.
   material    String?
   thicknessMm Float?
   status      NestingJobStatus @default(DRAFT)
