@@ -35,7 +35,7 @@ export async function saveAndParseDxf(takeoffPartId: string, file: File, userId:
       bboxHeightMm: result.bboxHeightMm,
       outerContourCount: result.outerContourCount,
       holeCount: result.holeCount,
-      geometryJson: (result.geometry as Prisma.InputJsonValue | undefined) ?? undefined,
+      geometryJson: (result.geometry as unknown as Prisma.InputJsonValue) ?? undefined,
       uploadedById: userId,
     },
     update: {
@@ -50,7 +50,7 @@ export async function saveAndParseDxf(takeoffPartId: string, file: File, userId:
       bboxHeightMm: result.bboxHeightMm,
       outerContourCount: result.outerContourCount,
       holeCount: result.holeCount,
-      geometryJson: (result.geometry as Prisma.InputJsonValue | undefined) ?? undefined,
+      geometryJson: (result.geometry as unknown as Prisma.InputJsonValue) ?? undefined,
       uploadedById: userId,
       uploadedAt: new Date(),
     },
