@@ -1,5 +1,6 @@
 import { writeFile, mkdir, unlink } from "fs/promises";
 import path from "path";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/db/client";
 import { parseDxf } from "@/server/calc/dxf";
 import { logActivity } from "./activity-log.service";
@@ -34,7 +35,7 @@ export async function saveAndParseDxf(takeoffPartId: string, file: File, userId:
       bboxHeightMm: result.bboxHeightMm,
       outerContourCount: result.outerContourCount,
       holeCount: result.holeCount,
-      geometryJson: result.geometry ?? undefined,
+      geometryJson: (result.geometry as Prisma.InputJsonValue | undefined) ?? undefined,
       uploadedById: userId,
     },
     update: {
@@ -49,7 +50,7 @@ export async function saveAndParseDxf(takeoffPartId: string, file: File, userId:
       bboxHeightMm: result.bboxHeightMm,
       outerContourCount: result.outerContourCount,
       holeCount: result.holeCount,
-      geometryJson: result.geometry ?? undefined,
+      geometryJson: (result.geometry as Prisma.InputJsonValue | undefined) ?? undefined,
       uploadedById: userId,
       uploadedAt: new Date(),
     },
