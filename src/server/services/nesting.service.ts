@@ -5,32 +5,34 @@ import { logActivity } from "./activity-log.service";
 // ----------------------------------------------------------------------------
 // Automatic eligible-part collection (replaces the old manual "Add to
 // Nesting" selection). A part is eligible when it has a valid, parsed DXF
-// with real geometry and a quantity greater than zero. Everything else is
-// reported back as "excluded" with a human-readable reason so nothing is
-// ever silently dropped from the list.
+// with real geometry, a quantity greater than zero, AND a resolvable
+// material + thickness. Everything else is reported back as "excluded" with
+// a human-readable reason so nothing is ever silently dropped from the list.
 //
-// NOTE on grouping: TakeoffPart has no `material` field in the existing
-// Standard Calculations data model, and this feature intentionally does
-// NOT modify that model. Groups are therefore keyed on thickness only —
-// the one geometry-relevant property every plate/cone/pipe part already
-// carries. Source sheets still capture `material` (it's useful metadata
-// once a real nesting/material-matching engine exists), but Phase 1b
-// coverage checking matches on thickness. This is a deliberate, documented
-// limitation, not an oversight.
+// Material and thickness are resolved PER PART from TakeoffPart.material /
+// TakeoffPart.thicknessMm — the existing Standard Calculations data model —
+// never from NestingJob.material / NestingJob.thicknessMm. A project's parts
+// can span multiple materials/thicknesses, so Nesting Groups and Source
+// Coverage are always computed per (material, thickness) pair. See the
+// NestingJob doc comment in schema.prisma for why the legacy job-level
+// fields are never read here.
 // ----------------------------------------------------------------------------
 
 export type ExcludedReason =
   | "DXF missing"
   | "DXF invalid"
   | "Invalid geometry"
-  | "Quantity is 0";
+  | "Quantity is 0"
+  | "Missing material"
+  | "Missing thickness";
 
 export interface EligiblePart {
   id: string;
   itemNo: number;
   description: string;
   partType: string;
-  thicknessMm: number | null;
+  material: string;
+  thicknessMm: number;
   qty: number;
   dxfAreaSqm: number | null;
   bboxWidthMm: number | null;
@@ -49,7 +51,8 @@ export interface ExcludedPart {
 }
 
 export interface NestingGroup {
-  key: string; // e.g. "10" — thicknessMm as a stable string key
+  key: string; // stable "material||thicknessMm" key
+  material: string;
   thicknessMm: number;
   partCount: number;
   totalPcs: number;
@@ -124,11 +127,42 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
       continue;
     }
 
+    // Material and thickness are resolved PER PART, straight from the
+    // Standard Calculations / TakeoffPart record — never from the
+    // NestingJob. A part missing either is excluded (not silently
+    // defaulted) until the user fixes it in Standard Calculations.
+    const material = part.material?.trim() || null;
+    if (!material) {
+      excluded.push({
+        id: part.id,
+        itemNo: part.itemNo,
+        description: part.description,
+        qty: part.qty,
+        reason: "Missing material",
+        detail: "Set a material for this part in Standard Calculations.",
+        drawing: part.drawing,
+      });
+      continue;
+    }
+    if (part.thicknessMm == null || part.thicknessMm <= 0) {
+      excluded.push({
+        id: part.id,
+        itemNo: part.itemNo,
+        description: part.description,
+        qty: part.qty,
+        reason: "Missing thickness",
+        detail: "Set a thickness for this part in Standard Calculations.",
+        drawing: part.drawing,
+      });
+      continue;
+    }
+
     included.push({
       id: part.id,
       itemNo: part.itemNo,
       description: part.description,
       partType: part.partType,
+      material,
       thicknessMm: part.thicknessMm,
       qty: part.qty,
       dxfAreaSqm: part.dxf.areaSqm,
@@ -138,19 +172,24 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
     });
   }
 
+  // Group by (material, thickness) — the minimum grouping key. A project
+  // with multiple materials/thicknesses produces multiple groups; parts are
+  // never merged just because the NestingJob has a single legacy value.
   const groupMap = new Map<string, NestingGroup>();
   for (const part of included) {
-    const key = part.thicknessMm != null ? String(part.thicknessMm) : "unspecified";
+    const key = `${part.material}||${part.thicknessMm}`;
     let group = groupMap.get(key);
     if (!group) {
-      group = { key, thicknessMm: part.thicknessMm ?? 0, partCount: 0, totalPcs: 0, parts: [] };
+      group = { key, material: part.material, thicknessMm: part.thicknessMm, partCount: 0, totalPcs: 0, parts: [] };
       groupMap.set(key, group);
     }
     group.partCount += 1;
     group.totalPcs += part.qty;
     group.parts.push(part);
   }
-  const groups = Array.from(groupMap.values()).sort((a, b) => a.thicknessMm - b.thicknessMm);
+  const groups = Array.from(groupMap.values()).sort(
+    (a, b) => a.material.localeCompare(b.material) || a.thicknessMm - b.thicknessMm,
+  );
 
   return {
     included,
@@ -171,6 +210,7 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
 
 export interface GroupCoverage {
   key: string;
+  material: string;
   thicknessMm: number;
   totalPcs: number;
   covered: boolean;
@@ -178,14 +218,17 @@ export interface GroupCoverage {
 
 export function computeSourceCoverage(
   groups: NestingGroup[],
-  sources: { thicknessMm: number }[],
+  sources: { material: string; thicknessMm: number }[],
 ): GroupCoverage[] {
-  const sourceThicknesses = new Set(sources.map((s) => s.thicknessMm));
+  // Compatibility is material + thickness, matched per group — never
+  // NestingJob.material / NestingJob.thicknessMm.
+  const sourceKeys = new Set(sources.map((s) => `${s.material}||${s.thicknessMm}`));
   return groups.map((g) => ({
     key: g.key,
+    material: g.material,
     thicknessMm: g.thicknessMm,
     totalPcs: g.totalPcs,
-    covered: sourceThicknesses.has(g.thicknessMm),
+    covered: sourceKeys.has(`${g.material}||${g.thicknessMm}`),
   }));
 }
 
