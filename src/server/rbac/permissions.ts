@@ -29,6 +29,14 @@ export const PERMISSIONS = {
   "takeoff.edit": ["ADMIN", "MANAGER", "ENGINEER"],
   "takeoff.delete": ["ADMIN", "MANAGER"],
 
+  // DXF Nesting — mirrors the takeoff permission tiers so anyone who can
+  // work with Calculations can also work with the Nesting workflow built
+  // on top of it.
+  "nesting.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
+  "nesting.create": ["ADMIN", "MANAGER", "ENGINEER"],
+  "nesting.edit": ["ADMIN", "MANAGER", "ENGINEER"],
+  "nesting.delete": ["ADMIN", "MANAGER"],
+
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
 } as const;
