@@ -19,6 +19,7 @@ export interface TakeoffPartRow {
   id: string;
   itemNo: number;
   description: string;
+  material: string | null;
   partType: PartType;
   side: PartSide;
   qty: number;
