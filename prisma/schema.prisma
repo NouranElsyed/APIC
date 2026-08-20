@@ -88,6 +88,7 @@ model User {
   meetingMinutes   MeetingMinute[] @relation("MeetingMinuteCreatedBy")
   uploadedDxfFiles PartDxf[]       @relation("PartDxfUploadedBy")
   createdNestingJobs NestingJob[]  @relation("NestingJobCreatedBy")
+  createdNestingRuns NestingRun[]  @relation("NestingRunCreatedBy")
 
   @@map("users")
 }
@@ -245,6 +246,9 @@ model TakeoffPart {
   // as before whether or not these are ever populated.
   dxf             PartDxf?
   nestingJobItems NestingJobItem[]
+  // Phase 2A: historical placements referencing this part across nesting
+  // runs. onDelete: Restrict on the placement side — see NestingPlacement.
+  nestingPlacements NestingPlacement[] @relation("TakeoffPartNestingPlacements")
 
   @@map("takeoff_parts")
 }
@@ -346,6 +350,7 @@ model NestingJob {
 
   items   NestingJobItem[] // superseded, see model doc comment — kept for compatibility, unused
   sources NestingSource[]
+  runs    NestingRun[]
 
   @@map("nesting_jobs")
 }
@@ -393,7 +398,168 @@ model NestingSource {
   nestingJobId String
   nestingJob   NestingJob @relation(fields: [nestingJobId], references: [id], onDelete: Cascade)
 
+  // Phase 2A: NestingSheet rows created by a future run may point back here
+  // for provenance, but always snapshot material/thickness/width/length at
+  // creation time — this record can keep changing after that without ever
+  // affecting an already-completed NestingRun. See NestingSheet doc comment.
+  nestingSheets NestingSheet[]
+
   @@map("nesting_sources")
+}
+
+// ----------------------------------------------------------------------------
+// Nesting Run persistence (Phase 2A — data model only, no engine yet)
+//
+// This section prepares storage for a FUTURE real 2D nesting engine. Nothing
+// in the current app creates a NestingRun yet; the "Run Nesting" button in
+// the UI still shows its existing placeholder. No algorithm, packing,
+// optimization, or scrap/kerf calculation is implemented here — only the
+// shape that a future engine's results will be written into.
+//
+//   NestingJob --(0..*)--> NestingRun  (one execution of the engine)
+//   NestingRun --(0..*)--> NestingSheet    (one physical sheet used by that run)
+//   NestingSheet --(0..*)--> NestingPlacement (one placed piece on that sheet)
+//   NestingPlacement --(1)--> TakeoffPart      (reference only, never a copy)
+//
+// Coordinate convention (applies to NestingPlacement.xMm/yMm/rotationDeg):
+//   - all lengths in millimeters, never pixels or percentages
+//   - sheet origin (0,0) = bottom-left corner of the sheet
+//   - x increases to the right, y increases upward
+//   - xMm/yMm is the placement's origin/anchor point on the sheet
+//   - rotationDeg is measured counter-clockwise from 0; stored as a plain
+//     Float so a future engine is free to use 0/90 only at first and later
+//     support 180/270 or arbitrary angles without a schema change
+//
+// Reproducibility: once a run is COMPLETED, later edits to NestingSource,
+// TakeoffPart, or Standard Calculations must NOT change that run's stored
+// results. NestingSheet therefore snapshots material/thickness/width/length
+// at creation time instead of reading them live off NestingSource.
+// NestingPlacement still references the live TakeoffPart (geometry keeps
+// coming from TakeoffPart -> PartDxf -> geometryJson) — full part-geometry
+// snapshotting is explicitly out of scope for this phase; see report.
+// ----------------------------------------------------------------------------
+
+enum NestingRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// One execution of the (future) nesting engine for a NestingJob. Historical
+// record — a job can accumulate many runs over time (re-runs, what-ifs).
+model NestingRun {
+  id     String           @id @default(cuid())
+  status NestingRunStatus @default(PENDING)
+
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+
+  // Aggregate metrics — always nullable in Phase 2A; the future engine
+  // populates them once it actually computes a result. Not calculated here.
+  totalSheets               Int?
+  totalUsedAreaSqm          Float?
+  totalScrapAreaSqm         Float?
+  overallUtilizationPercent Float?
+
+  nestingJobId String
+  nestingJob   NestingJob @relation(fields: [nestingJobId], references: [id], onDelete: Cascade)
+
+  // Nullable + SetNull: losing the user who kicked off a run must never
+  // delete historical nesting results, matching the PartDxf.uploadedBy /
+  // NestingJob.createdBy pattern used elsewhere (Restrict there because
+  // those relations are required; this one is optional).
+  createdById String?
+  createdBy   User?   @relation("NestingRunCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  sheets     NestingSheet[]
+  placements NestingPlacement[]
+
+  @@index([nestingJobId])
+  @@index([status])
+  @@map("nesting_runs")
+}
+
+// One physical source sheet actually used within a NestingRun. Dimensions
+// and material are a SNAPSHOT of the NestingSource used, copied at creation
+// time — never re-read live — so editing/deleting the source later cannot
+// change a historical run's stored sheet metadata.
+model NestingSheet {
+  id String @id @default(cuid())
+
+  sheetNumber Int // 1-based, unique within its run
+
+  // Snapshot fields — copied from NestingSource at creation time.
+  material    String
+  thicknessMm Float
+  widthMm     Float
+  lengthMm    Float
+
+  // Calculated metrics — nullable until the future engine computes them.
+  usedAreaSqm        Float?
+  scrapAreaSqm       Float?
+  utilizationPercent Float?
+
+  createdAt DateTime @default(now())
+
+  nestingRunId String
+  nestingRun   NestingRun @relation(fields: [nestingRunId], references: [id], onDelete: Cascade)
+
+  // Provenance only — optional and SetNull on delete, since this sheet's
+  // own material/thicknessMm/widthMm/lengthMm above are already a durable
+  // snapshot and don't depend on this relation surviving.
+  sourceSheetId String?
+  sourceSheet   NestingSource? @relation(fields: [sourceSheetId], references: [id], onDelete: SetNull)
+
+  placements NestingPlacement[]
+
+  @@unique([nestingRunId, sheetNumber])
+  @@index([nestingRunId])
+  @@map("nesting_sheets")
+}
+
+// One placed instance of a TakeoffPart on a NestingSheet. A TakeoffPart with
+// qty = 20 can end up with 20 NestingPlacement rows spread across multiple
+// sheets/runs — instanceNumber (1..qty) identifies which required piece this
+// is; it is never used to create duplicate TakeoffPart rows.
+model NestingPlacement {
+  id String @id @default(cuid())
+
+  instanceNumber Int // 1-based index within (nestingRunId, takeoffPartId)
+
+  // Millimeters, sheet-local, bottom-left origin — see model group doc
+  // comment above for the full coordinate convention.
+  xMm         Float
+  yMm         Float
+  rotationDeg Float @default(0)
+
+  createdAt DateTime @default(now())
+
+  nestingSheetId String
+  nestingSheet   NestingSheet @relation(fields: [nestingSheetId], references: [id], onDelete: Cascade)
+
+  // Denormalized alongside nestingSheetId so uniqueness can be enforced per
+  // (run, part, instance) rather than per (sheet, part, instance) — the same
+  // required instance must never be placeable twice within one run, even if
+  // it ends up assigned to a different sheet than a sibling instance.
+  nestingRunId String
+  nestingRun   NestingRun @relation(fields: [nestingRunId], references: [id], onDelete: Cascade)
+
+  // Reference only — the authoritative part data (number, description,
+  // material, thickness, qty, DXF/geometryJson) stays owned by TakeoffPart,
+  // never duplicated here. Restrict: a TakeoffPart that has ever been placed
+  // in a nesting run cannot be deleted out from under historical results;
+  // the app must resolve/clear those placements first.
+  takeoffPartId String
+  takeoffPart   TakeoffPart @relation("TakeoffPartNestingPlacements", fields: [takeoffPartId], references: [id], onDelete: Restrict)
+
+  @@unique([nestingRunId, takeoffPartId, instanceNumber])
+  @@index([nestingSheetId])
+  @@index([takeoffPartId])
+  @@map("nesting_placements")
 }
 
 model Document {
