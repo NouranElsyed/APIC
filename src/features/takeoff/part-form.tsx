@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Sigma } from "lucide-react";
+import { Loader2, Sigma, Pencil, Lock } from "lucide-react";
 import { toast } from "sonner";
 import {
   computeTakeoffPart, explainTakeoffPart, buildDefaultAreaFormula,
@@ -166,11 +166,13 @@ export function PartForm({
   const [f, setF] = React.useState<FormState>(() => (editing ? fromPart(editing) : emptyForm(nextItemNo)));
   const [submitting, setSubmitting] = React.useState(false);
   const [showEquation, setShowEquation] = React.useState(false);
+  const [formulaUnlocked, setFormulaUnlocked] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) return;
     setF(editing ? fromPart(editing) : emptyForm(nextItemNo));
     setShowEquation(false);
+    setFormulaUnlocked(false);
   }, [open, editing, nextItemNo]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
@@ -228,7 +230,7 @@ export function PartForm({
             </div>
             <div className="space-y-1.5">
               <Label>Part Type</Label>
-              <Select value={f.partType} onValueChange={(v) => setF((prev) => ({ ...prev, partType: v as PartType, areaFormulaTouched: false }))}>
+              <Select value={f.partType} onValueChange={(v) => { setF((prev) => ({ ...prev, partType: v as PartType, areaFormulaTouched: false })); setFormulaUnlocked(false); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {(Object.keys(PART_TYPE_LABEL) as PartType[]).map((pt) => (
@@ -325,25 +327,38 @@ export function PartForm({
             </div>
           )}
 
-          {/* Excel-style, always-editable area formula for sheet-based types */}
+          {/* Excel-style area formula — locked/read-only until the pencil is pressed, to avoid accidental edits */}
           {f.partType !== "HOT_ROLLED" && (
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5">
               <div className="flex items-center justify-between">
-                <Label className="text-xs">Area formula (per piece, single face) — editable</Label>
-                {f.areaFormulaTouched && (
-                  <button type="button" className="text-[11px] text-primary underline" onClick={() => setF((prev) => ({ ...prev, areaFormulaTouched: false }))}>
-                    Reset to default
+                <Label className="text-xs">Area formula (per piece, single face)</Label>
+                <div className="flex items-center gap-2">
+                  {f.areaFormulaTouched && (
+                    <button type="button" className="text-[11px] text-primary underline" onClick={() => { setF((prev) => ({ ...prev, areaFormulaTouched: false })); setFormulaUnlocked(false); }}>
+                      Reset to default
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`flex h-6 w-6 items-center justify-center rounded ${formulaUnlocked ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"}`}
+                    onClick={() => setFormulaUnlocked((v) => !v)}
+                    title={formulaUnlocked ? "Lock formula" : "Edit formula"}
+                  >
+                    {formulaUnlocked ? <Lock className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
                   </button>
-                )}
+                </div>
               </div>
               <Input
-                className="font-mono text-xs"
+                className="font-mono text-xs disabled:cursor-not-allowed disabled:opacity-70"
                 value={f.areaFormula || defaultFormula}
                 onChange={(e) => setF((prev) => ({ ...prev, areaFormula: e.target.value, areaFormulaTouched: true }))}
                 placeholder={defaultFormula}
+                disabled={!formulaUnlocked}
               />
               <p className="text-[11px] text-muted-foreground">
-                vars: {f.partType === "PLATE" ? "width, length" : f.partType === "CONE" ? "d1, d2, height" : "od, length"}, thk, qty — functions: PI(), sqrt(), abs()
+                {formulaUnlocked
+                  ? <>vars: {f.partType === "PLATE" ? "width, length" : f.partType === "CONE" ? "d1, d2, height" : "od, length"}, thk, qty — functions: PI(), sqrt(), abs()</>
+                  : "Press the pencil to edit this formula."}
               </p>
               {computed.formulaError && <p className="text-xs font-medium text-destructive">{computed.formulaError}</p>}
             </div>
