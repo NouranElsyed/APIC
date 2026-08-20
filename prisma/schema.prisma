@@ -15,9 +15,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ----------------------------------------------------------------------------
@@ -87,6 +86,8 @@ model User {
   scopeItems       ScopeItem[]     @relation("ScopeItemCreatedBy")
   notices          Notice[]        @relation("NoticeCreatedBy")
   meetingMinutes   MeetingMinute[] @relation("MeetingMinuteCreatedBy")
+  uploadedDxfFiles PartDxf[]       @relation("PartDxfUploadedBy")
+  createdNestingJobs NestingJob[]  @relation("NestingJobCreatedBy")
 
   @@map("users")
 }
@@ -134,6 +135,7 @@ model Project {
   scopeItems      ScopeItem[]
   notices         Notice[]
   meetingMinutes  MeetingMinute[]
+  nestingJobs     NestingJob[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -233,6 +235,11 @@ model TakeoffPart {
   drawingId String
   drawing   TakeoffDrawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
 
+  // Optional DXF Nesting extension (Phase 1) — a TakeoffPart works exactly
+  // as before whether or not these are ever populated.
+  dxf             PartDxf?
+  nestingJobItems NestingJobItem[]
+
   @@map("takeoff_parts")
 }
 
@@ -246,6 +253,108 @@ enum PartType {
 enum PartSide {
   INTERNAL
   EXTERNAL
+}
+
+// ----------------------------------------------------------------------------
+// DXF Nesting (Phase 1 — foundation only, no optimization engine yet)
+//
+// This is an ADDITIONAL, optional workflow layered on top of the existing
+// Standard Calculations (TakeoffPart) system above. Nothing above this
+// section changes. A TakeoffPart works exactly as before whether or not it
+// ever gets a PartDxf attached.
+//
+//   TakeoffPart --(0..1)--> PartDxf            (actual uploaded geometry)
+//   Project     --(0..*)--> NestingJob          (a batch of parts to nest)
+//   NestingJob  --(0..*)--> NestingJobItem --> TakeoffPart (reference only,
+//                                               never a duplicate/copy)
+// ----------------------------------------------------------------------------
+
+// The parsed, normalized result of a DXF upload for one TakeoffPart.
+// One-to-one and fully optional — existing/older TakeoffPart rows simply
+// have no PartDxf row at all.
+model PartDxf {
+  id String @id @default(cuid())
+
+  fileName String
+  filePath String
+  fileSize Int?
+
+  valid        Boolean @default(false)
+  errorMessage String? // human-readable reason when valid = false
+
+  // Detected/declared DXF units ($INSUNITS), reported as-is for transparency
+  // — all derived numeric fields below are already normalized to mm / m².
+  unitsDetected String?
+
+  areaSqm      Float? // actual net geometry area (outer − holes), not bbox
+  bboxWidthMm  Float?
+  bboxHeightMm Float?
+
+  outerContourCount Int? // should be exactly 1 for a valid single-part DXF
+  holeCount         Int? @default(0)
+
+  // Normalized outer contour + hole contours (arrays of {x,y} in mm), kept
+  // as JSON so the future nesting engine has the real shape to work with —
+  // never re-derived from the bounding box.
+  geometryJson Json?
+
+  uploadedAt DateTime @default(now())
+
+  takeoffPartId String      @unique
+  takeoffPart   TakeoffPart @relation(fields: [takeoffPartId], references: [id], onDelete: Cascade)
+
+  uploadedById String
+  uploadedBy   User   @relation("PartDxfUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@map("part_dxf_files")
+}
+
+enum NestingJobStatus {
+  DRAFT // still being assembled — parts can be added/removed
+  READY // locked in, waiting for the (future) nesting/optimization engine
+}
+
+// A batch of nestable parts sharing a material + thickness, scoped to a
+// Project — the container the future placement/optimization engine will
+// eventually run against. Phase 1 only supports creating the job and
+// assigning parts to it.
+model NestingJob {
+  id          String           @id @default(cuid())
+  name        String
+  material    String?
+  thicknessMm Float?
+  status      NestingJobStatus @default(DRAFT)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("NestingJobCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  items NestingJobItem[]
+
+  @@map("nesting_jobs")
+}
+
+// A reference, never a copy — qtyOverride only exists for the (optional)
+// case where fewer than the full TakeoffPart quantity should go into this
+// specific nesting run; description/thickness/material stay owned by the
+// TakeoffPart.
+model NestingJobItem {
+  id          String   @id @default(cuid())
+  qtyOverride Int? // null = use the full TakeoffPart.qty
+  createdAt   DateTime @default(now())
+
+  nestingJobId String
+  nestingJob   NestingJob @relation(fields: [nestingJobId], references: [id], onDelete: Cascade)
+
+  takeoffPartId String
+  takeoffPart   TakeoffPart @relation(fields: [takeoffPartId], references: [id], onDelete: Cascade)
+
+  @@unique([nestingJobId, takeoffPartId])
+  @@map("nesting_job_items")
 }
 
 model Document {
