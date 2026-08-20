@@ -1,12 +1,11 @@
 "use client";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Layers3, Loader2 } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import { explainTakeoffPart } from "@/server/calc/takeoff";
 import { PartForm } from "./part-form";
-import { AddToNestingDialog } from "./add-to-nesting-dialog";
 import type { TakeoffPartRow, PartType } from "./types";
 
 // Defensive: legacy/partial rows can come back from the API as null —
@@ -54,7 +53,6 @@ export function PartsGrid({
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
-  const [nestingTarget, setNestingTarget] = React.useState<TakeoffPartRow | null>(null);
   const [uploadingId, setUploadingId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const uploadTargetId = React.useRef<string | null>(null);
@@ -139,7 +137,6 @@ export function PartsGrid({
               <th className="px-2 py-1.5 text-right font-medium">Paint Area</th>
               <th className="px-2 py-1.5 text-right font-medium">Weight (kg)</th>
               <th className="border-l border-border px-2 py-1.5 text-center font-medium">DXF</th>
-              <th className="px-2 py-1.5" />
               <th className="px-1 py-1.5" />
               <th className="px-1 py-1.5" />
             </tr>
@@ -201,13 +198,6 @@ export function PartsGrid({
                         </button>
                       ) : (
                         <span className="text-muted-foreground/50">—</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-1.5 text-center">
-                      {canCreate && part.dxf?.valid && (
-                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Add to Nesting" onClick={() => setNestingTarget(part)}>
-                          <Layers3 className="h-3.5 w-3.5 text-primary" />
-                        </Button>
                       )}
                     </td>
                     <td className="px-1 py-1.5 text-center">
@@ -276,16 +266,6 @@ export function PartsGrid({
           editing={editing}
           nextItemNo={nextItemNo}
           onSaved={onChanged}
-        />
-      )}
-
-      {nestingTarget && (
-        <AddToNestingDialog
-          open={!!nestingTarget}
-          onOpenChange={(v) => !v && setNestingTarget(null)}
-          projectId={projectId}
-          takeoffPartId={nestingTarget.id}
-          partDescription={nestingTarget.description}
         />
       )}
 
