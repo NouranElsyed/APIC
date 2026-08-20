@@ -297,6 +297,7 @@ function NestingJobCard({
                           <th className="px-3 py-1.5 font-medium">Item</th>
                           <th className="px-3 py-1.5 font-medium">Description</th>
                           <th className="px-3 py-1.5 font-medium">Drawing</th>
+                          <th className="px-3 py-1.5 font-medium">Material</th>
                           <th className="px-3 py-1.5 text-right font-medium">Thk (mm)</th>
                           <th className="px-3 py-1.5 text-right font-medium">Qty</th>
                           <th className="px-3 py-1.5 text-right font-medium">DXF Area (m²)</th>
@@ -309,7 +310,8 @@ function NestingJobCard({
                             <td className="px-3 py-1.5 text-xs text-muted-foreground">{p.itemNo}</td>
                             <td className="px-3 py-1.5">{p.description}</td>
                             <td className="px-3 py-1.5 text-xs text-muted-foreground">{p.drawing.drawingNumber}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{p.thicknessMm ?? "—"}</td>
+                            <td className="px-3 py-1.5">{p.material}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{p.thicknessMm}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums">{p.qty}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums">{p.dxfAreaSqm?.toFixed(3) ?? "—"}</td>
                             <td className="px-3 py-1.5 text-center">
@@ -388,7 +390,7 @@ function NestingJobCard({
                     {detail.eligible.groups.map((g) => (
                       <div key={g.key} className="rounded-lg border border-border p-3">
                         <p className="text-xs font-semibold text-foreground">
-                          {job.material ?? "Material"} — {g.thicknessMm} mm
+                          {g.material} — {g.thicknessMm} mm
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">{g.partCount} parts · {g.totalPcs} pcs</p>
                       </div>
@@ -396,7 +398,7 @@ function NestingJobCard({
                   </div>
                 )}
                 <p className="mt-2 text-[11px] text-muted-foreground">
-                  Grouped by thickness. Standard Calculations does not yet track material per part, so material shown here reflects the job — thickness is what drives compatibility today.
+                  Grouped by material + thickness, resolved per part from Standard Calculations.
                 </p>
               </div>
 
@@ -442,12 +444,12 @@ function NestingJobCard({
                   <div className="space-y-1.5">
                     {detail.coverage.map((c) => (
                       <div key={c.key} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-xs">
-                        <span className="font-medium text-foreground">{job.material ?? "Material"} / {c.thicknessMm} mm</span>
+                        <span className="font-medium text-foreground">{c.material} / {c.thicknessMm} mm</span>
                         <span className="text-muted-foreground">Required: {c.totalPcs} pcs</span>
                         {c.covered ? (
                           <span className="inline-flex items-center gap-1 font-medium text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Covered</span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 font-medium text-destructive"><AlertTriangle className="h-3.5 w-3.5" /> Missing source material</span>
+                          <span className="inline-flex items-center gap-1 font-medium text-destructive"><AlertTriangle className="h-3.5 w-3.5" /> Missing Source</span>
                         )}
                       </div>
                     ))}
