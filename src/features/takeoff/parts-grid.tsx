@@ -1,11 +1,12 @@
 "use client";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Layers3, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import { explainTakeoffPart } from "@/server/calc/takeoff";
 import { PartForm } from "./part-form";
+import { AddToNestingDialog } from "./add-to-nesting-dialog";
 import type { TakeoffPartRow, PartType } from "./types";
 
 // Defensive: legacy/partial rows can come back from the API as null —
@@ -39,9 +40,10 @@ function geometrySummary(part: TakeoffPartRow): string {
 }
 
 export function PartsGrid({
-  drawingId, parts, canCreate, canDelete, onChanged,
+  drawingId, projectId, parts, canCreate, canDelete, onChanged,
 }: {
   drawingId: string;
+  projectId: string;
   parts: TakeoffPartRow[];
   canCreate: boolean;
   canDelete: boolean;
@@ -52,6 +54,10 @@ export function PartsGrid({
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
+  const [nestingTarget, setNestingTarget] = React.useState<TakeoffPartRow | null>(null);
+  const [uploadingId, setUploadingId] = React.useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const uploadTargetId = React.useRef<string | null>(null);
 
   const nextItemNo = parts.reduce((max, p) => Math.max(max, p.itemNo), 0) + 1;
 
@@ -76,6 +82,41 @@ export function PartsGrid({
     onChanged();
   }
 
+  function triggerUpload(partId: string) {
+    uploadTargetId.current = partId;
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const partId = uploadTargetId.current;
+    e.target.value = "";
+    if (!file || !partId) return;
+    setUploadingId(partId);
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`/api/takeoff/parts/${partId}/dxf`, { method: "POST", body: form });
+    setUploadingId(null);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      toast.error(body?.error ?? "Failed to upload DXF");
+      return;
+    }
+    const dxf = await res.json();
+    if (dxf.valid) toast.success("DXF uploaded and validated");
+    else toast.error(dxf.errorMessage ?? "DXF uploaded but invalid");
+    onChanged();
+  }
+
+  async function handleRemoveDxf(partId: string) {
+    setUploadingId(partId);
+    const res = await fetch(`/api/takeoff/parts/${partId}/dxf`, { method: "DELETE" });
+    setUploadingId(null);
+    if (!res.ok) { toast.error("Failed to remove DXF"); return; }
+    toast.success("DXF removed");
+    onChanged();
+  }
+
   const totalArea = parts.reduce((s, p) => s + n(p.totalArea), 0);
   const totalPaintArea = parts.reduce((s, p) => s + n(p.paintAreaSqm), 0);
   const totalWeight = parts.reduce((s, p) => s + n(p.weightKg), 0);
@@ -97,6 +138,8 @@ export function PartsGrid({
               <th className="border-l border-border px-2 py-1.5 text-right font-medium">Total Area</th>
               <th className="px-2 py-1.5 text-right font-medium">Paint Area</th>
               <th className="px-2 py-1.5 text-right font-medium">Weight (kg)</th>
+              <th className="border-l border-border px-2 py-1.5 text-center font-medium">DXF</th>
+              <th className="px-2 py-1.5" />
               <th className="px-1 py-1.5" />
               <th className="px-1 py-1.5" />
             </tr>
@@ -104,7 +147,7 @@ export function PartsGrid({
           <tbody>
             {parts.length === 0 && (
               <tr>
-                <td colSpan={13} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={15} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No items yet — use &quot;Add Item&quot; to enter the first part.
                 </td>
               </tr>
@@ -136,6 +179,37 @@ export function PartsGrid({
                     <td className="border-l border-border px-2 py-1.5 text-right tabular-nums">{n(part.totalArea).toFixed(3)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{n(part.paintAreaSqm).toFixed(3)}</td>
                     <td className="px-2 py-1.5 text-right font-medium tabular-nums text-primary">{n(part.weightKg).toFixed(1)}</td>
+                    <td className="border-l border-border px-2 py-1.5 text-center">
+                      {uploadingId === part.id ? (
+                        <Loader2 className="mx-auto h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                      ) : part.dxf ? (
+                        <button
+                          type="button"
+                          className="mx-auto flex items-center gap-1 text-xs"
+                          title={part.dxf.valid
+                            ? `${part.dxf.fileName} — ${part.dxf.areaSqm?.toFixed(3) ?? "?"} m², ${part.dxf.bboxWidthMm?.toFixed(0)}×${part.dxf.bboxHeightMm?.toFixed(0)} mm${part.dxf.holeCount ? `, ${part.dxf.holeCount} hole(s)` : ""} — click to remove`
+                            : `${part.dxf.fileName} — ${part.dxf.errorMessage ?? "Invalid"} — click to re-upload`}
+                          onClick={() => (part.dxf?.valid ? handleRemoveDxf(part.id) : triggerUpload(part.id))}
+                        >
+                          {part.dxf.valid
+                            ? <FileCheck2 className="h-3.5 w-3.5 text-emerald-600" />
+                            : <FileX2 className="h-3.5 w-3.5 text-destructive" />}
+                        </button>
+                      ) : canCreate ? (
+                        <button type="button" title="Upload DXF" className="mx-auto flex items-center justify-center text-muted-foreground hover:text-foreground" onClick={() => triggerUpload(part.id)}>
+                          <Upload className="h-3.5 w-3.5" />
+                        </button>
+                      ) : (
+                        <span className="text-muted-foreground/50">—</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {canCreate && part.dxf?.valid && (
+                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Add to Nesting" onClick={() => setNestingTarget(part)}>
+                          <Layers3 className="h-3.5 w-3.5 text-primary" />
+                        </Button>
+                      )}
+                    </td>
                     <td className="px-1 py-1.5 text-center">
                       <Button size="icon" variant="ghost" className="h-7 w-7" title="Show the equation for this row" onClick={() => setExpandedId(isExpanded ? null : part.id)}>
                         {isExpanded ? <X className="h-3.5 w-3.5 text-muted-foreground" /> : <Sigma className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -158,7 +232,7 @@ export function PartsGrid({
                   </tr>
                   {isExpanded && explanation && (
                     <tr className="border-b border-border bg-primary/5">
-                      <td colSpan={13} className="px-4 py-3">
+                      <td colSpan={15} className="px-4 py-3">
                         <div className="flex flex-wrap gap-x-8 gap-y-1.5 text-xs">
                           {explanation.lines.map((line) => (
                             <div key={line.label} className="min-w-[180px]">
@@ -192,6 +266,8 @@ export function PartsGrid({
         </div>
       </div>
 
+      <input ref={fileInputRef} type="file" accept=".dxf" className="hidden" onChange={handleFileChosen} />
+
       {canCreate && (
         <PartForm
           open={formOpen}
@@ -200,6 +276,16 @@ export function PartsGrid({
           editing={editing}
           nextItemNo={nextItemNo}
           onSaved={onChanged}
+        />
+      )}
+
+      {nestingTarget && (
+        <AddToNestingDialog
+          open={!!nestingTarget}
+          onOpenChange={(v) => !v && setNestingTarget(null)}
+          projectId={projectId}
+          takeoffPartId={nestingTarget.id}
+          partDescription={nestingTarget.description}
         />
       )}
 
