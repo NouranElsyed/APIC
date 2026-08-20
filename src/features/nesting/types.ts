@@ -4,7 +4,9 @@ export type ExcludedReason =
   | "DXF missing"
   | "DXF invalid"
   | "Invalid geometry"
-  | "Quantity is 0";
+  | "Quantity is 0"
+  | "Missing material"
+  | "Missing thickness";
 
 export interface NestingDrawingRef {
   id: string;
@@ -17,7 +19,8 @@ export interface EligiblePart {
   itemNo: number;
   description: string;
   partType: string;
-  thicknessMm: number | null;
+  material: string;
+  thicknessMm: number;
   qty: number;
   dxfAreaSqm: number | null;
   bboxWidthMm: number | null;
@@ -37,6 +40,7 @@ export interface ExcludedPart {
 
 export interface NestingGroup {
   key: string;
+  material: string;
   thicknessMm: number;
   partCount: number;
   totalPcs: number;
@@ -53,6 +57,7 @@ export interface EligibleNestingParts {
 
 export interface GroupCoverage {
   key: string;
+  material: string;
   thicknessMm: number;
   totalPcs: number;
   covered: boolean;
