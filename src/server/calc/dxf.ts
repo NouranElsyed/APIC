@@ -27,6 +27,7 @@ export interface DxfGeometryResult {
   bboxHeightMm: number | null;
   outerContourCount: number;
   holeCount: number;
+  unitsWarning: string | null; // set when bbox size looks implausible for the detected unit
   geometry: { outer: Point[]; holes: Point[][] } | null; // normalized to mm
 }
 
@@ -42,6 +43,53 @@ const UNIT_MM_FACTOR: Record<number, { factor: number; label: string }> = {
   13: { factor: 0.001, label: "µm" },
   14: { factor: 100, label: "dm" },
 };
+
+// Sanity check, not a hard rule: real steel plate/sheet parts are almost
+// always well under this size. If a part's bounding box comes out bigger
+// than this AFTER unit conversion, it's a strong signal that $INSUNITS in
+// the source DXF doesn't match what the drawing was actually authored in
+// (e.g. coordinates drawn in mm but the file header says inches — see the
+// 322.58 m² false-inch case). We flag it rather than silently trusting the
+// header, and suggest which unit would bring it back into a sane range.
+const SUSPECT_MAX_MM = 4000;
+
+const ALT_UNIT_CANDIDATES: { label: string; factor: number }[] = [
+  { label: "mm", factor: 1 },
+  { label: "cm", factor: 10 },
+  { label: "in", factor: 25.4 },
+  { label: "ft", factor: 304.8 },
+  { label: "m", factor: 1000 },
+];
+
+// bboxWidthMm/bboxHeightMm are already-converted values (using the unit
+// factor detectUnits() chose). We reverse that conversion back to raw DXF
+// units, then try each candidate unit to see which one would produce a
+// plausible part size — so the message can suggest a concrete fix.
+export function checkUnitsSanity(
+  bboxWidthMm: number | null,
+  bboxHeightMm: number | null,
+  detectedLabel: string | null,
+  appliedFactor: number
+): string | null {
+  if (!bboxWidthMm || !bboxHeightMm) return null;
+  if (bboxWidthMm <= SUSPECT_MAX_MM && bboxHeightMm <= SUSPECT_MAX_MM) return null;
+
+  const rawWidth = bboxWidthMm / appliedFactor;
+  const rawHeight = bboxHeightMm / appliedFactor;
+
+  const plausible = ALT_UNIT_CANDIDATES.find(
+    (c) => c.label !== detectedLabel && rawWidth * c.factor <= SUSPECT_MAX_MM && rawHeight * c.factor <= SUSPECT_MAX_MM
+  );
+
+  if (plausible) {
+    return `Unusually large part (${bboxWidthMm.toFixed(0)}×${bboxHeightMm.toFixed(0)} mm) — detected as "${detectedLabel}". ` +
+      `If the drawing was actually made in "${plausible.label}", the real size would be about ` +
+      `${(rawWidth * plausible.factor).toFixed(0)}×${(rawHeight * plausible.factor).toFixed(0)} mm. ` +
+      `Check the $INSUNITS value in the DXF header.`;
+  }
+
+  return `Unusually large part (${bboxWidthMm.toFixed(0)}×${bboxHeightMm.toFixed(0)} mm) — please verify the DXF units before trusting this area.`;
+}
 
 interface Tag { code: number; value: string; }
 
@@ -179,6 +227,7 @@ export function parseDxf(text: string): DxfGeometryResult {
     bboxHeightMm: null,
     outerContourCount: 0,
     holeCount: 0,
+    unitsWarning: null,
     geometry: null,
   });
 
@@ -219,6 +268,7 @@ export function parseDxf(text: string): DxfGeometryResult {
     bboxHeightMm,
     outerContourCount: 1,
     holeCount: holes.length,
+    unitsWarning: checkUnitsSanity(bboxWidthMm, bboxHeightMm, units.label, units.factor),
     geometry: { outer, holes },
   };
 }

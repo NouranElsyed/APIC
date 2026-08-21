@@ -303,6 +303,12 @@ model PartDxf {
   outerContourCount Int? // should be exactly 1 for a valid single-part DXF
   holeCount         Int? @default(0)
 
+  // Set when the bounding box looks implausible for the detected unit
+  // (e.g. a part coming out several metres across) — usually means
+  // $INSUNITS in the source file doesn't match how it was actually drawn.
+  // Null when the size looks sane. Purely advisory, never blocks upload.
+  unitsWarning String?
+
   // Normalized outer contour + hole contours (arrays of {x,y} in mm), kept
   // as JSON so the future nesting engine has the real shape to work with —
   // never re-derived from the bounding box.

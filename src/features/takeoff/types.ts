@@ -13,6 +13,7 @@ export interface PartDxfInfo {
   bboxHeightMm: number | null;
   outerContourCount: number | null;
   holeCount: number | null;
+  unitsWarning: string | null;
 }
 
 export interface TakeoffPartRow {

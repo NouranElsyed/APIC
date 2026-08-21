@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2 } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
@@ -101,8 +101,12 @@ export function PartsGrid({
       return;
     }
     const dxf = await res.json();
-    if (dxf.valid) toast.success("DXF uploaded and validated");
-    else toast.error(dxf.errorMessage ?? "DXF uploaded but invalid");
+    if (dxf.valid) {
+      toast.success("DXF uploaded and validated");
+      if (dxf.unitsWarning) toast.warning(dxf.unitsWarning, { duration: 10000 });
+    } else {
+      toast.error(dxf.errorMessage ?? "DXF uploaded but invalid");
+    }
     onChanged();
   }
 
@@ -180,18 +184,35 @@ export function PartsGrid({
                       {uploadingId === part.id ? (
                         <Loader2 className="mx-auto h-3.5 w-3.5 animate-spin text-muted-foreground" />
                       ) : part.dxf ? (
-                        <button
-                          type="button"
-                          className="mx-auto flex items-center gap-1 text-xs"
-                          title={part.dxf.valid
-                            ? `${part.dxf.fileName} — ${part.dxf.areaSqm?.toFixed(3) ?? "?"} m², ${part.dxf.bboxWidthMm?.toFixed(0)}×${part.dxf.bboxHeightMm?.toFixed(0)} mm${part.dxf.holeCount ? `, ${part.dxf.holeCount} hole(s)` : ""} — click to remove`
-                            : `${part.dxf.fileName} — ${part.dxf.errorMessage ?? "Invalid"} — click to re-upload`}
-                          onClick={() => (part.dxf?.valid ? handleRemoveDxf(part.id) : triggerUpload(part.id))}
-                        >
-                          {part.dxf.valid
-                            ? <FileCheck2 className="h-3.5 w-3.5 text-emerald-600" />
-                            : <FileX2 className="h-3.5 w-3.5 text-destructive" />}
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <a
+                            href={part.dxf.filePath}
+                            download={part.dxf.fileName}
+                            title={`Download ${part.dxf.fileName}`}
+                            className="flex items-center justify-center text-muted-foreground hover:text-foreground"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </a>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1 text-xs"
+                            title={part.dxf.valid
+                              ? `${part.dxf.fileName} — ${part.dxf.areaSqm?.toFixed(3) ?? "?"} m², ${part.dxf.bboxWidthMm?.toFixed(0)}×${part.dxf.bboxHeightMm?.toFixed(0)} mm${part.dxf.holeCount ? `, ${part.dxf.holeCount} hole(s)` : ""} — click to remove`
+                              : `${part.dxf.fileName} — ${part.dxf.errorMessage ?? "Invalid"} — click to re-upload`}
+                            onClick={() => (part.dxf?.valid ? handleRemoveDxf(part.id) : triggerUpload(part.id))}
+                          >
+                            {part.dxf.valid
+                              ? <FileCheck2 className="h-3.5 w-3.5 text-emerald-600" />
+                              : <FileX2 className="h-3.5 w-3.5 text-destructive" />}
+                          </button>
+                          {part.dxf.valid && part.dxf.unitsWarning ? (
+                            <TriangleAlert
+                              className="h-3.5 w-3.5 text-amber-500"
+                              title={part.dxf.unitsWarning}
+                            />
+                          ) : null}
+                        </div>
                       ) : canCreate ? (
                         <button type="button" title="Upload DXF" className="mx-auto flex items-center justify-center text-muted-foreground hover:text-foreground" onClick={() => triggerUpload(part.id)}>
                           <Upload className="h-3.5 w-3.5" />
