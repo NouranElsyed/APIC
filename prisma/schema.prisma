@@ -414,13 +414,14 @@ model NestingSource {
 }
 
 // ----------------------------------------------------------------------------
-// Nesting Run persistence (Phase 2A — data model only, no engine yet)
+// Nesting Run persistence (Phase 2 — real engine, see nesting-engine.ts /
+// nesting-run.service.ts)
 //
-// This section prepares storage for a FUTURE real 2D nesting engine. Nothing
-// in the current app creates a NestingRun yet; the "Run Nesting" button in
-// the UI still shows its existing placeholder. No algorithm, packing,
-// optimization, or scrap/kerf calculation is implemented here — only the
-// shape that a future engine's results will be written into.
+// A NestingRun is one execution of the deterministic shelf-fit algorithm in
+// src/server/calc/nesting-engine.ts, persisted here by
+// src/server/services/nesting-run.service.ts. No packing/rotation logic
+// lives in this schema file — this only defines the shape results are
+// written into.
 //
 //   NestingJob --(0..*)--> NestingRun  (one execution of the engine)
 //   NestingRun --(0..*)--> NestingSheet    (one physical sheet used by that run)
@@ -459,6 +460,12 @@ model NestingRun {
   id     String           @id @default(cuid())
   status NestingRunStatus @default(PENDING)
 
+  // Which algorithm produced this run and with what settings — recorded so
+  // historical runs stay interpretable even after the engine evolves.
+  algorithmName    String?
+  algorithmVersion String?
+  configJson       Json? // e.g. { edgeClearanceMm, partGapMm }
+
   createdAt    DateTime  @default(now())
   startedAt    DateTime?
   completedAt  DateTime?
@@ -470,6 +477,14 @@ model NestingRun {
   totalUsedAreaSqm          Float?
   totalScrapAreaSqm         Float?
   overallUtilizationPercent Float?
+
+  // Part-count summary and the full unplaced-parts breakdown (part id,
+  // requested/placed/remaining qty, reason) — kept as JSON since this is a
+  // point-in-time report attached to the run, not a queryable relation.
+  totalPartsRequired Int?
+  totalPartsPlaced   Int?
+  totalPartsUnplaced Int?
+  unplacedPartsJson  Json?
 
   nestingJobId String
   nestingJob   NestingJob @relation(fields: [nestingJobId], references: [id], onDelete: Cascade)

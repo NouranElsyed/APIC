@@ -16,3 +16,12 @@ export const nestingSourceSchema = z.object({
   availableQty: z.number().int().positive("Available quantity must be at least 1"),
 });
 export type NestingSourceInput = z.infer<typeof nestingSourceSchema>;
+
+// Optional per-run overrides for the nesting engine's configurable
+// clearances (PROJECT.md §8). Both are optional — omitted fields fall back
+// to DEFAULT_ENGINE_CONFIG in nesting-engine.ts.
+export const nestingRunConfigSchema = z.object({
+  edgeClearanceMm: z.number().min(0).optional(),
+  partGapMm: z.number().min(0).optional(),
+});
+export type NestingRunConfigInput = z.infer<typeof nestingRunConfigSchema>;

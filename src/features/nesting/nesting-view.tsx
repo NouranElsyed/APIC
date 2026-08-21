@@ -3,7 +3,7 @@ import * as React from "react";
 import Link from "next/link";
 import {
   Plus, FolderKanban, Boxes, Trash2, ChevronDown, ChevronRight,
-  CheckCircle2, AlertTriangle, XCircle, Loader2, Play,
+  CheckCircle2, AlertTriangle, XCircle, Loader2, Play, Layers, Scissors,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,8 +13,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
-import type { NestingJobRow, NestingJobDetail } from "./types";
+import type { NestingJobRow, NestingJobDetail, NestingRunDetail } from "./types";
 import type { ProjectOption } from "@/features/takeoff/types";
+import { NestingSheetPreview, type PartBBoxInfo } from "./nesting-sheet-preview";
 
 function fmt(n: number, digits = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -210,6 +211,10 @@ function NestingJobCard({
   const [showExcluded, setShowExcluded] = React.useState(false);
   const [sourceDialogOpen, setSourceDialogOpen] = React.useState(false);
 
+  const [running, setRunning] = React.useState(false);
+  const [activeRun, setActiveRun] = React.useState<NestingRunDetail | null>(null);
+  const [runLoading, setRunLoading] = React.useState(false);
+
   const loadDetail = React.useCallback(async () => {
     setDetailLoading(true);
     const res = await fetch(`/api/nesting/jobs/${job.id}`);
@@ -217,9 +222,55 @@ function NestingJobCard({
     setDetailLoading(false);
   }, [job.id]);
 
+  const loadRun = React.useCallback(async (runId: string) => {
+    setRunLoading(true);
+    const res = await fetch(`/api/nesting/runs/${runId}`);
+    if (res.ok) setActiveRun(await res.json());
+    setRunLoading(false);
+  }, []);
+
   React.useEffect(() => {
     if (isExpanded && !detail) loadDetail();
   }, [isExpanded, detail, loadDetail]);
+
+  // Once job detail loads, show the most recent run's results (if any)
+  // without requiring the user to click Run Nesting again after reopening
+  // the job.
+  React.useEffect(() => {
+    if (detail && detail.runs.length > 0 && !activeRun && !runLoading) {
+      loadRun(detail.runs[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail]);
+
+  async function handleRunNesting() {
+    if (running) return; // prevent duplicate clicks
+    setRunning(true);
+    try {
+      const res = await fetch(`/api/nesting/jobs/${job.id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(typeof body?.error === "string" ? body.error : "Nesting run failed");
+        return;
+      }
+      const run = body as NestingRunDetail;
+      setActiveRun(run);
+      if ((run.totalPartsUnplaced ?? 0) > 0) {
+        toast.warning(`Nesting completed with ${run.totalPartsUnplaced} unplaced part${run.totalPartsUnplaced === 1 ? "" : "s"}.`);
+      } else {
+        toast.success(`Nesting completed: ${run.totalPartsPlaced}/${run.totalPartsRequired} parts placed on ${run.totalSheets} sheet(s).`);
+      }
+      await loadDetail();
+    } catch {
+      toast.error("Nesting run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
 
   async function handleRemoveSource(sourceId: string) {
     const res = await fetch(`/api/nesting/jobs/${job.id}/sources/${sourceId}`, { method: "DELETE" });
@@ -460,16 +511,24 @@ function NestingJobCard({
               {/* RUN NESTING */}
               <div className="flex items-center justify-between bg-muted/10 px-4 py-3">
                 <p className="text-xs text-muted-foreground">
-                  Nesting optimization (placement, rotation, scrap) is not implemented yet — this stage only prepares parts and source inputs for that future engine.
+                  Runs the deterministic bottom-left / first-fit nesting engine against the parts and source sheets above.
                 </p>
                 <Button
-                  disabled={!allCovered}
-                  title={allCovered ? "Inputs are ready for the future nesting engine" : "All groups need compatible source material first"}
-                  onClick={() => toast.info("Nesting engine is coming in a later phase — inputs for this job are ready.")}
+                  disabled={!allCovered || running}
+                  title={allCovered ? "Run the nesting engine" : "All groups need compatible source material first"}
+                  onClick={handleRunNesting}
                 >
-                  <Play className="h-4 w-4" /> Run Nesting
+                  {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  {running ? "Running…" : "Run Nesting"}
                 </Button>
               </div>
+
+              {/* NESTING RESULTS */}
+              {runLoading && !activeRun ? (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground">Loading last run…</div>
+              ) : activeRun ? (
+                <NestingResults run={activeRun} eligible={detail.eligible} />
+              ) : null}
             </>
           )}
         </div>
@@ -483,6 +542,165 @@ function NestingJobCard({
         defaultThicknessMm={job.thicknessMm}
         onAdded={() => { loadDetail(); onChanged(); }}
       />
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Nesting results — summary, per-material-group breakdown, per-sheet stats,
+// unplaced parts, and the SVG sheet preview (PROJECT.md §17-18). Renders
+// directly from a NestingRunDetail; never computes its own numbers.
+// ----------------------------------------------------------------------------
+
+function NestingResults({ run, eligible }: { run: NestingRunDetail; eligible: NestingJobDetail["eligible"] }) {
+  const [expandedSheetId, setExpandedSheetId] = React.useState<string | null>(null);
+
+  const partInfoById = React.useMemo(() => {
+    const map = new Map<string, PartBBoxInfo>();
+    for (const p of eligible.included) {
+      map.set(p.id, { itemNo: p.itemNo, bboxWidthMm: p.bboxWidthMm, bboxHeightMm: p.bboxHeightMm });
+    }
+    return map;
+  }, [eligible]);
+
+  // Group sheets by material + thickness for the "Material Groups" table.
+  const groups = React.useMemo(() => {
+    const map = new Map<string, { material: string; thicknessMm: number; sheets: typeof run.sheets; parts: number; usedArea: number; scrapArea: number }>();
+    for (const sheet of run.sheets) {
+      const key = `${sheet.material}||${sheet.thicknessMm}`;
+      const entry = map.get(key) ?? { material: sheet.material, thicknessMm: sheet.thicknessMm, sheets: [], parts: 0, usedArea: 0, scrapArea: 0 };
+      entry.sheets.push(sheet);
+      entry.parts += sheet.placements.length;
+      entry.usedArea += sheet.usedAreaSqm ?? 0;
+      entry.scrapArea += sheet.scrapAreaSqm ?? 0;
+      map.set(key, entry);
+    }
+    return [...map.values()];
+  }, [run]);
+
+  if (run.status === "FAILED") {
+    return (
+      <div className="px-4 py-4">
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-3 text-xs text-destructive">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-semibold">Nesting run failed</p>
+            <p className="mt-0.5 text-destructive/90">{run.errorMessage ?? "Unknown error"}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-4">
+      <h4 className="mb-2 text-sm font-semibold text-foreground">Nesting Results</h4>
+
+      {/* SUMMARY */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <SummaryStat label="Parts Required" value={String(run.totalPartsRequired ?? 0)} />
+        <SummaryStat label="Parts Placed" value={String(run.totalPartsPlaced ?? 0)} />
+        <SummaryStat
+          label="Parts Unplaced"
+          value={String(run.totalPartsUnplaced ?? 0)}
+          tone={(run.totalPartsUnplaced ?? 0) > 0 ? "warning" : "default"}
+        />
+        <SummaryStat label="Sheets Used" value={String(run.totalSheets ?? 0)} />
+        <SummaryStat label="Utilization" value={`${fmt(run.overallUtilizationPercent ?? 0, 1)}%`} />
+        <SummaryStat label="Scrap" value={`${fmt(run.totalScrapAreaSqm ?? 0, 2)} m²`} />
+      </div>
+
+      {/* UNPLACED PARTS */}
+      {run.unplacedPartsJson && run.unplacedPartsJson.length > 0 && (
+        <div className="mt-4 overflow-x-auto rounded-lg border border-amber-500/30">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-amber-500/30 bg-amber-500/10 text-left text-xs text-amber-800">
+                <th className="px-3 py-1.5 font-medium">Item</th>
+                <th className="px-3 py-1.5 text-right font-medium">Required</th>
+                <th className="px-3 py-1.5 text-right font-medium">Placed</th>
+                <th className="px-3 py-1.5 text-right font-medium">Remaining</th>
+                <th className="px-3 py-1.5 font-medium">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {run.unplacedPartsJson.map((u) => (
+                <tr key={u.takeoffPartId} className="border-b border-amber-500/20 last:border-0">
+                  <td className="px-3 py-1.5 text-xs text-muted-foreground">#{u.itemNo}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{u.requiredQty}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{u.placedQty}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums font-medium text-amber-700">{u.remainingQty}</td>
+                  <td className="px-3 py-1.5 text-xs">{u.reason.replaceAll("_", " ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* MATERIAL GROUPS */}
+      {groups.length > 0 && (
+        <div className="mt-4">
+          <h5 className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-foreground"><Layers className="h-3.5 w-3.5" /> Material Groups</h5>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {groups.map((g) => {
+              const total = g.usedArea + g.scrapArea;
+              const util = total > 0 ? (g.usedArea / total) * 100 : 0;
+              return (
+                <div key={`${g.material}||${g.thicknessMm}`} className="rounded-lg border border-border p-3">
+                  <p className="text-xs font-semibold text-foreground">{g.material} — {g.thicknessMm} mm</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {g.parts} parts · {g.sheets.length} sheet{g.sheets.length === 1 ? "" : "s"} · {fmt(util, 1)}% util · {fmt(g.scrapArea, 2)} m² scrap
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* SHEETS */}
+      {run.sheets.length > 0 && (
+        <div className="mt-4">
+          <h5 className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-foreground"><Scissors className="h-3.5 w-3.5" /> Sheets</h5>
+          <div className="space-y-2">
+            {run.sheets.map((sheet) => {
+              const isOpen = expandedSheetId === sheet.id;
+              return (
+                <div key={sheet.id} className="overflow-hidden rounded-lg border border-border">
+                  <button
+                    type="button"
+                    className="flex w-full flex-wrap items-center justify-between gap-2 bg-muted/20 px-3 py-2 text-left text-xs"
+                    onClick={() => setExpandedSheetId(isOpen ? null : sheet.id)}
+                  >
+                    <span className="font-medium text-foreground">
+                      Sheet #{sheet.sheetNumber} — {sheet.material} {sheet.thicknessMm}mm — {fmt(sheet.widthMm, 0)}×{fmt(sheet.lengthMm, 0)} mm
+                    </span>
+                    <span className="text-muted-foreground">
+                      {sheet.placements.length} parts · {fmt(sheet.utilizationPercent ?? 0, 1)}% util · {fmt(sheet.scrapAreaSqm ?? 0, 2)} m² scrap
+                    </span>
+                    {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                  </button>
+                  {isOpen && (
+                    <div className="p-3">
+                      <NestingSheetPreview sheet={sheet} partInfoById={partInfoById} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "warning" }) {
+  return (
+    <div className="rounded-lg border border-border p-2.5">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`mt-0.5 text-base font-semibold ${tone === "warning" ? "text-amber-600" : "text-foreground"}`}>{value}</p>
     </div>
   );
 }

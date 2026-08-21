@@ -241,6 +241,10 @@ export function computeSourceCoverage(
 
 const jobInclude = {
   sources: { orderBy: { createdAt: "asc" as const } },
+  // Lightweight run history (no sheets/placements — see nesting-run.service's
+  // getNestingRun for the full tree of a single run) so the job detail view
+  // can show past runs and their headline numbers without a second request.
+  runs: { orderBy: { createdAt: "desc" as const } },
 };
 
 export async function listNestingJobs(projectId: string) {
