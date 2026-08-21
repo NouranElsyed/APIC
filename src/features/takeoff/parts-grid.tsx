@@ -207,10 +207,9 @@ export function PartsGrid({
                               : <FileX2 className="h-3.5 w-3.5 text-destructive" />}
                           </button>
                           {part.dxf.valid && part.dxf.unitsWarning ? (
-                            <TriangleAlert
-                              className="h-3.5 w-3.5 text-amber-500"
-                              title={part.dxf.unitsWarning}
-                            />
+                            <span title={part.dxf.unitsWarning}>
+                              <TriangleAlert className="h-3.5 w-3.5 text-amber-500" />
+                            </span>
                           ) : null}
                         </div>
                       ) : canCreate ? (
