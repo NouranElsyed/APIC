@@ -26,13 +26,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [projectId, setProjectId] = React.useState("");
   const [jobs, setJobs] = React.useState<NestingJobRow[]>([]);
   const [loading, setLoading] = React.useState(false);
-  const [expandedId, setExpandedId] = React.useState<string | null>(null);
-
-  const [createOpen, setCreateOpen] = React.useState(false);
-  const [name, setName] = React.useState("");
-  const [material, setMaterial] = React.useState("");
-  const [thicknessMm, setThicknessMm] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const [starting, setStarting] = React.useState(false);
 
   const [deletingJob, setDeletingJob] = React.useState<NestingJobRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
@@ -54,24 +48,18 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   React.useEffect(() => { loadJobs(projectId); }, [projectId, loadJobs]);
 
-  async function handleCreate() {
-    if (!name.trim()) { toast.error("Job name is required"); return; }
-    setSubmitting(true);
+  // There's no "job name" for the user to give — a project has exactly one
+  // Nesting, so starting it is a single click with no form.
+  async function handleStart() {
+    setStarting(true);
     const res = await fetch("/api/nesting/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId,
-        name: name.trim(),
-        material: material.trim() || null,
-        thicknessMm: thicknessMm.trim() ? Number(thicknessMm) : null,
-      }),
+      body: JSON.stringify({ projectId, name: "Nesting" }),
     });
-    setSubmitting(false);
+    setStarting(false);
     if (!res.ok) { toast.error("Failed to start nesting"); return; }
     toast.success("Nesting started");
-    setCreateOpen(false);
-    setName(""); setMaterial(""); setThicknessMm("");
     loadJobs(projectId);
   }
 
@@ -93,6 +81,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
   }
 
   const selectedProject = projects.find((p) => p.id === projectId);
+  const currentJob = jobs[0]; // enforced: at most one Nesting per project
 
   return (
     <div className="space-y-6">
@@ -121,73 +110,39 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
           </div>
         </div>
         {canCreate && (
-          jobs.length > 0 ? (
-            <Button onClick={handleUpdateNesting} disabled={!projectId || loading} variant="outline">
-              <Boxes className="h-4 w-4" /> Update Nesting
-            </Button>
+          currentJob ? (
+            <div className="flex items-center gap-2">
+              <Button onClick={handleUpdateNesting} disabled={!projectId || loading} variant="outline">
+                <Boxes className="h-4 w-4" /> Update Nesting
+              </Button>
+              {canDelete && (
+                <Button onClick={() => setDeletingJob(currentJob)} variant="ghost" size="icon" title="Delete nesting">
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              )}
+            </div>
           ) : (
-            <Button onClick={() => setCreateOpen(true)} disabled={!projectId}>
-              <Plus className="h-4 w-4" /> Start Nesting
+            <Button onClick={handleStart} disabled={!projectId || starting}>
+              {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Start Nesting
             </Button>
           )
         )}
       </div>
 
       {!projectId ? (
-        <EmptyState icon={<FolderKanban className="h-5 w-5" />} title="No project selected" description="Choose a project above to see its nesting jobs." />
+        <EmptyState icon={<FolderKanban className="h-5 w-5" />} title="No project selected" description="Choose a project above to see its nesting." />
       ) : loading ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">Loading…</div>
-      ) : jobs.length === 0 ? (
+      ) : !currentJob ? (
         <EmptyState
           icon={<Boxes className="h-5 w-5" />}
           title="No nesting yet"
           description={`Start nesting for ${selectedProject?.number ?? "this project"} — it will automatically collect every DXF-ready part from Standard Calculations.`}
-          action={canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Start Nesting</Button> : undefined}
+          action={canCreate ? <Button onClick={handleStart} disabled={starting}>{starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Start Nesting</Button> : undefined}
         />
       ) : (
-        <div className="space-y-4">
-          {jobs.map((job) => (
-            <NestingJobCard
-              key={job.id}
-              job={job}
-              isExpanded={expandedId === job.id}
-              onToggle={() => setExpandedId(expandedId === job.id ? null : job.id)}
-              canDelete={canDelete}
-              onRequestDelete={() => setDeletingJob(job)}
-              onChanged={() => loadJobs(projectId)}
-            />
-          ))}
-        </div>
+        <NestingJobCard job={currentJob} onChanged={() => loadJobs(projectId)} />
       )}
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader><DialogTitle>Start Nesting</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Job name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Job #001 — Riser plates" autoFocus />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Material (optional)</Label>
-                <Input value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="e.g. Steel" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Thickness mm (optional)</Label>
-                <Input type="number" step="any" value={thicknessMm} onChange={(e) => setThicknessMm(e.target.value)} />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              You won&apos;t select parts manually — every DXF-ready part in this project is collected automatically once the job is created.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button type="button" onClick={handleCreate} disabled={submitting}>Start</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <ConfirmDialog
         open={!!deletingJob}
@@ -209,13 +164,9 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
 // ----------------------------------------------------------------------------
 
 function NestingJobCard({
-  job, isExpanded, onToggle, canDelete, onRequestDelete, onChanged,
+  job, onChanged,
 }: {
   job: NestingJobRow;
-  isExpanded: boolean;
-  onToggle: () => void;
-  canDelete: boolean;
-  onRequestDelete: () => void;
   onChanged: () => void;
 }) {
   const [detail, setDetail] = React.useState<NestingJobDetail | null>(null);
@@ -251,8 +202,8 @@ function NestingJobCard({
   }, []);
 
   React.useEffect(() => {
-    if (isExpanded && !detail) loadDetail();
-  }, [isExpanded, detail, loadDetail]);
+    if (!detail) loadDetail();
+  }, [detail, loadDetail]);
 
   // Once job detail loads, show the most recent run's results (if any)
   // without requiring the user to click Run Nesting again after reopening
@@ -349,42 +300,21 @@ function NestingJobCard({
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
-      <button
-        type="button"
-        className="flex w-full flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/40 px-4 py-3 text-left"
-        onClick={onToggle}
-      >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/40 px-4 py-3">
         <div className="flex items-center gap-2.5">
-          {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
           <Boxes className="h-4 w-4 text-muted-foreground" />
-          <div>
-            <p className="text-sm font-semibold text-foreground">
-              {job.name}
-              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{job.status}</span>
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {job.partsSummary.totalParts} Parts · {job.partsSummary.totalPcs} pcs · {job.partsSummary.groupCount} group{job.partsSummary.groupCount === 1 ? "" : "s"}
-              {job.partsSummary.excludedCount > 0 && (
-                <span className="ml-1 text-amber-600">· {job.partsSummary.excludedCount} excluded</span>
-              )}
-              {"  ·  "}
-              {job.sources.length === 0 ? "Sources not configured" : `${job.sources.length} source${job.sources.length === 1 ? "" : "s"}`}
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            {job.partsSummary.totalParts} Parts · {job.partsSummary.totalPcs} pcs · {job.partsSummary.groupCount} group{job.partsSummary.groupCount === 1 ? "" : "s"}
+            {job.partsSummary.excludedCount > 0 && (
+              <span className="ml-1 text-amber-600">· {job.partsSummary.excludedCount} excluded</span>
+            )}
+            {"  ·  "}
+            {job.sources.length === 0 ? "Sources not configured" : `${job.sources.length} source${job.sources.length === 1 ? "" : "s"}`}
+          </p>
         </div>
-        {canDelete && (
-          <span
-            role="button"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
-            onClick={(e) => { e.stopPropagation(); onRequestDelete(); }}
-          >
-            <Trash2 className="h-4 w-4" />
-          </span>
-        )}
-      </button>
+      </div>
 
-      {isExpanded && (
-        <div className="divide-y divide-border">
+      <div className="divide-y divide-border">
           {detailLoading && !detail ? (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">Loading job details…</div>
           ) : !detail ? (
@@ -645,8 +575,7 @@ function NestingJobCard({
               ) : null}
             </>
           )}
-        </div>
-      )}
+      </div>
 
       <AddSourceDialog
         open={sourceDialogOpen}
