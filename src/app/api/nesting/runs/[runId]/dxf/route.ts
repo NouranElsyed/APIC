@@ -28,7 +28,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ runI
     }
 
     const { fileName, content, contentType } = await exportNestingRunDxf(runId);
-    const body = content instanceof Uint8Array ? content : new Uint8Array(Buffer.from(content));
+    const body = Uint8Array.from(content);
     return new NextResponse(body, {
       status: 200,
       headers: {
