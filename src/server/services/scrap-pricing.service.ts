@@ -1,4 +1,6 @@
 import { getNestingRun } from "./nesting-run.service";
+import { prisma } from "@/server/db/client";
+import { getEligibleNestingParts } from "./nesting.service";
 import { STEEL_DENSITY_KG_PER_M2_MM } from "@/server/calc/takeoff";
 import {
   calculateScrapPricingRow,
@@ -7,7 +9,89 @@ import {
   type ScrapPricingRowResult,
   type ScrapPricingTotals,
 } from "@/server/calc/scrap-pricing";
-import type { SourceRequirementRow } from "@/features/nesting/types";
+import type { SourceRequirementRow, EligiblePart } from "@/features/nesting/types";
+
+// Everything the export needs beyond the pricing calc itself: the Part List
+// (what was taken off) and the Nesting layout (what the engine actually
+// placed), so the workbook can mirror the reference file's three sections —
+// Part List, Nesting, Scrap Calculation — instead of just the last one.
+export interface ScrapPricingExportContext {
+  parts: EligiblePart[];
+  sheets: Array<{
+    sheetNumber: number;
+    material: string;
+    thicknessMm: number;
+    widthMm: number;
+    lengthMm: number;
+    usedAreaSqm: number | null;
+    scrapAreaSqm: number | null;
+    utilizationPercent: number | null;
+    placements: Array<{
+      itemNo: number | null;
+      description: string | null;
+      instanceNumber: number;
+      xMm: number;
+      yMm: number;
+      rotationDeg: number;
+    }>;
+  }>;
+}
+
+export async function getScrapPricingExportContext(nestingRunId: string): Promise<ScrapPricingExportContext> {
+  const run = await getNestingRun(nestingRunId);
+  if (!run) throw new ScrapPricingError("Nesting run not found");
+
+  const job = await prisma.nestingJob.findUnique({ where: { id: run.nestingJobId }, select: { projectId: true } });
+  if (!job) throw new ScrapPricingError("Nesting job not found");
+
+  const eligible = await getEligibleNestingParts(job.projectId);
+
+  // Placements only carry takeoffPartId; look the referenced parts up once
+  // and join in-memory rather than re-shaping getNestingRun's include (that
+  // shape is shared with the on-screen Nesting views).
+  interface RunSheet {
+    sheetNumber: number;
+    material: string;
+    thicknessMm: number;
+    widthMm: number;
+    lengthMm: number;
+    usedAreaSqm: number | null;
+    scrapAreaSqm: number | null;
+    utilizationPercent: number | null;
+    placements: Array<{ takeoffPartId: string; instanceNumber: number; xMm: number; yMm: number; rotationDeg: number }>;
+  }
+  const runSheets = run.sheets as unknown as RunSheet[];
+
+  const partIds = [...new Set(runSheets.flatMap((s: RunSheet) => s.placements.map((p) => p.takeoffPartId)))];
+  interface TakeoffPartLite { id: string; itemNo: number; description: string }
+  const takeoffParts: TakeoffPartLite[] = partIds.length
+    ? await prisma.takeoffPart.findMany({ where: { id: { in: partIds } }, select: { id: true, itemNo: true, description: true } })
+    : [];
+  const partById = new Map(takeoffParts.map((p) => [p.id, p]));
+
+  const sheets = runSheets.map((s: RunSheet) => ({
+    sheetNumber: s.sheetNumber,
+    material: s.material,
+    thicknessMm: s.thicknessMm,
+    widthMm: s.widthMm,
+    lengthMm: s.lengthMm,
+    usedAreaSqm: s.usedAreaSqm,
+    scrapAreaSqm: s.scrapAreaSqm,
+    utilizationPercent: s.utilizationPercent,
+    placements: s.placements
+      .map((p) => ({
+        itemNo: partById.get(p.takeoffPartId)?.itemNo ?? null,
+        description: partById.get(p.takeoffPartId)?.description ?? null,
+        instanceNumber: p.instanceNumber,
+        xMm: p.xMm,
+        yMm: p.yMm,
+        rotationDeg: p.rotationDeg,
+      }))
+      .sort((a, b) => (a.itemNo ?? 0) - (b.itemNo ?? 0) || a.instanceNumber - b.instanceNumber),
+  }));
+
+  return { parts: eligible.included, sheets };
+}
 
 export class ScrapPricingError extends Error {}
 

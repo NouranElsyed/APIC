@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { ScrapPricingResult } from "./scrap-pricing.service";
+import type { ScrapPricingResult, ScrapPricingExportContext } from "./scrap-pricing.service";
 
 // Mirrors the "pricing" sheet of calculate_area_formatted.xlsx: same column
 // order/headers, same assumption + two-way summary section (Scrap % from
@@ -19,16 +19,94 @@ const HEADERS = [
 const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3864" } };
 const HEADER_FONT: Partial<ExcelJS.Font> = { bold: true, color: { argb: "FFFFFFFF" } };
 const TOTAL_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
+// Matches the reference workbook: light-blue band across the data rows,
+// with the "Primary Scrap" column called out in yellow.
+const DATA_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9E2F3" } };
+const HIGHLIGHT_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
+
+function buildPartListSheet(wb: ExcelJS.Workbook, parts: ScrapPricingExportContext["parts"]) {
+  const ws = wb.addWorksheet("Part List", { views: [{ state: "frozen", ySplit: 1 }] });
+  const headers = [
+    "Item No", "Drawing No", "Description", "Material", "Thickness (mm)",
+    "Qty", "DXF Area (m2)", "BBox W (mm)", "BBox H (mm)",
+  ];
+  ws.columns = headers.map((h) => ({ header: h, width: Math.max(14, h.length + 2) }));
+  ws.getRow(1).eachCell((cell) => {
+    cell.fill = HEADER_FILL;
+    cell.font = HEADER_FONT;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+
+  parts.forEach((p, i) => {
+    const row = ws.getRow(2 + i);
+    row.values = [
+      p.itemNo, p.drawing.drawingNumber, p.description, p.material, p.thicknessMm,
+      p.qty, p.dxfAreaSqm, p.bboxWidthMm, p.bboxHeightMm,
+    ];
+    row.getCell(5).numFmt = "#,##0.00";
+    row.getCell(7).numFmt = "#,##0.0000";
+    row.getCell(8).numFmt = "#,##0.0";
+    row.getCell(9).numFmt = "#,##0.0";
+  });
+  return ws;
+}
+
+function buildNestingSheet(wb: ExcelJS.Workbook, sheets: ScrapPricingExportContext["sheets"]) {
+  const ws = wb.addWorksheet("Nesting", { views: [{ state: "frozen", ySplit: 1 }] });
+  const headers = [
+    "Sheet #", "Material", "Thickness (mm)", "Width (mm)", "Length (mm)",
+    "Used Area (m2)", "Scrap Area (m2)", "Utilization %", "Item No", "Instance",
+    "X (mm)", "Y (mm)", "Rotation (deg)",
+  ];
+  ws.columns = headers.map((h) => ({ header: h, width: Math.max(13, h.length + 2) }));
+  ws.getRow(1).eachCell((cell) => {
+    cell.fill = HEADER_FILL;
+    cell.font = HEADER_FONT;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+
+  let rowNum = 2;
+  for (const sheet of sheets) {
+    const placements = sheet.placements.length ? sheet.placements : [null];
+    const firstRowOfSheet = rowNum;
+    for (const pl of placements) {
+      const row = ws.getRow(rowNum);
+      row.values = [
+        sheet.sheetNumber, sheet.material, sheet.thicknessMm, sheet.widthMm, sheet.lengthMm,
+        sheet.usedAreaSqm, sheet.scrapAreaSqm, sheet.utilizationPercent != null ? sheet.utilizationPercent / 100 : null,
+        pl?.itemNo ?? "", pl?.instanceNumber ?? "", pl?.xMm ?? "", pl?.yMm ?? "", pl?.rotationDeg ?? "",
+      ];
+      [3, 4, 5, 6, 7].forEach((c) => (row.getCell(c).numFmt = "#,##0.00"));
+      row.getCell(8).numFmt = "0.0%";
+      rowNum++;
+    }
+    if (placements.length > 1) {
+      ws.mergeCells(firstRowOfSheet, 1, rowNum - 1, 1);
+      ws.mergeCells(firstRowOfSheet, 2, rowNum - 1, 2);
+      ws.mergeCells(firstRowOfSheet, 3, rowNum - 1, 3);
+      ws.mergeCells(firstRowOfSheet, 4, rowNum - 1, 4);
+      ws.mergeCells(firstRowOfSheet, 5, rowNum - 1, 5);
+      ws.mergeCells(firstRowOfSheet, 6, rowNum - 1, 6);
+      ws.mergeCells(firstRowOfSheet, 7, rowNum - 1, 7);
+      ws.mergeCells(firstRowOfSheet, 8, rowNum - 1, 8);
+    }
+  }
+  return ws;
+}
 
 export function buildScrapPricingWorkbook(
   result: ScrapPricingResult,
   meta: { projectNumber: string; projectName: string; inputs: { costPerKg: number; usedLaterPct: number; usedLaterPriceLEPerKg: number; scrapSellPriceLEPerKg: number } },
+  context: ScrapPricingExportContext,
 ): ExcelJS.Workbook {
   const wb = new ExcelJS.Workbook();
   wb.creator = "SteelFlow";
   wb.created = new Date();
 
-  const ws = wb.addWorksheet("pricing", { views: [{ state: "frozen", ySplit: 1 }] });
+  buildPartListSheet(wb, context.parts);
+  buildNestingSheet(wb, context.sheets);
+
+  const ws = wb.addWorksheet("Scrap Calculation", { views: [{ state: "frozen", ySplit: 1 }] });
   ws.columns = HEADERS.map((h) => ({ header: h, width: Math.max(14, h.length + 2) }));
 
   const headerRow = ws.getRow(1);
@@ -69,6 +147,9 @@ export function buildScrapPricingWorkbook(
     row.getCell(21).numFmt = "0.0%";
     row.getCell(10).numFmt = "0.0%";
     [2, 3, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 18, 19, 20].forEach((c) => (row.getCell(c).numFmt = "#,##0.00"));
+    // Columns B..U get the light-blue band; "Primary Scrap" (H) is yellow.
+    for (let c = 2; c <= 21; c++) row.getCell(c).fill = DATA_FILL;
+    row.getCell(8).fill = HIGHLIGHT_FILL;
   });
 
   const lastDataRow = firstDataRow + result.rows.length - 1;

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
 import { scrapPricingInputsSchema } from "@/server/validators/nesting";
-import { calculateScrapPricingForRun, ScrapPricingError } from "@/server/services/scrap-pricing.service";
+import { calculateScrapPricingForRun, getScrapPricingExportContext, ScrapPricingError } from "@/server/services/scrap-pricing.service";
 import { buildScrapPricingWorkbook } from "@/server/services/scrap-pricing-export.service";
 import { getProject } from "@/server/services/project.service";
 import { z } from "zod";
@@ -23,9 +23,10 @@ export async function POST(req: NextRequest) {
   const project = await getProject(projectId);
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
 
-  let result;
+  let result, context;
   try {
     result = await calculateScrapPricingForRun(nestingRunId, globals, overridesByGroupKey ?? {});
+    context = await getScrapPricingExportContext(nestingRunId);
   } catch (err) {
     if (err instanceof ScrapPricingError) {
       return NextResponse.json({ error: err.message }, { status: 404 });
@@ -33,11 +34,11 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const wb = buildScrapPricingWorkbook(result, {
-    projectNumber: project.number,
-    projectName: project.name,
-    inputs: globals,
-  });
+  const wb = buildScrapPricingWorkbook(
+    result,
+    { projectNumber: project.number, projectName: project.name, inputs: globals },
+    context,
+  );
 
   const buffer = await wb.xlsx.writeBuffer();
   const fileName = `SteelFlow_Scrap_Pricing_${project.number}.xlsx`;
