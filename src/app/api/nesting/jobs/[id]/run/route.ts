@@ -15,7 +15,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (res) return res;
   const { id } = await params;
 
-  let overrides: { edgeClearanceMm?: number; partGapMm?: number } = {};
+  let overrides: {
+    partGapMm?: number;
+    marginLeftMm?: number;
+    marginRightMm?: number;
+    marginTopMm?: number;
+    marginBottomMm?: number;
+  } = {};
   try {
     const body = await req.json().catch(() => ({}));
     const parsed = nestingRunConfigSchema.safeParse(body ?? {});
@@ -28,8 +34,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const config = {
-    edgeClearanceMm: overrides.edgeClearanceMm ?? DEFAULT_ENGINE_CONFIG.edgeClearanceMm,
     partGapMm: overrides.partGapMm ?? DEFAULT_ENGINE_CONFIG.partGapMm,
+    marginLeftMm: overrides.marginLeftMm ?? DEFAULT_ENGINE_CONFIG.marginLeftMm,
+    marginRightMm: overrides.marginRightMm ?? DEFAULT_ENGINE_CONFIG.marginRightMm,
+    marginTopMm: overrides.marginTopMm ?? DEFAULT_ENGINE_CONFIG.marginTopMm,
+    marginBottomMm: overrides.marginBottomMm ?? DEFAULT_ENGINE_CONFIG.marginBottomMm,
   };
 
   try {

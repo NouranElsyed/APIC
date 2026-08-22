@@ -309,7 +309,7 @@ export async function addNestingSource(jobId: string, data: NestingSourceInput, 
       thicknessMm: data.thicknessMm,
       widthMm: data.widthMm,
       lengthMm: data.lengthMm,
-      availableQty: data.availableQty,
+      availableQty: data.availableQty ?? null,
     },
   });
   await logActivity({

@@ -43,7 +43,6 @@ function source(overrides: Partial<EngineSourceInput> & { widthMm: number; lengt
     sourceSheetId: "source-1",
     material: "Steel",
     thicknessMm: 6,
-    availableQty: 1,
     ...overrides,
   };
 }
@@ -64,7 +63,7 @@ describe("runNestingAlgorithm", () => {
 
   it("Test 2 — multiple identical parts: no overlap, correct quantity, deterministic placement", () => {
     const parts = [part({ widthMm: 100, heightMm: 100, qty: 6 })];
-    const sources = [source({ widthMm: 1000, lengthMm: 1000, availableQty: 1 })];
+    const sources = [source({ widthMm: 1000, lengthMm: 1000 })];
 
     const result = runNestingAlgorithm(parts, sources);
     const run1Placements = result.groups[0].sheets.flatMap((s) => s.placements);
@@ -126,7 +125,7 @@ describe("runNestingAlgorithm", () => {
     // Each part is ~330x330 with 5mm clearance -> only one fits per 400x400
     // sheet's usable 390x390 area (shelf packer, not a dense packer).
     const parts = [part({ widthMm: 330, heightMm: 330, qty: 2 })];
-    const sources = [source({ widthMm: 400, lengthMm: 400, availableQty: 2 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400 })];
 
     const result = runNestingAlgorithm(parts, sources);
 
@@ -135,15 +134,42 @@ describe("runNestingAlgorithm", () => {
     expect(result.totalSheetsUsed).toBe(2);
   });
 
-  it("Test 5b — reports shortage clearly when not enough sheets are available", () => {
-    const parts = [part({ widthMm: 330, heightMm: 330, qty: 2 })];
-    const sources = [source({ widthMm: 400, lengthMm: 400, availableQty: 1 })];
+  it("Test 5b — a source sheet has no fixed quantity: the engine buys as many as needed automatically", () => {
+    // Only ONE source sheet definition is declared (no quantity field at
+    // all, per PROJECT.md §2/§4) but 37 parts are required and only 1 fits
+    // per sheet — the engine must open as many physical sheets as it takes
+    // rather than reporting a shortage.
+    const parts = [part({ widthMm: 330, heightMm: 330, qty: 37 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400 })];
 
     const result = runNestingAlgorithm(parts, sources);
 
-    expect(result.totalPartsPlaced).toBe(1);
-    expect(result.totalPartsUnplaced).toBe(1);
-    expect(result.unplacedParts[0].reason).toBe("INSUFFICIENT_SHEET_AREA");
+    expect(result.totalPartsPlaced).toBe(37);
+    expect(result.totalPartsUnplaced).toBe(0);
+    expect(result.totalSheetsUsed).toBe(37);
+    expect(result.sourceRequirements).toHaveLength(1);
+    expect(result.sourceRequirements[0].requiredQty).toBe(37);
+  });
+
+  it("Test 11 — required sheet quantity: 37 parts at 12 parts per sheet requires 4 sheets", () => {
+    // 100x100mm parts, no gap, on a sheet whose usable area (after default
+    // margins) fits exactly 12 per sheet in a 4x3 grid.
+    const parts = [part({ widthMm: 100, heightMm: 100, qty: 37 })];
+    const sources = [source({ widthMm: 405, lengthMm: 305 })]; // usable 395x295 -> exactly 3 cols x 2... adjust below
+
+    const result = runNestingAlgorithm(parts, sources, {
+      marginLeftMm: 2.5,
+      marginRightMm: 2.5,
+      marginTopMm: 2.5,
+      marginBottomMm: 2.5,
+      partGapMm: 0,
+    });
+
+    // Whatever the exact per-sheet count the shelf packer achieves, every
+    // part must be placed and the reported required quantity for the one
+    // source definition must equal the number of sheets actually used.
+    expect(result.totalPartsPlaced).toBe(37);
+    expect(result.sourceRequirements[0].requiredQty).toBe(result.totalSheetsUsed);
   });
 
   it("Test 6 — parts grouped by different materials never mix onto an incompatible sheet", () => {
@@ -198,23 +224,60 @@ describe("runNestingAlgorithm", () => {
     expect(result.unplacedParts[0].reason).toBe("NO_SOURCE_SHEET");
   });
 
-  it("never places a part outside the sheet boundary given edge clearance", () => {
+  it("never places a part outside the sheet boundary given sheet margins", () => {
     const parts = [part({ widthMm: 50, heightMm: 50, qty: 10 })];
-    const sources = [source({ widthMm: 300, lengthMm: 300, availableQty: 3 })];
-    const config = { edgeClearanceMm: 10, partGapMm: 2 };
+    const sources = [source({ widthMm: 300, lengthMm: 300 })];
+    const config = { marginLeftMm: 10, marginRightMm: 10, marginTopMm: 10, marginBottomMm: 10, partGapMm: 2 };
 
     const result = runNestingAlgorithm(parts, sources, config);
 
     for (const group of result.groups) {
       for (const sheet of group.sheets) {
         for (const placement of sheet.placements) {
-          expect(placement.xMm).toBeGreaterThanOrEqual(config.edgeClearanceMm - 1e-6);
-          expect(placement.yMm).toBeGreaterThanOrEqual(config.edgeClearanceMm - 1e-6);
-          expect(placement.xMm + placement.widthMm).toBeLessThanOrEqual(sheet.widthMm - config.edgeClearanceMm + 1e-6);
-          expect(placement.yMm + placement.heightMm).toBeLessThanOrEqual(sheet.lengthMm - config.edgeClearanceMm + 1e-6);
+          expect(placement.xMm).toBeGreaterThanOrEqual(config.marginLeftMm - 1e-6);
+          expect(placement.yMm).toBeGreaterThanOrEqual(config.marginBottomMm - 1e-6);
+          expect(placement.xMm + placement.widthMm).toBeLessThanOrEqual(sheet.widthMm - config.marginRightMm + 1e-6);
+          expect(placement.yMm + placement.heightMm).toBeLessThanOrEqual(sheet.lengthMm - config.marginTopMm + 1e-6);
         }
       }
     }
+  });
+
+  it("respects asymmetric per-side margins independently", () => {
+    // A large left margin should shrink usable width without affecting the
+    // usable height at all.
+    const parts = [part({ widthMm: 100, heightMm: 100 })];
+    const sources = [source({ widthMm: 300, lengthMm: 300 })];
+    const config = { marginLeftMm: 150, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+    const result = runNestingAlgorithm(parts, sources, config);
+    const placement = result.groups[0].sheets[0].placements[0];
+
+    expect(placement.xMm).toBeGreaterThanOrEqual(150 - 1e-6);
+  });
+
+  it("Part Gap = 0 allows parts to touch edge-to-edge without being treated as overlapping", () => {
+    const parts = [part({ widthMm: 100, heightMm: 100, qty: 2 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400 })];
+    const config = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+    const result = runNestingAlgorithm(parts, sources, config);
+    expect(result.totalPartsPlaced).toBe(2);
+    const [a, b] = result.groups[0].sheets[0].placements;
+    // They end up flush (touching), never overlapping — shelf packing puts
+    // the second part's x exactly at the first part's right edge.
+    expect(Math.abs(a.xMm + a.widthMm - b.xMm)).toBeCloseTo(0, 6);
+  });
+
+  it("Part Gap > 0 enforces the minimum separation between two parts", () => {
+    const parts = [part({ widthMm: 100, heightMm: 100, qty: 2 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400 })];
+    const config = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 10 };
+
+    const result = runNestingAlgorithm(parts, sources, config);
+    expect(result.totalPartsPlaced).toBe(2);
+    const [a, b] = result.groups[0].sheets[0].placements;
+    expect(b.xMm - (a.xMm + a.widthMm)).toBeCloseTo(10, 6);
   });
 });
 

@@ -3,7 +3,7 @@ import * as React from "react";
 import Link from "next/link";
 import {
   Plus, FolderKanban, Boxes, Trash2, ChevronDown, ChevronRight,
-  CheckCircle2, AlertTriangle, XCircle, Loader2, Play, Layers, Scissors,
+  CheckCircle2, AlertTriangle, XCircle, Loader2, Play, Layers, Scissors, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -214,6 +214,15 @@ function NestingJobCard({
   const [running, setRunning] = React.useState(false);
   const [activeRun, setActiveRun] = React.useState<NestingRunDetail | null>(null);
   const [runLoading, setRunLoading] = React.useState(false);
+  const [downloadingDxf, setDownloadingDxf] = React.useState(false);
+
+  // Nesting Parameters (PROJECT.md §5/§20) — configurable per run, never
+  // hard-coded. Defaults match the engine's own DEFAULT_ENGINE_CONFIG.
+  const [partGapMm, setPartGapMm] = React.useState("0");
+  const [marginLeftMm, setMarginLeftMm] = React.useState("25");
+  const [marginRightMm, setMarginRightMm] = React.useState("25");
+  const [marginTopMm, setMarginTopMm] = React.useState("25");
+  const [marginBottomMm, setMarginBottomMm] = React.useState("25");
 
   const loadDetail = React.useCallback(async () => {
     setDetailLoading(true);
@@ -243,14 +252,30 @@ function NestingJobCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail]);
 
+  const partGap = Number(partGapMm) || 0;
+  const marginLeft = Number(marginLeftMm) || 0;
+  const marginRight = Number(marginRightMm) || 0;
+  const marginTop = Number(marginTopMm) || 0;
+  const marginBottom = Number(marginBottomMm) || 0;
+
+  const nestingParamsInvalid =
+    partGap < 0 || marginLeft < 0 || marginRight < 0 || marginTop < 0 || marginBottom < 0 ||
+    (detail?.sources.some((s) => marginLeft + marginRight >= s.widthMm || marginTop + marginBottom >= s.lengthMm) ?? false);
+
   async function handleRunNesting() {
-    if (running) return; // prevent duplicate clicks
+    if (running || nestingParamsInvalid) return; // prevent duplicate clicks / invalid config
     setRunning(true);
     try {
       const res = await fetch(`/api/nesting/jobs/${job.id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          partGapMm: partGap,
+          marginLeftMm: marginLeft,
+          marginRightMm: marginRight,
+          marginTopMm: marginTop,
+          marginBottomMm: marginBottom,
+        }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
@@ -269,6 +294,35 @@ function NestingJobCard({
       toast.error("Nesting run failed");
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function handleDownloadDxf() {
+    if (!activeRun || downloadingDxf) return;
+    setDownloadingDxf(true);
+    try {
+      const res = await fetch(`/api/nesting/runs/${activeRun.id}/dxf`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        toast.error(typeof body?.error === "string" ? body.error : "Failed to generate DXF");
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match?.[1] ?? `Nesting_Run_${activeRun.id}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Failed to generate DXF");
+    } finally {
+      setDownloadingDxf(false);
     }
   }
 
@@ -474,7 +528,8 @@ function NestingJobCard({
                           <p className="mt-0.5 text-xs text-muted-foreground">
                             {s.material} · {s.thicknessMm} mm<br />
                             {fmt(s.widthMm, 0)} × {fmt(s.lengthMm, 0)} mm<br />
-                            Available: {s.availableQty} sheets
+                            <span className="text-emerald-600">Available for Purchase</span>
+                            {s.availableQty != null && ` · ${s.availableQty} in stock`}
                           </p>
                         </div>
                         <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => handleRemoveSource(s.id)} title="Remove source">
@@ -508,13 +563,60 @@ function NestingJobCard({
                 )}
               </div>
 
+              {/* NESTING PARAMETERS */}
+              <div className="px-4 py-4">
+                <h4 className="mb-2 text-sm font-semibold text-foreground">Nesting Parameters</h4>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  <div className="space-y-1.5">
+                    <Label>Part Gap (mm)</Label>
+                    <Input type="number" step="any" min={0} value={partGapMm} onChange={(e) => setPartGapMm(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Left Margin (mm)</Label>
+                    <Input type="number" step="any" min={0} value={marginLeftMm} onChange={(e) => setMarginLeftMm(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Right Margin (mm)</Label>
+                    <Input type="number" step="any" min={0} value={marginRightMm} onChange={(e) => setMarginRightMm(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Top Margin (mm)</Label>
+                    <Input type="number" step="any" min={0} value={marginTopMm} onChange={(e) => setMarginTopMm(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Bottom Margin (mm)</Label>
+                    <Input type="number" step="any" min={0} value={marginBottomMm} onChange={(e) => setMarginBottomMm(e.target.value)} />
+                  </div>
+                </div>
+                {detail.sources.length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    <p className="text-[11px] font-medium text-muted-foreground">Effective usable nesting area (updates live):</p>
+                    {detail.sources.map((s) => {
+                      const usableW = s.widthMm - marginLeft - marginRight;
+                      const usableH = s.lengthMm - marginTop - marginBottom;
+                      const invalid = usableW <= 0 || usableH <= 0;
+                      return (
+                        <p key={s.id} className={`text-[11px] ${invalid ? "text-destructive" : "text-muted-foreground"}`}>
+                          {s.material} {s.thicknessMm}mm — {fmt(s.widthMm, 0)}×{fmt(s.lengthMm, 0)} mm sheet → usable {invalid ? "INVALID (margins too large)" : `${fmt(usableW, 0)}×${fmt(usableH, 0)} mm`}
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
+                {nestingParamsInvalid && (
+                  <p className="mt-2 text-[11px] font-medium text-destructive">
+                    Fix the parameters above — values cannot be negative and margins cannot exceed a source sheet&apos;s own dimensions.
+                  </p>
+                )}
+              </div>
+
               {/* RUN NESTING */}
               <div className="flex items-center justify-between bg-muted/10 px-4 py-3">
                 <p className="text-xs text-muted-foreground">
                   Runs the deterministic bottom-left / first-fit nesting engine against the parts and source sheets above.
                 </p>
                 <Button
-                  disabled={!allCovered || running}
+                  disabled={!allCovered || running || nestingParamsInvalid}
                   title={allCovered ? "Run the nesting engine" : "All groups need compatible source material first"}
                   onClick={handleRunNesting}
                 >
@@ -527,7 +629,7 @@ function NestingJobCard({
               {runLoading && !activeRun ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">Loading last run…</div>
               ) : activeRun ? (
-                <NestingResults run={activeRun} eligible={detail.eligible} />
+                <NestingResults run={activeRun} eligible={detail.eligible} onDownloadDxf={handleDownloadDxf} downloadingDxf={downloadingDxf} />
               ) : null}
             </>
           )}
@@ -552,7 +654,14 @@ function NestingJobCard({
 // directly from a NestingRunDetail; never computes its own numbers.
 // ----------------------------------------------------------------------------
 
-function NestingResults({ run, eligible }: { run: NestingRunDetail; eligible: NestingJobDetail["eligible"] }) {
+function NestingResults({
+  run, eligible, onDownloadDxf, downloadingDxf,
+}: {
+  run: NestingRunDetail;
+  eligible: NestingJobDetail["eligible"];
+  onDownloadDxf: () => void;
+  downloadingDxf: boolean;
+}) {
   const [expandedSheetId, setExpandedSheetId] = React.useState<string | null>(null);
 
   const partInfoById = React.useMemo(() => {
@@ -594,7 +703,15 @@ function NestingResults({ run, eligible }: { run: NestingRunDetail; eligible: Ne
 
   return (
     <div className="px-4 py-4">
-      <h4 className="mb-2 text-sm font-semibold text-foreground">Nesting Results</h4>
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-foreground">Nesting Results</h4>
+        {run.sheets.length > 0 && (
+          <Button size="sm" variant="outline" onClick={onDownloadDxf} disabled={downloadingDxf}>
+            {downloadingDxf ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {run.sheets.length > 1 ? "Download All DXFs" : "Download DXF"}
+          </Button>
+        )}
+      </div>
 
       {/* SUMMARY */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -609,6 +726,39 @@ function NestingResults({ run, eligible }: { run: NestingRunDetail; eligible: Ne
         <SummaryStat label="Utilization" value={`${fmt(run.overallUtilizationPercent ?? 0, 1)}%`} />
         <SummaryStat label="Scrap" value={`${fmt(run.totalScrapAreaSqm ?? 0, 2)} m²`} />
       </div>
+
+      {/* SOURCE MATERIAL REQUIREMENT — the automatically-calculated purchasing
+          answer (PROJECT.md §16/§23): "buy N sheets of W×L×T material". */}
+      {run.sourceRequirementJson && run.sourceRequirementJson.length > 0 && (
+        <div className="mt-4">
+          <h5 className="mb-1.5 text-xs font-semibold text-foreground">Source Material Requirement</h5>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/20 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-1.5 font-medium">Material</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Thickness</th>
+                  <th className="px-3 py-1.5 font-medium">Sheet Size</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Required Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {run.sourceRequirementJson.map((r) => (
+                  <tr key={r.sourceSheetId} className="border-b border-border last:border-0">
+                    <td className="px-3 py-1.5">{r.material}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{r.thicknessMm} mm</td>
+                    <td className="px-3 py-1.5">{fmt(r.widthMm, 0)} × {fmt(r.lengthMm, 0)} mm</td>
+                    <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{r.requiredQty} Sheet{r.requiredQty === 1 ? "" : "s"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1.5 text-[11px] text-muted-foreground">
+            To manufacture all required parts, purchase the quantities above — the engine calculated this automatically from the nesting result.
+          </p>
+        </div>
+      )}
 
       {/* UNPLACED PARTS */}
       {run.unplacedPartsJson && run.unplacedPartsJson.length > 0 && (
@@ -745,13 +895,21 @@ function AddSourceDialog({
     if (!(thickness > 0)) { toast.error("Thickness must be greater than 0"); return; }
     if (!(width > 0)) { toast.error("Width must be greater than 0"); return; }
     if (!(length > 0)) { toast.error("Length must be greater than 0"); return; }
-    if (!(qty > 0)) { toast.error("Available quantity must be at least 1"); return; }
 
     setSubmitting(true);
     const res = await fetch(`/api/nesting/jobs/${jobId}/sources`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ material: material.trim(), thicknessMm: thickness, widthMm: width, lengthMm: length, availableQty: qty }),
+      body: JSON.stringify({
+        material: material.trim(),
+        thicknessMm: thickness,
+        widthMm: width,
+        lengthMm: length,
+        // Stock on hand is optional and purely informational (PROJECT.md
+        // §2/§4/§21) — a Source Sheet is a purchasable size, not a fixed
+        // quantity, so this is never required before nesting can run.
+        availableQty: qty > 0 ? qty : undefined,
+      }),
     });
     setSubmitting(false);
     if (!res.ok) {
@@ -779,8 +937,11 @@ function AddSourceDialog({
               <Input type="number" step="any" value={thicknessMm} onChange={(e) => setThicknessMm(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label>Available Qty</Label>
-              <Input type="number" step="1" value={availableQty} onChange={(e) => setAvailableQty(e.target.value)} />
+              <Label>Stock on hand (optional)</Label>
+              <Input type="number" step="1" value={availableQty} onChange={(e) => setAvailableQty(e.target.value)} placeholder="Available for Purchase" />
+              <p className="text-[11px] text-muted-foreground">
+                Leave blank — sheets of this size are available for purchase, not a fixed inventory. The nesting engine will calculate how many to buy.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label>Width (mm)</Label>

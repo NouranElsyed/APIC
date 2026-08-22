@@ -101,6 +101,34 @@ export function translatePoints(points: Point[], dx: number, dy: number): Point[
   return points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
 }
 
+// Applies the EXACT same transform the engine used when it placed this
+// instance (rotate about the origin, normalize so the outer contour's own
+// bounding box starts at (0,0), then translate to xMm/yMm — see
+// computeOrientedShape above) to both the outer contour and every hole, so
+// DXF export (dxf-writer.ts) reproduces the real placement rather than
+// recomputing new coordinates (PROJECT.md §28: "Do NOT calculate new
+// nesting coordinates during export"). Holes are normalized against the
+// OUTER contour's bounding box, never their own, since that's the offset
+// computeOrientedShape actually applied.
+export function transformGeometryForPlacement(
+  outer: Point[],
+  holes: Point[][],
+  rotationDeg: RotationDeg,
+  xMm: number,
+  yMm: number,
+): { outer: Point[]; holes: Point[][] } {
+  const rotatedOuter = outer.map((p) => rotatePointCcw(p, rotationDeg));
+  const bbox = computeBoundingBox(rotatedOuter);
+  const finalOuter = rotatedOuter.map((p) => ({ x: p.x - bbox.minX + xMm, y: p.y - bbox.minY + yMm }));
+  const finalHoles = holes.map((hole) =>
+    hole.map((p) => {
+      const r = rotatePointCcw(p, rotationDeg);
+      return { x: r.x - bbox.minX + xMm, y: r.y - bbox.minY + yMm };
+    }),
+  );
+  return { outer: finalOuter, holes: finalHoles };
+}
+
 export function aabbOverlap(a: BoundingBox, b: BoundingBox, epsilon = 1e-6): boolean {
   return (
     a.minX < b.maxX - epsilon &&

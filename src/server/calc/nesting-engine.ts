@@ -24,6 +24,17 @@
 //     polygon-vs-polygon check (Stage 2) is still run before a placement is
 //     accepted, so a future denser packer can reuse this validation as-is.
 //
+// Source sheets are treated as an UNLIMITED, purchasable stock (PROJECT.md
+// §2/§3): a NestingSource describes a material/thickness/size that can be
+// bought as many times as needed, never a fixed inventory count. The engine
+// therefore opens as many physical sheets of a given source definition as
+// required to place every part, and reports back how many of each source
+// definition it actually used — that count is the "required purchase
+// quantity" surfaced to the user (see NestingAlgorithmResult.sourceRequirements
+// and PROJECT.md §16/§23). The only thing that can legitimately stop a part
+// from being placed is geometry (it doesn't fit any known sheet size /
+// margins / gap), never running out of "quantity".
+//
 // This intentionally is NOT an industrial-grade optimizer (see PROJECT.md
 // §3) — it optimizes for correctness, determinism, and a clean extension
 // point, not maximum utilization.
@@ -42,15 +53,24 @@ import {
 } from "./nesting-geometry";
 
 export const ALGORITHM_NAME = "shelf-bottom-left-first-fit";
-export const ALGORITHM_VERSION = "2.0.0";
+export const ALGORITHM_VERSION = "3.0.0";
 
+// Per-side sheet margins (PROJECT.md §7/§8) plus the minimum required gap
+// between two different parts (PROJECT.md §6). All values are millimeters
+// and all are configurable per Nesting Run — never hard-coded.
 export interface EngineConfig {
-  edgeClearanceMm: number;
+  marginLeftMm: number;
+  marginRightMm: number;
+  marginTopMm: number;
+  marginBottomMm: number;
   partGapMm: number;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
-  edgeClearanceMm: 5,
+  marginLeftMm: 5,
+  marginRightMm: 5,
+  marginTopMm: 5,
+  marginBottomMm: 5,
   partGapMm: 0,
 };
 
@@ -64,13 +84,19 @@ export interface EnginePartInput {
   outer: Point[]; // mm-space outer contour, one instance, untransformed
 }
 
+// A purchasable source sheet definition — material + thickness + size.
+// There is deliberately NO quantity field here: the engine treats every
+// definition as available an unlimited number of times to purchase, and
+// reports back how many were actually required (see sourceRequirements on
+// NestingAlgorithmResult). `availableQty`, if present on the caller's
+// underlying record, is informational stock only and is never read by the
+// engine (PROJECT.md §4).
 export interface EngineSourceInput {
   sourceSheetId: string;
   material: string;
   thicknessMm: number;
   widthMm: number;
   lengthMm: number;
-  availableQty: number;
 }
 
 export type UnplacedReason =
@@ -123,6 +149,18 @@ export interface EngineGroupResult {
   sheets: EngineSheetResult[];
 }
 
+// The automatically-calculated purchasing requirement for one source sheet
+// definition (PROJECT.md §3/§16): "to manufacture all required parts, buy
+// `requiredQty` sheets of widthMm × lengthMm × thicknessMm `material`."
+export interface SourceRequirement {
+  sourceSheetId: string;
+  material: string;
+  thicknessMm: number;
+  widthMm: number;
+  lengthMm: number;
+  requiredQty: number;
+}
+
 export interface NestingAlgorithmResult {
   algorithmName: string;
   algorithmVersion: string;
@@ -136,6 +174,7 @@ export interface NestingAlgorithmResult {
   totalPartsPlaced: number;
   totalPartsUnplaced: number;
   unplacedParts: UnplacedPart[];
+  sourceRequirements: SourceRequirement[];
 }
 
 function groupKey(material: string, thicknessMm: number): string {
@@ -184,10 +223,14 @@ class SheetPacker {
     this.widthMm = source.widthMm;
     this.lengthMm = source.lengthMm;
 
-    this.minX = config.edgeClearanceMm;
-    this.minY = config.edgeClearanceMm;
-    this.maxX = source.widthMm - config.edgeClearanceMm;
-    this.maxY = source.lengthMm - config.edgeClearanceMm;
+    // Sheet margins (PROJECT.md §7): the usable nesting area is the
+    // physical sheet shrunk by each side's own margin — never a single
+    // uniform "edge clearance". The physical sheet boundary exported to
+    // DXF always stays the full widthMm × lengthMm regardless of these.
+    this.minX = config.marginLeftMm;
+    this.minY = config.marginBottomMm;
+    this.maxX = source.widthMm - config.marginRightMm;
+    this.maxY = source.lengthMm - config.marginTopMm;
     this.gap = config.partGapMm;
 
     this.cursorX = this.minX;
@@ -278,7 +321,7 @@ class SheetPacker {
         height: shape.height,
       };
 
-      // Boundary check (Stage 0 — must stay within the clearance-adjusted sheet).
+      // Boundary check (Stage 0 — must stay within the margin-adjusted usable area).
       if (!boundsContain(polygon, this.minX, this.minY, this.maxX, this.maxY)) {
         continue;
       }
@@ -321,23 +364,6 @@ class SheetPacker {
   }
 }
 
-function sortSourcesDeterministically(sources: EngineSourceInput[]): EngineSourceInput[] {
-  // Preserve caller order (created-at ascending, per nesting-run.service.ts)
-  // but make the sort stable/explicit rather than relying on array order
-  // surviving future refactors.
-  return [...sources];
-}
-
-function expandSourceInstances(sources: EngineSourceInput[]): EngineSourceInput[] {
-  const expanded: EngineSourceInput[] = [];
-  for (const source of sortSourcesDeterministically(sources)) {
-    for (let i = 0; i < source.availableQty; i++) {
-      expanded.push(source);
-    }
-  }
-  return expanded;
-}
-
 function expandPartInstances(parts: EnginePartInput[]): PartInstance[] {
   const instances: PartInstance[] = [];
   for (const part of parts) {
@@ -377,24 +403,29 @@ function runGroup(
   nextSheetNumber: () => number,
 ): EngineGroupResult {
   const instances = expandPartInstances(parts);
-  const expandedSources = expandSourceInstances(sources);
 
   const openPackers: SheetPacker[] = [];
-  let nextSourceIndex = 0;
+  // Sources are unlimited to purchase (PROJECT.md §2): rather than
+  // pre-expanding a finite pool, we cycle through the distinct source
+  // definitions declared for this group, opening a brand-new physical
+  // sheet each time one is needed. The final per-source open count (see
+  // sourceRequirements below) is simply "how many times did we open a
+  // sheet of this definition".
+  let cycleIndex = 0;
+
+  function openNextSheet(): SheetPacker | null {
+    if (sources.length === 0) return null;
+    const sourceDef = sources[cycleIndex % sources.length];
+    cycleIndex++;
+    const packer = new SheetPacker(sourceDef, config);
+    openPackers.push(packer);
+    return packer;
+  }
 
   // Per-part-id running tally so the final unplaced-parts report always
   // reflects reality even though instances are interleaved across parts.
   const placedCountByPart = new Map<string, number>();
   const failureReasonByPart = new Map<string, UnplacedReason>();
-
-  function openNextSheet(): SheetPacker | null {
-    if (nextSourceIndex >= expandedSources.length) return null;
-    const source = expandedSources[nextSourceIndex];
-    nextSourceIndex++;
-    const packer = new SheetPacker(source, config);
-    openPackers.push(packer);
-    return packer;
-  }
 
   for (const instance of instances) {
     let placed = false;
@@ -408,15 +439,21 @@ function runGroup(
       }
     }
 
-    // Open new sheets one at a time until the instance fits or sources run out.
-    while (!placed) {
-      const packer = openNextSheet();
-      if (!packer) break;
-      if (packer.tryPlace(instance)) {
-        placed = true;
+    // Open new sheets — one purchasable definition at a time — until the
+    // instance fits. Since supply is unlimited, the only thing that can
+    // stop this is having already tried a fresh sheet of every distinct
+    // source size/definition without success; trying more copies of sizes
+    // already proven not to fit would never help, so fresh-sheet attempts
+    // are capped at `sources.length` per instance rather than looping
+    // forever.
+    if (!placed) {
+      let freshAttempts = 0;
+      while (!placed && freshAttempts < sources.length) {
+        const packer = openNextSheet();
+        if (!packer) break;
+        freshAttempts++;
+        if (packer.tryPlace(instance)) placed = true;
       }
-      // If it didn't fit on a *fresh* sheet either, loop again: a later
-      // source sheet may have different (larger) dimensions.
     }
 
     if (placed) {
@@ -427,10 +464,10 @@ function runGroup(
     // Determine why. Prefer the most specific/actionable reason and never
     // downgrade a reason already recorded for this part.
     let reason: UnplacedReason;
-    if (expandedSources.length === 0) {
+    if (sources.length === 0) {
       reason = "NO_SOURCE_SHEET";
     } else {
-      const fitsAnyKnownSheetSize = expandedSources.some((s) => {
+      const fitsAnyKnownSheetSize = sources.some((s) => {
         const probe = new SheetPacker(s, config);
         return probe.couldEverFit(instance);
       });
@@ -581,6 +618,31 @@ export function runNestingAlgorithm(
   const totalPartsPlaced = groups.reduce((sum, g) => sum + g.partsPlaced, 0);
   const totalPartsUnplaced = totalPartsRequired - totalPartsPlaced;
 
+  // Required purchase quantity per source definition (PROJECT.md §3/§16):
+  // simply how many actually-used sheets (sheets.length > 0 placements)
+  // came from each sourceSheetId, tallied across every group.
+  const requirementBySourceId = new Map<string, SourceRequirement>();
+  for (const group of groups) {
+    for (const sheet of group.sheets) {
+      const existing = requirementBySourceId.get(sheet.sourceSheetId);
+      if (existing) {
+        existing.requiredQty += 1;
+      } else {
+        requirementBySourceId.set(sheet.sourceSheetId, {
+          sourceSheetId: sheet.sourceSheetId,
+          material: sheet.material,
+          thicknessMm: sheet.thicknessMm,
+          widthMm: sheet.widthMm,
+          lengthMm: sheet.lengthMm,
+          requiredQty: 1,
+        });
+      }
+    }
+  }
+  const sourceRequirements = [...requirementBySourceId.values()].sort(
+    (a, b) => a.material.localeCompare(b.material) || a.thicknessMm - b.thicknessMm || a.widthMm - b.widthMm,
+  );
+
   return {
     algorithmName: ALGORITHM_NAME,
     algorithmVersion: ALGORITHM_VERSION,
@@ -594,5 +656,6 @@ export function runNestingAlgorithm(
     totalPartsPlaced,
     totalPartsUnplaced,
     unplacedParts,
+    sourceRequirements,
   };
 }

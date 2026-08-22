@@ -118,13 +118,17 @@ export async function runNestingForJob(
     });
   }
 
+  // Source sheets are unlimited to purchase (PROJECT.md §2/§4) — the
+  // engine is never given a quantity to cap against, only the purchasable
+  // definitions themselves. See EngineSourceInput / runNestingAlgorithm's
+  // sourceRequirements output for the automatically-calculated "how many
+  // do I need to buy" answer.
   const sources: EngineSourceInput[] = job.sources.map((s) => ({
     sourceSheetId: s.id,
     material: s.material,
     thicknessMm: s.thicknessMm,
     widthMm: s.widthMm,
     lengthMm: s.lengthMm,
-    availableQty: s.availableQty,
   }));
 
   const run = await prisma.nestingRun.create({
@@ -188,6 +192,11 @@ export async function runNestingForJob(
         algorithmName: result.algorithmName,
         algorithmVersion: result.algorithmVersion,
         configJson: result.config,
+        partGapMm: result.config.partGapMm,
+        marginLeftMm: result.config.marginLeftMm,
+        marginRightMm: result.config.marginRightMm,
+        marginTopMm: result.config.marginTopMm,
+        marginBottomMm: result.config.marginBottomMm,
         totalSheets: result.totalSheetsUsed,
         totalUsedAreaSqm: result.totalUsedAreaSqm,
         totalScrapAreaSqm: result.totalScrapAreaSqm,
@@ -196,6 +205,7 @@ export async function runNestingForJob(
         totalPartsPlaced: result.totalPartsPlaced,
         totalPartsUnplaced: result.totalPartsUnplaced,
         unplacedPartsJson: result.unplacedParts,
+        sourceRequirementJson: result.sourceRequirements,
       },
     });
 

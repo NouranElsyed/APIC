@@ -393,12 +393,22 @@ model NestingJobItem {
 // collected automatically; source material is not (the system has no way
 // to know what stock is available).
 model NestingSource {
-  id           String   @id @default(cuid())
-  material     String
-  thicknessMm  Float
-  widthMm      Float
-  lengthMm     Float
-  availableQty Int
+  id          String @id @default(cuid())
+  material    String
+  thicknessMm Float
+  widthMm     Float
+  lengthMm    Float
+
+  // ⚠️ Legacy/informational only (PROJECT.md §2/§4): a Source Sheet
+  // represents a purchasable material/thickness/size, NOT a fixed
+  // inventory count. The nesting engine (nesting-engine.ts) NEVER reads
+  // this field and NEVER caps how many sheets it opens because of it —
+  // supply is always treated as unlimited to purchase. This column is kept
+  // nullable, for backward compatibility with older records and in case a
+  // future stock-tracking feature wants a distinct "sheets already on
+  // hand" number; the actual "how many do I need to buy" answer always
+  // comes from NestingRun.sourceRequirementJson, calculated after a run.
+  availableQty Int?
   createdAt    DateTime @default(now())
 
   nestingJobId String
@@ -464,7 +474,23 @@ model NestingRun {
   // historical runs stay interpretable even after the engine evolves.
   algorithmName    String?
   algorithmVersion String?
-  configJson       Json? // e.g. { edgeClearanceMm, partGapMm }
+  configJson       Json? // full EngineConfig snapshot, e.g. { marginLeftMm, marginRightMm, marginTopMm, marginBottomMm, partGapMm }
+
+  // Denormalized copies of the same values inside configJson (PROJECT.md
+  // §13/§20) so a run's parameters can be queried/displayed without parsing
+  // JSON. configJson remains the authoritative snapshot; these are for
+  // convenience only.
+  partGapMm      Float?
+  marginLeftMm   Float?
+  marginRightMm  Float?
+  marginTopMm    Float?
+  marginBottomMm Float?
+
+  // Automatically-calculated purchasing requirement (PROJECT.md §3/§16):
+  // one row per source sheet definition used by this run, e.g.
+  // [{ sourceSheetId, material, thicknessMm, widthMm, lengthMm, requiredQty }].
+  // Never populated from user input — always derived by the engine.
+  sourceRequirementJson Json?
 
   createdAt    DateTime  @default(now())
   startedAt    DateTime?

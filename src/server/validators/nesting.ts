@@ -8,20 +8,30 @@ export const nestingJobSchema = z.object({
 });
 export type NestingJobInput = z.infer<typeof nestingJobSchema>;
 
+// A Source Sheet is a purchasable material/thickness/size, never a fixed
+// quantity (PROJECT.md §2/§4) — availableQty is optional, informational
+// stock-on-hand only, and is never required from the user or read by the
+// nesting engine as a hard limit.
 export const nestingSourceSchema = z.object({
   material: z.string().min(1, "Material is required").max(120),
   thicknessMm: z.number().positive("Thickness must be greater than 0"),
   widthMm: z.number().positive("Width must be greater than 0"),
   lengthMm: z.number().positive("Length must be greater than 0"),
-  availableQty: z.number().int().positive("Available quantity must be at least 1"),
+  availableQty: z.number().int().positive().optional().nullable(),
 });
 export type NestingSourceInput = z.infer<typeof nestingSourceSchema>;
 
-// Optional per-run overrides for the nesting engine's configurable
-// clearances (PROJECT.md §8). Both are optional — omitted fields fall back
-// to DEFAULT_ENGINE_CONFIG in nesting-engine.ts.
+// Optional per-run overrides for the nesting engine's configurable part
+// gap and per-side sheet margins (PROJECT.md §5/§6/§7). All are optional —
+// omitted fields fall back to DEFAULT_ENGINE_CONFIG in nesting-engine.ts.
+// Margins cannot be negative; validating them against a specific sheet's
+// dimensions happens in the UI (PROJECT.md §20) since a run can nest
+// across several different sheet sizes at once.
 export const nestingRunConfigSchema = z.object({
-  edgeClearanceMm: z.number().min(0).optional(),
-  partGapMm: z.number().min(0).optional(),
+  partGapMm: z.number().min(0, "Part gap cannot be negative").optional(),
+  marginLeftMm: z.number().min(0, "Margins cannot be negative").optional(),
+  marginRightMm: z.number().min(0, "Margins cannot be negative").optional(),
+  marginTopMm: z.number().min(0, "Margins cannot be negative").optional(),
+  marginBottomMm: z.number().min(0, "Margins cannot be negative").optional(),
 });
 export type NestingRunConfigInput = z.infer<typeof nestingRunConfigSchema>;

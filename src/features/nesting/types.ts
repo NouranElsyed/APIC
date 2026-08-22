@@ -69,7 +69,10 @@ export interface NestingSourceRow {
   thicknessMm: number;
   widthMm: number;
   lengthMm: number;
-  availableQty: number;
+  // Informational stock-on-hand only — never a hard limit for nesting
+  // (PROJECT.md §2/§4). null/undefined means "not tracked, unlimited to
+  // purchase".
+  availableQty: number | null;
   createdAt: string;
 }
 
@@ -113,6 +116,17 @@ export interface UnplacedPartRow {
   reason: UnplacedReason;
 }
 
+// Automatically-calculated purchasing requirement (PROJECT.md §3/§16) — one
+// row per source sheet definition actually used by a run.
+export interface SourceRequirementRow {
+  sourceSheetId: string;
+  material: string;
+  thicknessMm: number;
+  widthMm: number;
+  lengthMm: number;
+  requiredQty: number;
+}
+
 // Lightweight run summary — this is what NestingJobDetail.runs contains
 // (no sheets/placements). Fetch /api/nesting/runs/[runId] for the full tree.
 export interface NestingRunSummary {
@@ -125,6 +139,11 @@ export interface NestingRunSummary {
   errorMessage: string | null;
   algorithmName: string | null;
   algorithmVersion: string | null;
+  partGapMm: number | null;
+  marginLeftMm: number | null;
+  marginRightMm: number | null;
+  marginTopMm: number | null;
+  marginBottomMm: number | null;
   totalSheets: number | null;
   totalUsedAreaSqm: number | null;
   totalScrapAreaSqm: number | null;
@@ -133,6 +152,7 @@ export interface NestingRunSummary {
   totalPartsPlaced: number | null;
   totalPartsUnplaced: number | null;
   unplacedPartsJson: UnplacedPartRow[] | null;
+  sourceRequirementJson: SourceRequirementRow[] | null;
 }
 
 export interface NestingPlacementRow {
