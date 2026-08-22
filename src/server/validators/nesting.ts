@@ -1,32 +1,5 @@
 import { z } from "zod";
 
-<<<<<<< HEAD
-// Scrap & Material pricing inputs (PROJECT.md — Scrap & Material Calculation
-// spec). These are the ONLY values a user may enter manually; everything
-// else is derived from the Nesting Engine's actual results.
-export const scrapPricingInputsSchema = z.object({
-  nestingRunId: z.string().min(1),
-  costPerKg: z.number().nonnegative(),
-  usedLaterPct: z.number().min(0).max(1),
-  usedLaterPriceLEPerKg: z.number().nonnegative(),
-  scrapSellPriceLEPerKg: z.number().nonnegative(),
-  // Optional per material+thickness-group overrides, keyed by "material||thicknessMm".
-  overridesByGroupKey: z
-    .record(
-      z.string(),
-      z.object({
-        costPerKg: z.number().nonnegative().optional(),
-        usedLaterPct: z.number().min(0).max(1).optional(),
-        usedLaterPriceLEPerKg: z.number().nonnegative().optional(),
-        scrapSellPriceLEPerKg: z.number().nonnegative().optional(),
-      }),
-    )
-    .optional(),
-});
-export type ScrapPricingInput = z.infer<typeof scrapPricingInputsSchema>;
-
-=======
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 export const nestingJobSchema = z.object({
   projectId: z.string().min(1),
   name: z.string().min(1, "Job name is required"),

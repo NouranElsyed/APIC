@@ -1,9 +1,6 @@
 "use client";
 import * as React from "react";
-<<<<<<< HEAD
-=======
 import Link from "next/link";
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 import {
   Plus, FolderKanban, Boxes, Trash2, ChevronDown, ChevronRight,
   CheckCircle2, AlertTriangle, XCircle, Loader2, Play, Layers, Scissors, Download,
@@ -11,20 +8,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-<<<<<<< HEAD
-=======
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import type { NestingJobRow, NestingJobDetail, NestingRunDetail } from "./types";
-<<<<<<< HEAD
-import { useTakeoffProject } from "@/features/takeoff/project-context";
-=======
 import type { ProjectOption } from "@/features/takeoff/types";
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 import { NestingSheetPreview, type PartBBoxInfo } from "./nesting-sheet-preview";
 
 function fmt(n: number, digits = 2) {
@@ -32,12 +22,8 @@ function fmt(n: number, digits = 2) {
 }
 
 export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canDelete: boolean }) {
-<<<<<<< HEAD
-  const { projects, projectId } = useTakeoffProject();
-=======
   const [projects, setProjects] = React.useState<ProjectOption[]>([]);
   const [projectId, setProjectId] = React.useState("");
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   const [jobs, setJobs] = React.useState<NestingJobRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
@@ -51,8 +37,6 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [deletingJob, setDeletingJob] = React.useState<NestingJobRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
 
-<<<<<<< HEAD
-=======
   React.useEffect(() => {
     fetch("/api/projects").then((r) => r.json()).then((data) => {
       setProjects(data);
@@ -60,7 +44,6 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
     });
   }, []);
 
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   const loadJobs = React.useCallback(async (pid: string) => {
     if (!pid) return;
     setLoading(true);
@@ -107,15 +90,6 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   return (
     <div className="space-y-6">
-<<<<<<< HEAD
-      {projectId && canCreate && (
-        <div className="flex justify-end">
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" /> New Nesting Job
-          </Button>
-        </div>
-      )}
-=======
       <div className="flex gap-2 border-b border-border">
         <Link href="/takeoff" className="px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground">
           Standard Calculations
@@ -146,7 +120,6 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
           </Button>
         )}
       </div>
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 
       {!projectId ? (
         <EmptyState icon={<FolderKanban className="h-5 w-5" />} title="No project selected" description="Choose a project above to see its nesting jobs." />

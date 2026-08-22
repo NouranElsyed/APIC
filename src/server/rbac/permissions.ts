@@ -37,14 +37,6 @@ export const PERMISSIONS = {
   "nesting.edit": ["ADMIN", "MANAGER", "ENGINEER"],
   "nesting.delete": ["ADMIN", "MANAGER"],
 
-<<<<<<< HEAD
-  // Scrap & Material pricing — read/export mirror nesting.view; only
-  // engineers-and-up can export a priced workbook.
-  "scrapPricing.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
-  "scrapPricing.export": ["ADMIN", "MANAGER", "ENGINEER"],
-
-=======
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
 } as const;

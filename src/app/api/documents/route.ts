@@ -1,15 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-<<<<<<< HEAD
-import { requirePermission } from "@/server/api/guard";
-import { deleteDocument } from "@/server/services/document.service";
-
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("documents.delete");
-  if (res) return res;
-  const { id } = await params;
-  await deleteDocument(id, session!.user.id);
-  return NextResponse.json({ ok: true });
-=======
 import { put } from "@vercel/blob";
 import { requirePermission } from "@/server/api/guard";
 import { documentSchema } from "@/server/validators/document";
@@ -62,5 +51,4 @@ export async function POST(req: NextRequest) {
 
   const doc = await createDocument(parsed.data, session!.user.id);
   return NextResponse.json(doc, { status: 201 });
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 }

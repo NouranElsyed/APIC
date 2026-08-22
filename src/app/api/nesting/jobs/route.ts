@@ -20,8 +20,4 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   const job = await createNestingJob(parsed.data, session!.user.id);
   return NextResponse.json(job, { status: 201 });
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844

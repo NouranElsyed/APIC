@@ -1,15 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-<<<<<<< HEAD
-import { deleteDrawing } from "@/server/services/takeoff.service";
-
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("takeoff.delete");
-  if (res) return res;
-  const { id } = await params;
-  await deleteDrawing(id, session!.user.id);
-  return NextResponse.json({ ok: true });
-=======
 import { takeoffDrawingSchema } from "@/server/validators/takeoff";
 import { listDrawingsForProject, createDrawing } from "@/server/services/takeoff.service";
 
@@ -38,5 +28,4 @@ export async function POST(req: NextRequest) {
 
   const drawing = await createDrawing(parsed.data, session!.user.id);
   return NextResponse.json(drawing, { status: 201 });
->>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 }
