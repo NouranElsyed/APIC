@@ -1,7 +1,10 @@
 "use client";
 import * as React from "react";
 import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X } from "lucide-react";
+<<<<<<< HEAD
+=======
 import Link from "next/link";
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,7 +12,12 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DrawingForm } from "./drawing-form";
 import { PartsGrid } from "./parts-grid";
+<<<<<<< HEAD
+import { useTakeoffProject } from "./project-context";
+import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
+=======
 import type { TakeoffDrawingRow, TakeoffPartRow, ProjectOption, PartType, PartSide } from "./types";
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 import { toast } from "sonner";
 
 function fmt(n: number, digits = 2) {
@@ -50,8 +58,12 @@ function matchesFilters(part: TakeoffPartRow, f: Filters): boolean {
 }
 
 export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canDelete: boolean }) {
+<<<<<<< HEAD
+  const { projects, projectId } = useTakeoffProject();
+=======
   const [projects, setProjects] = React.useState<ProjectOption[]>([]);
   const [projectId, setProjectId] = React.useState<string>("");
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   const [drawings, setDrawings] = React.useState<TakeoffDrawingRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [filters, setFilters] = React.useState<Filters>(emptyFilters);
@@ -60,6 +72,8 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
 
+<<<<<<< HEAD
+=======
   React.useEffect(() => {
     fetch("/api/projects").then((r) => r.json()).then((data) => {
       setProjects(data);
@@ -67,6 +81,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
     });
   }, []);
 
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   const loadDrawings = React.useCallback(async (pid: string) => {
     if (!pid) return;
     setLoading(true);
@@ -112,6 +127,15 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   return (
     <div className="space-y-6">
+<<<<<<< HEAD
+      {projectId && canCreate && (
+        <div className="flex justify-end">
+          <Button onClick={() => setDrawingFormOpen(true)}>
+            <Plus className="h-4 w-4" /> Add Drawing
+          </Button>
+        </div>
+      )}
+=======
       <div className="flex gap-2 border-b border-border">
         <div className="border-b-2 border-primary px-1 pb-2 text-sm font-semibold text-foreground">Standard Calculations</div>
         <Link href="/takeoff/nesting" className="px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground">
@@ -142,6 +166,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
           </Button>
         )}
       </div>
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 
       {projectId && drawings.length > 0 && (
         <div className="space-y-3 rounded-xl border border-border bg-card p-4">

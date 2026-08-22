@@ -3,7 +3,12 @@ import { requirePermission } from "@/server/api/guard";
 import { projectSchema } from "@/server/validators/project";
 import { getProject, updateProject, deleteProject } from "@/server/services/project.service";
 
+<<<<<<< HEAD
+// src/app/api/projects/[id]/route.ts — keep this one using params.id
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+=======
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
   const { res } = await requirePermission("projects.view");
   if (res) return res;
   const { id } = await params;
@@ -11,7 +16,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(project);
 }
+<<<<<<< HEAD
+=======
 
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { session, res } = await requirePermission("projects.edit");
   if (res) return res;

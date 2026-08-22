@@ -17,4 +17,8 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
   await deleteNestingJob(id, session!.user.id);
   return NextResponse.json({ ok: true });
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 2c19167ddb7b87b5399d7f7ef7f968690531f844
