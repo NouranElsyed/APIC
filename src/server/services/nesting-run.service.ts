@@ -1,4 +1,5 @@
 import { prisma } from "@/server/db/client";
+import type { Prisma } from "@prisma/client";
 import { logActivity } from "./activity-log.service";
 import { getEligibleNestingParts } from "./nesting.service";
 import {
@@ -191,7 +192,7 @@ export async function runNestingForJob(
         completedAt: new Date(),
         algorithmName: result.algorithmName,
         algorithmVersion: result.algorithmVersion,
-        configJson: result.config,
+        configJson: result.config as unknown as Prisma.InputJsonValue,
         partGapMm: result.config.partGapMm,
         marginLeftMm: result.config.marginLeftMm,
         marginRightMm: result.config.marginRightMm,
@@ -204,8 +205,8 @@ export async function runNestingForJob(
         totalPartsRequired: result.totalPartsRequired,
         totalPartsPlaced: result.totalPartsPlaced,
         totalPartsUnplaced: result.totalPartsUnplaced,
-        unplacedPartsJson: result.unplacedParts,
-        sourceRequirementJson: result.sourceRequirements,
+        unplacedPartsJson: result.unplacedParts as unknown as Prisma.InputJsonValue,
+        sourceRequirementJson: result.sourceRequirements as unknown as Prisma.InputJsonValue,
       },
     });
 
