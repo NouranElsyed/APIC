@@ -131,6 +131,11 @@ export async function runNestingForJob(
     lengthMm: s.lengthMm,
   }));
 
+  // Enforce "one current nesting result per project": a re-run REPLACES the
+  // previous result rather than appending a new historical run. Deleting
+  // old runs cascades to their sheets/placements automatically.
+  await prisma.nestingRun.deleteMany({ where: { nestingJobId: jobId } });
+
   const run = await prisma.nestingRun.create({
     data: {
       nestingJobId: jobId,

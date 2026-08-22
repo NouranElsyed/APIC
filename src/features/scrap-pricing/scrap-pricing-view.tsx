@@ -4,11 +4,10 @@ import { Download, Loader2, Boxes } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/shared/empty-state";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
-import type { NestingJobRow, NestingJobDetail, NestingRunSummary } from "@/features/nesting/types";
+import type { NestingJobRow, NestingJobDetail } from "@/features/nesting/types";
 import type { ScrapPricingResult, ScrapPricingGlobalInputs } from "./types";
 
 function fmt(n: number, digits = 2) {
@@ -29,31 +28,32 @@ export function ScrapPricingView({ canExport }: { canExport: boolean }) {
   const { projectId, projects } = useTakeoffProject();
   const selectedProject = projects.find((p) => p.id === projectId);
 
-  const [jobs, setJobs] = React.useState<NestingJobRow[]>([]);
-  const [jobId, setJobId] = React.useState("");
-  const [runs, setRuns] = React.useState<NestingRunSummary[]>([]);
+  // A project has exactly one Nesting and, after a run, one current result —
+  // there is nothing for the user to pick here. We resolve it automatically.
   const [runId, setRunId] = React.useState("");
+  const [hasNesting, setHasNesting] = React.useState(false);
+  const [resolving, setResolving] = React.useState(false);
 
   const [inputs, setInputs] = React.useState<ScrapPricingGlobalInputs>(DEFAULT_INPUTS);
   const [result, setResult] = React.useState<ScrapPricingResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
 
-  React.useEffect(() => {
-    setJobId(""); setRuns([]); setRunId(""); setResult(null);
-    if (!projectId) { setJobs([]); return; }
-    fetch(`/api/nesting/jobs?projectId=${projectId}`).then((r) => r.json()).then(setJobs);
+  const resolveCurrentRun = React.useCallback(async () => {
+    setRunId(""); setHasNesting(false); setResult(null);
+    if (!projectId) return;
+    setResolving(true);
+    const jobs: NestingJobRow[] = await fetch(`/api/nesting/jobs?projectId=${projectId}`).then((r) => r.json());
+    const job = jobs[0]; // enforced: at most one Nesting per project
+    if (!job) { setResolving(false); return; }
+    const detail: NestingJobDetail = await fetch(`/api/nesting/jobs/${job.id}`).then((r) => r.json());
+    const currentRun = (detail.runs ?? []).find((r) => r.status === "COMPLETED");
+    setHasNesting(true);
+    if (currentRun) setRunId(currentRun.id);
+    setResolving(false);
   }, [projectId]);
 
-  React.useEffect(() => {
-    setRunId(""); setResult(null);
-    if (!jobId) { setRuns([]); return; }
-    fetch(`/api/nesting/jobs/${jobId}`).then((r) => r.json()).then((detail: NestingJobDetail) => {
-      setRuns((detail.runs ?? []).filter((r) => r.status === "COMPLETED"));
-    });
-  }, [jobId]);
-
-  React.useEffect(() => { setResult(null); }, [runId]);
+  React.useEffect(() => { resolveCurrentRun(); }, [resolveCurrentRun]);
 
   const calculate = React.useCallback(async () => {
     if (!runId) return;
@@ -96,32 +96,22 @@ export function ScrapPricingView({ canExport }: { canExport: boolean }) {
     <div className="space-y-6">
       <div className="grid gap-4 rounded-xl border border-border bg-card p-4 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label>Nesting Job</Label>
-          <Select value={jobId} onValueChange={setJobId}>
-            <SelectTrigger><SelectValue placeholder="Select a nesting job" /></SelectTrigger>
-            <SelectContent>
-              {jobs.map((j) => <SelectItem key={j.id} value={j.id}>{j.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>Nesting Run</Label>
-          <Select value={runId} onValueChange={setRunId} disabled={!jobId}>
-            <SelectTrigger><SelectValue placeholder={runs.length ? "Select a completed run" : "No completed runs yet"} /></SelectTrigger>
-            <SelectContent>
-              {runs.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {new Date(r.createdAt).toLocaleString()} — {r.totalSheets ?? 0} sheets, {fmt(r.overallUtilizationPercent ?? 0, 1)}% util
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Label>Project</Label>
+          <div className="flex h-9 items-center rounded-md border border-input px-3 text-sm text-foreground">
+            {selectedProject ? `${selectedProject.number} — ${selectedProject.name}` : "—"}
+          </div>
         </div>
       </div>
 
-      {runId && (
+      {resolving ? (
+        <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : !hasNesting ? (
+        <EmptyState icon={<Boxes className="h-5 w-5" />} title="No nesting yet" description="Start a nesting for this project in DXF Nesting first — Scrap & Material uses its current result automatically." />
+      ) : !runId ? (
+        <EmptyState icon={<Boxes className="h-5 w-5" />} title="Nesting not run yet" description="Run the nesting in DXF Nesting first, then come back here — this always reflects the project's current nesting result." />
+      ) : (
         <div className="space-y-4 rounded-xl border border-border bg-card p-4">
-          <p className="text-xs font-medium text-muted-foreground">Pricing inputs — the only manually-entered values; everything else is calculated from the nesting result.</p>
+          <p className="text-xs font-medium text-muted-foreground">Pricing inputs — the only manually-entered values; everything else is calculated from the project's current nesting result.</p>
           <div className="grid gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
               <Label>Cost/kg (LE)</Label>

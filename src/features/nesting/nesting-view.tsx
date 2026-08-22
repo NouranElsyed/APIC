@@ -68,8 +68,8 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
       }),
     });
     setSubmitting(false);
-    if (!res.ok) { toast.error("Failed to create nesting job"); return; }
-    toast.success("Nesting job created");
+    if (!res.ok) { toast.error("Failed to start nesting"); return; }
+    toast.success("Nesting started");
     setCreateOpen(false);
     setName(""); setMaterial(""); setThicknessMm("");
     loadJobs(projectId);
@@ -86,8 +86,8 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
     setDeleteLoading(true);
     const res = await fetch(`/api/nesting/jobs/${deletingJob.id}`, { method: "DELETE" });
     setDeleteLoading(false);
-    if (!res.ok) { toast.error("Failed to delete job"); return; }
-    toast.success("Nesting job deleted");
+    if (!res.ok) { toast.error("Failed to delete nesting"); return; }
+    toast.success("Nesting deleted");
     setDeletingJob(null);
     loadJobs(projectId);
   }
@@ -127,7 +127,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
             </Button>
           ) : (
             <Button onClick={() => setCreateOpen(true)} disabled={!projectId}>
-              <Plus className="h-4 w-4" /> New Nesting Job
+              <Plus className="h-4 w-4" /> Start Nesting
             </Button>
           )
         )}
@@ -140,9 +140,9 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
       ) : jobs.length === 0 ? (
         <EmptyState
           icon={<Boxes className="h-5 w-5" />}
-          title="No nesting jobs yet"
-          description={`Create the first nesting job for ${selectedProject?.number ?? "this project"} — it will automatically collect every DXF-ready part from Standard Calculations.`}
-          action={canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> New Nesting Job</Button> : undefined}
+          title="No nesting yet"
+          description={`Start nesting for ${selectedProject?.number ?? "this project"} — it will automatically collect every DXF-ready part from Standard Calculations.`}
+          action={canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Start Nesting</Button> : undefined}
         />
       ) : (
         <div className="space-y-4">
@@ -162,7 +162,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader><DialogTitle>New Nesting Job</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Start Nesting</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label>Job name</Label>
@@ -184,7 +184,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button type="button" onClick={handleCreate} disabled={submitting}>Create</Button>
+            <Button type="button" onClick={handleCreate} disabled={submitting}>Start</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -192,8 +192,8 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
       <ConfirmDialog
         open={!!deletingJob}
         onOpenChange={(v) => !v && setDeletingJob(null)}
-        title="Delete nesting job?"
-        description={`This will remove "${deletingJob?.name}" and its declared source sheets. The underlying parts (and their DXF files) in Standard Calculations are not affected.`}
+        title="Delete nesting?"
+        description={`This will remove this project's nesting and its declared source sheets. The underlying parts (and their DXF files) in Standard Calculations are not affected.`}
         confirmLabel="Delete"
         loading={deleteLoading}
         onConfirm={handleDeleteJob}
