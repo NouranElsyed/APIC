@@ -1,6 +1,5 @@
 "use client";
 import * as React from "react";
-import Link from "next/link";
 import {
   Plus, FolderKanban, Boxes, Trash2, ChevronDown, ChevronRight,
   CheckCircle2, AlertTriangle, XCircle, Loader2, Play, Layers, Scissors, Download,
@@ -8,13 +7,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import type { NestingJobRow, NestingJobDetail, NestingRunDetail } from "./types";
-import type { ProjectOption } from "@/features/takeoff/types";
+import { useTakeoffProject } from "@/features/takeoff/project-context";
 import { NestingSheetPreview, type PartBBoxInfo } from "./nesting-sheet-preview";
 
 function fmt(n: number, digits = 2) {
@@ -22,21 +20,13 @@ function fmt(n: number, digits = 2) {
 }
 
 export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canDelete: boolean }) {
-  const [projects, setProjects] = React.useState<ProjectOption[]>([]);
-  const [projectId, setProjectId] = React.useState("");
+  const { projects, projectId } = useTakeoffProject();
   const [jobs, setJobs] = React.useState<NestingJobRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
 
   const [deletingJob, setDeletingJob] = React.useState<NestingJobRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    fetch("/api/projects").then((r) => r.json()).then((data) => {
-      setProjects(data);
-      if (data.length > 0) setProjectId((prev) => prev || data[0].id);
-    });
-  }, []);
 
   const loadJobs = React.useCallback(async (pid: string) => {
     if (!pid) return;
@@ -85,30 +75,7 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 border-b border-border">
-        <Link href="/takeoff" className="px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground">
-          Standard Calculations
-        </Link>
-        <div className="border-b-2 border-primary px-1 pb-2 text-sm font-semibold text-foreground">DXF Nesting</div>
-      </div>
-
-      <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <FolderKanban className="h-5 w-5" />
-          </div>
-          <div className="min-w-72">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Project</label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+      <div className="flex justify-end">
         {canCreate && (
           currentJob ? (
             <div className="flex items-center gap-2">
