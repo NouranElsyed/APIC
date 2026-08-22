@@ -1,11 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { deleteDrawing } from "@/server/services/takeoff.service";
+import { takeoffDrawingSchema } from "@/server/validators/takeoff";
+import { listDrawingsForProject, createDrawing } from "@/server/services/takeoff.service";
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("takeoff.delete");
+export async function GET(req: NextRequest) {
+  const { res } = await requirePermission("takeoff.view");
   if (res) return res;
-  const { id } = await params;
-  await deleteDrawing(id, session!.user.id);
-  return NextResponse.json({ ok: true });
+  const projectId = req.nextUrl.searchParams.get("projectId");
+  if (!projectId) return NextResponse.json({ error: "projectId is required" }, { status: 400 });
+  const drawings = await listDrawingsForProject(projectId);
+  return NextResponse.json(drawings);
+}
+
+export async function POST(req: NextRequest) {
+  const { session, res } = await requirePermission("takeoff.create");
+  if (res) return res;
+
+  const body = await req.json();
+  const parsed = takeoffDrawingSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+
+  const drawing = await createDrawing(parsed.data, session!.user.id);
+  return NextResponse.json(drawing, { status: 201 });
 }
