@@ -277,6 +277,16 @@ export async function getNestingJob(id: string) {
 }
 
 export async function createNestingJob(data: NestingJobInput, userId: string) {
+  // Only one Nesting Job per project — it's a single, ongoing workspace that
+  // always reflects whatever is currently in Standard Calculations, not a
+  // series of one-off jobs. If one already exists, return it unchanged
+  // instead of creating a duplicate.
+  const existing = await prisma.nestingJob.findFirst({
+    where: { projectId: data.projectId },
+    include: jobInclude,
+  });
+  if (existing) return existing;
+
   const job = await prisma.nestingJob.create({
     data: {
       projectId: data.projectId,

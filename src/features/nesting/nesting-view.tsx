@@ -75,6 +75,12 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
     loadJobs(projectId);
   }
 
+  async function handleUpdateNesting() {
+    setLoading(true);
+    await loadJobs(projectId);
+    toast.success("Nesting updated with the latest parts from Standard Calculations");
+  }
+
   async function handleDeleteJob() {
     if (!deletingJob) return;
     setDeleteLoading(true);
@@ -115,9 +121,15 @@ export function NestingView({ canCreate, canDelete }: { canCreate: boolean; canD
           </div>
         </div>
         {canCreate && (
-          <Button onClick={() => setCreateOpen(true)} disabled={!projectId}>
-            <Plus className="h-4 w-4" /> New Nesting Job
-          </Button>
+          jobs.length > 0 ? (
+            <Button onClick={handleUpdateNesting} disabled={!projectId || loading} variant="outline">
+              <Boxes className="h-4 w-4" /> Update Nesting
+            </Button>
+          ) : (
+            <Button onClick={() => setCreateOpen(true)} disabled={!projectId}>
+              <Plus className="h-4 w-4" /> New Nesting Job
+            </Button>
+          )
         )}
       </div>
 
