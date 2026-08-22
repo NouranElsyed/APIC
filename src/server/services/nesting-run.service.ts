@@ -191,7 +191,7 @@ export async function runNestingForJob(
         completedAt: new Date(),
         algorithmName: result.algorithmName,
         algorithmVersion: result.algorithmVersion,
-        configJson: result.config,
+        configJson: JSON.parse(JSON.stringify(result.config)),
         partGapMm: result.config.partGapMm,
         marginLeftMm: result.config.marginLeftMm,
         marginRightMm: result.config.marginRightMm,
@@ -204,8 +204,8 @@ export async function runNestingForJob(
         totalPartsRequired: result.totalPartsRequired,
         totalPartsPlaced: result.totalPartsPlaced,
         totalPartsUnplaced: result.totalPartsUnplaced,
-        unplacedPartsJson: result.unplacedParts,
-        sourceRequirementJson: result.sourceRequirements,
+        unplacedPartsJson: JSON.parse(JSON.stringify(result.unplacedParts)),
+        sourceRequirementJson: JSON.parse(JSON.stringify(result.sourceRequirements)),
       },
     });
 
