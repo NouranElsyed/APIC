@@ -1,18 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
 import { projectSchema } from "@/server/validators/project";
-import { listProjects, createProject } from "@/server/services/project.service";
+import { getProject, updateProject, deleteProject } from "@/server/services/project.service";
 
-export async function GET() {
-  const { session, res } = await requirePermission("projects.view");
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { res } = await requirePermission("projects.view");
   if (res) return res;
-  const projects = await listProjects();
-  return NextResponse.json(projects);
+  const { id } = await params;
+  const project = await getProject(id);
+  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(project);
 }
 
-export async function POST(req: NextRequest) {
-  const { session, res } = await requirePermission("projects.create");
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { session, res } = await requirePermission("projects.edit");
   if (res) return res;
+  const { id } = await params;
 
   const body = await req.json();
   const parsed = projectSchema.safeParse(body);
@@ -20,6 +23,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const project = await createProject(parsed.data, session!.user.id);
-  return NextResponse.json(project, { status: 201 });
+  const project = await updateProject(id, parsed.data, session!.user.id);
+  return NextResponse.json(project);
+}
+
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { session, res } = await requirePermission("projects.delete");
+  if (res) return res;
+  const { id } = await params;
+  await deleteProject(id, session!.user.id);
+  return NextResponse.json({ ok: true });
 }

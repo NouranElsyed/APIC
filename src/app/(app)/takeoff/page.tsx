@@ -1,14 +1,9 @@
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
-import { TakeoffView } from "@/features/takeoff/takeoff-view";
+import { ScrapPricingView } from "@/features/scrap-pricing/scrap-pricing-view";
 
-export default async function TakeoffPage() {
+export default async function ScrapMaterialPage() {
   const session = await auth();
   const role = session?.user.role;
-  return (
-    <TakeoffView
-      canCreate={can(role, "takeoff.create")}
-      canDelete={can(role, "takeoff.delete")}
-    />
-  );
+  return <ScrapPricingView canExport={can(role, "scrapPricing.export")} />;
 }

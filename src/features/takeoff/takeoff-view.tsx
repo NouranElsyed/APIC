@@ -1,7 +1,6 @@
 "use client";
 import * as React from "react";
 import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X } from "lucide-react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,7 +8,8 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DrawingForm } from "./drawing-form";
 import { PartsGrid } from "./parts-grid";
-import type { TakeoffDrawingRow, TakeoffPartRow, ProjectOption, PartType, PartSide } from "./types";
+import { useTakeoffProject } from "./project-context";
+import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
 import { toast } from "sonner";
 
 function fmt(n: number, digits = 2) {
@@ -50,8 +50,7 @@ function matchesFilters(part: TakeoffPartRow, f: Filters): boolean {
 }
 
 export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canDelete: boolean }) {
-  const [projects, setProjects] = React.useState<ProjectOption[]>([]);
-  const [projectId, setProjectId] = React.useState<string>("");
+  const { projects, projectId, setProjectId } = useTakeoffProject();
   const [drawings, setDrawings] = React.useState<TakeoffDrawingRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [filters, setFilters] = React.useState<Filters>(emptyFilters);
@@ -59,13 +58,6 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [drawingFormOpen, setDrawingFormOpen] = React.useState(false);
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    fetch("/api/projects").then((r) => r.json()).then((data) => {
-      setProjects(data);
-      if (data.length > 0) setProjectId((prev) => prev || data[0].id);
-    });
-  }, []);
 
   const loadDrawings = React.useCallback(async (pid: string) => {
     if (!pid) return;
@@ -112,36 +104,13 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 border-b border-border">
-        <div className="border-b-2 border-primary px-1 pb-2 text-sm font-semibold text-foreground">Standard Calculations</div>
-        <Link href="/takeoff/nesting" className="px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground">
-          DXF Nesting
-        </Link>
-      </div>
-
-      <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <FolderKanban className="h-5 w-5" />
-          </div>
-          <div className="min-w-72">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Project</label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        {canCreate && (
+      {canCreate && (
+        <div className="flex justify-end">
           <Button onClick={() => setDrawingFormOpen(true)} disabled={!projectId}>
             <Plus className="h-4 w-4" /> Add Drawing
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       {projectId && drawings.length > 0 && (
         <div className="space-y-3 rounded-xl border border-border bg-card p-4">
