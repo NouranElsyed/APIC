@@ -399,15 +399,15 @@ model NestingSource {
   widthMm     Float
   lengthMm    Float
 
-  // ⚠️ Legacy/informational only (PROJECT.md §2/§4): a Source Sheet
-  // represents a purchasable material/thickness/size, NOT a fixed
-  // inventory count. The nesting engine (nesting-engine.ts) NEVER reads
-  // this field and NEVER caps how many sheets it opens because of it —
-  // supply is always treated as unlimited to purchase. This column is kept
-  // nullable, for backward compatibility with older records and in case a
-  // future stock-tracking feature wants a distinct "sheets already on
-  // hand" number; the actual "how many do I need to buy" answer always
-  // comes from NestingRun.sourceRequirementJson, calculated after a run.
+  // A Source Sheet represents a purchasable material/thickness/size. When
+  // set, availableQty is a HARD LIMIT (Phase 2B §2): the nesting engine
+  // (nesting-engine.ts) will never open more physical sheets of this exact
+  // definition than this number, and reports a clear shortage
+  // (NestingRun.sourceShortageJson) instead of silently exceeding it. Left
+  // null/unset, this definition is treated as unlimited stock to purchase
+  // (backward compatible with older records) — the "how many do I need to
+  // buy" answer always comes from NestingRun.sourceRequirementJson,
+  // calculated after a run.
   availableQty Int?
   createdAt    DateTime @default(now())
 
@@ -460,6 +460,11 @@ enum NestingRunStatus {
   PENDING
   RUNNING
   COMPLETED
+  // Every eligible part was processed but at least one required instance
+  // could not be placed (insufficient source sheet capacity, insufficient
+  // sheet area, or a part too large for any known source size). Never
+  // reported as COMPLETED — see PROJECT.md Phase 2B §16 "No fake success".
+  PARTIAL
   FAILED
   CANCELLED
 }
@@ -491,6 +496,13 @@ model NestingRun {
   // [{ sourceSheetId, material, thicknessMm, widthMm, lengthMm, requiredQty }].
   // Never populated from user input — always derived by the engine.
   sourceRequirementJson Json?
+
+  // Per material/thickness group shortage report (Phase 2B §2/§9): only
+  // populated when every compatible source for that group carries a hard
+  // availableQty cap and that combined cap fell short of true demand —
+  // e.g. [{ material, thicknessMm, requiredSheets, availableSheets,
+  // shortageSheets }]. Empty/absent means no purchasing shortage.
+  sourceShortageJson Json?
 
   createdAt    DateTime  @default(now())
   startedAt    DateTime?
