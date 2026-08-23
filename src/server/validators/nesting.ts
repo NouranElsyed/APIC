@@ -8,10 +8,12 @@ export const nestingJobSchema = z.object({
 });
 export type NestingJobInput = z.infer<typeof nestingJobSchema>;
 
-// A Source Sheet is a purchasable material/thickness/size, never a fixed
-// quantity (PROJECT.md §2/§4) — availableQty is optional, informational
-// stock-on-hand only, and is never required from the user or read by the
-// nesting engine as a hard limit.
+// A Source Sheet is a purchasable material/thickness/size. availableQty is
+// optional; when the user provides it, the nesting engine treats it as a
+// HARD LIMIT on how many physical sheets of this exact definition can be
+// opened (Phase 2B §2) — never exceeded, and a shortfall is reported
+// clearly instead of silently ignored. Left blank, the definition is
+// unlimited stock to purchase (PROJECT.md §4).
 export const nestingSourceSchema = z.object({
   material: z.string().min(1, "Material is required").max(120),
   thicknessMm: z.number().positive("Thickness must be greater than 0"),
