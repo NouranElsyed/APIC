@@ -91,6 +91,13 @@ export function checkUnitsSanity(
   return `Unusually large part (${bboxWidthMm.toFixed(0)}×${bboxHeightMm.toFixed(0)} mm) — please verify the DXF units before trusting this area.`;
 }
 
+// Tolerance for deciding two LINE endpoints are "the same point" for the
+// purpose of chaining segments into a closed loop. Deliberately small and
+// explicit (millimetres, post unit-conversion) — see spec's "IMPORTANT EDGE
+// CASE": we must never connect points just because they look close at the
+// current CAD zoom level.
+export const LINE_CONNECTION_TOLERANCE_MM = 0.05;
+
 interface Tag { code: number; value: string; }
 
 function tokenize(text: string): Tag[] {
@@ -132,20 +139,24 @@ function detectUnits(tags: Tag[]): { factor: number; label: string } {
   return { factor: 1, label: "unitless (assumed mm)" };
 }
 
-// Extracts every closed polygon (already scaled to mm) from LWPOLYLINE,
-// POLYLINE+VERTEX and CIRCLE entities inside the ENTITIES section.
-function extractClosedPolygons(tags: Tag[], mmPerUnit: number): Point[][] {
-  const polygons: Point[][] = [];
-
-  // Isolate the ENTITIES section so HEADER/TABLES/BLOCKS content (which
-  // can also contain 0/SECTION-style group codes) never leaks in.
+// Isolates the ENTITIES section so HEADER/TABLES/BLOCKS content (which can
+// also contain 0/SECTION-style group codes) never leaks in.
+function getEntitiesSection(tags: Tag[]): Tag[] {
   let start = -1, end = tags.length;
   for (let i = 0; i < tags.length; i++) {
     if (tags[i].code === 2 && tags[i].value.toUpperCase() === "ENTITIES") { start = i; continue; }
     if (start >= 0 && tags[i].code === 0 && tags[i].value.toUpperCase() === "ENDSEC") { end = i; break; }
   }
-  if (start < 0) return polygons;
-  const section = tags.slice(start, end);
+  if (start < 0) return [];
+  return tags.slice(start, end);
+}
+
+// Extracts every closed polygon (already scaled to mm) from LWPOLYLINE,
+// POLYLINE+VERTEX and CIRCLE entities inside the ENTITIES section.
+function extractClosedPolygons(tags: Tag[], mmPerUnit: number): Point[][] {
+  const polygons: Point[][] = [];
+  const section = getEntitiesSection(tags);
+  if (section.length === 0) return polygons;
 
   let i = 0;
   while (i < section.length) {
@@ -217,6 +228,162 @@ function extractClosedPolygons(tags: Tag[], mmPerUnit: number): Point[][] {
   return polygons;
 }
 
+interface Segment { start: Point; end: Point; }
+
+// Extracts every LINE entity inside the ENTITIES section as a raw segment
+// (already scaled to mm). Zero-length lines are dropped here.
+function extractLineSegments(section: Tag[], mmPerUnit: number): Segment[] {
+  const segments: Segment[] = [];
+  let i = 0;
+  while (i < section.length) {
+    const tag = section[i];
+    if (tag.code === 0 && tag.value.toUpperCase() === "LINE") {
+      let sx: number | null = null, sy: number | null = null;
+      let ex: number | null = null, ey: number | null = null;
+      let j = i + 1;
+      while (j < section.length && section[j].code !== 0) {
+        if (section[j].code === 10) sx = parseFloat(section[j].value) * mmPerUnit;
+        if (section[j].code === 20) sy = parseFloat(section[j].value) * mmPerUnit;
+        if (section[j].code === 11) ex = parseFloat(section[j].value) * mmPerUnit;
+        if (section[j].code === 21) ey = parseFloat(section[j].value) * mmPerUnit;
+        j++;
+      }
+      if (sx !== null && sy !== null && ex !== null && ey !== null) {
+        const start = { x: sx, y: sy };
+        const end = { x: ex, y: ey };
+        const dist = Math.hypot(end.x - start.x, end.y - start.y);
+        if (dist > LINE_CONNECTION_TOLERANCE_MM) {
+          segments.push({ start, end });
+        }
+        // zero-length (or near-zero) lines are ignored per spec
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return segments;
+}
+
+// Buckets a coordinate onto a grid sized to the connection tolerance, so
+// that endpoints within tolerance of each other collapse onto the same
+// "node". This is the "simple spatial hash / coordinate bucketing"
+// approach called out as acceptable in the spec.
+function nodeKey(p: Point): string {
+  const gx = Math.round(p.x / LINE_CONNECTION_TOLERANCE_MM);
+  const gy = Math.round(p.y / LINE_CONNECTION_TOLERANCE_MM);
+  return `${gx},${gy}`;
+}
+
+interface LineReconstructionResult {
+  loops: Point[][];
+  hadAnySegments: boolean; // true if there were >=1 usable LINE segments at all
+  hadOpenLeftover: boolean; // true if some segments did NOT form a closed loop
+}
+
+// Reconstructs closed polygon loops from a soup of (possibly out-of-order,
+// possibly reversed) LINE segments. Segments that don't participate in a
+// valid closed loop are simply left out of the result (e.g. unrelated open
+// construction lines) — see spec's "MIXED GEOMETRY" / "IMPORTANT: OPEN
+// LINES" sections.
+function reconstructLoopsFromLines(segments: Segment[]): LineReconstructionResult {
+  if (segments.length === 0) return { loops: [], hadAnySegments: false, hadOpenLeftover: false };
+
+  // Assign each distinct (tolerance-collapsed) endpoint a node id, keeping
+  // the first concrete coordinate seen for that node.
+  const nodeIdByKey = new Map<string, number>();
+  const nodeCoord: Point[] = [];
+  function nodeIdFor(p: Point): number {
+    const key = nodeKey(p);
+    let id = nodeIdByKey.get(key);
+    if (id === undefined) {
+      id = nodeCoord.length;
+      nodeIdByKey.set(key, id);
+      nodeCoord.push(p);
+    }
+    return id;
+  }
+
+  // Dedupe edges (undirected) so duplicate/overlapping LINE entities don't
+  // create duplicate polygon edges or inflate node degree.
+  const edgeSet = new Set<string>();
+  const edges: [number, number][] = [];
+  for (const seg of segments) {
+    const a = nodeIdFor(seg.start);
+    const b = nodeIdFor(seg.end);
+    if (a === b) continue; // degenerate after bucketing
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (edgeSet.has(key)) continue;
+    edgeSet.add(key);
+    edges.push([a, b]);
+  }
+
+  // Adjacency list.
+  const adj = new Map<number, number[]>();
+  for (const [a, b] of edges) {
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a)!.push(b);
+    adj.get(b)!.push(a);
+  }
+
+  // Find connected components over the nodes that have at least one edge.
+  const visited = new Set<number>();
+  const loops: Point[][] = [];
+  let hadOpenLeftover = false;
+
+  for (const startNode of adj.keys()) {
+    if (visited.has(startNode)) continue;
+    // BFS to collect the component.
+    const component: number[] = [];
+    const queue = [startNode];
+    visited.add(startNode);
+    while (queue.length > 0) {
+      const n = queue.shift()!;
+      component.push(n);
+      for (const nb of adj.get(n) ?? []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+
+    const componentEdgeCount = component.reduce((sum, n) => sum + (adj.get(n)?.length ?? 0), 0) / 2;
+    const isSimpleCycle =
+      component.length >= 3 &&
+      componentEdgeCount === component.length &&
+      component.every((n) => (adj.get(n)?.length ?? 0) === 2);
+
+    if (!isSimpleCycle) {
+      hadOpenLeftover = true;
+      continue;
+    }
+
+    // Walk the cycle in order starting from any node.
+    const ordered: Point[] = [];
+    const seen = new Set<number>();
+    let prev = -1;
+    let cur = component[0];
+    while (!seen.has(cur)) {
+      seen.add(cur);
+      ordered.push(nodeCoord[cur]);
+      const neighbors = adj.get(cur) ?? [];
+      const next = neighbors.find((n) => n !== prev) ?? neighbors[0];
+      prev = cur;
+      cur = next;
+    }
+
+    if (ordered.length >= 3 && shoelaceArea(ordered) > 0) {
+      loops.push(ordered);
+    } else {
+      hadOpenLeftover = true;
+    }
+  }
+
+  return { loops, hadAnySegments: true, hadOpenLeftover };
+}
+
 export function parseDxf(text: string): DxfGeometryResult {
   const invalid = (msg: string): DxfGeometryResult => ({
     valid: false,
@@ -244,8 +411,21 @@ export function parseDxf(text: string): DxfGeometryResult {
   const units = detectUnits(tags);
   const polygons = extractClosedPolygons(tags, units.factor);
 
+  // LINE entities are only considered when LWPOLYLINE/POLYLINE/CIRCLE
+  // didn't already produce closed geometry to reconstruct from — but per
+  // spec, mixed geometry (LWPOLYLINE + LINE + CIRCLE) should all be
+  // considered together, so we always attempt LINE reconstruction and
+  // fold any resulting loops in alongside the other polygons.
+  const section = getEntitiesSection(tags);
+  const lineSegments = extractLineSegments(section, units.factor);
+  const lineResult = reconstructLoopsFromLines(lineSegments);
+  for (const loop of lineResult.loops) polygons.push(loop);
+
   if (polygons.length === 0) {
-    return invalid("Open contour detected — no closed LWPOLYLINE/POLYLINE/CIRCLE geometry found. Every profile edge must form a closed loop.");
+    if (lineResult.hadAnySegments && lineResult.hadOpenLeftover) {
+      return invalid("Open contour detected — LINE segments do not form a closed loop.");
+    }
+    return invalid("Open contour detected — no closed supported geometry could be reconstructed.");
   }
 
   const withArea = polygons.map((pts) => ({ pts, area: shoelaceArea(pts) })).sort((a, b) => b.area - a.area);
