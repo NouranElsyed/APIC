@@ -51,9 +51,24 @@ import {
   polygonsOverlap,
   boundsContain,
 } from "./nesting-geometry";
+import {
+  optimizeGroupPlacement,
+  type OptimizerPartInstance,
+  type OptimizerOptions,
+  type OptimizationMetrics,
+} from "./nesting-optimizer";
 
 export const ALGORITHM_NAME = "shelf-bottom-left-first-fit";
 export const ALGORITHM_VERSION = "3.0.0";
+
+// The real placement pass (see runGroup) now goes through the optimizer in
+// nesting-optimizer.ts instead of the plain shelf packer below. The shelf
+// packer (SheetPacker / packInstances) is KEPT and still used for the two
+// internal estimation passes that don't need to be optimal, only fast and
+// consistent — rankSourcesByEfficiency (which source size is best) and the
+// shortage shadow-simulation (how many sheets would this truly take) — so
+// their cost stays proportional to part count instead of running the full
+// multi-strategy search twice more per group.
 
 // Per-side sheet margins (PROJECT.md §7/§8) plus the minimum required gap
 // between two different parts (PROJECT.md §6). All values are millimeters
@@ -148,6 +163,7 @@ export interface EngineGroupResult {
   partsPlaced: number;
   partsUnplaced: number;
   sheets: EngineSheetResult[];
+  optimization: OptimizationMetrics;
 }
 
 // The automatically-calculated purchasing requirement for one source sheet
@@ -196,6 +212,10 @@ export interface NestingAlgorithmResult {
   unplacedParts: UnplacedPart[];
   sourceRequirements: SourceRequirement[];
   sourceShortages: GroupSourceShortage[];
+  // Aggregate optimization metrics (spec §13) across all groups.
+  optimizationScore: number;
+  optimizationIterations: number;
+  optimizationTimeMs: number;
 }
 
 function groupKey(material: string, thicknessMm: number): string {
@@ -568,6 +588,7 @@ function runGroup(
   sources: EngineSourceInput[],
   config: EngineConfig,
   nextSheetNumber: () => number,
+  optimizerOptions?: OptimizerOptions,
 ): {
   group: EngineGroupResult;
   shortage: GroupSourceShortage | null;
@@ -578,15 +599,23 @@ function runGroup(
   const instances = expandPartInstances(parts);
   const rankedSources = rankSourcesByEfficiency(instances, sources, config);
 
-  const { packers: openPackers, placedCountByPart, failureReasonByPart } = packInstances(instances, rankedSources, config, true);
+  // The REAL placement pass: multi-strategy candidate search + local
+  // improvement + bounded ruin-and-recreate (nesting-optimizer.ts), not
+  // the plain shelf packer. `couldEverFit`/reason logic for parts that
+  // truly cannot be placed lives inside the optimizer itself now.
+  const optimizerInstances: OptimizerPartInstance[] = instances.map((i) => ({
+    takeoffPartId: i.takeoffPartId,
+    itemNo: i.itemNo,
+    instanceNumber: i.instanceNumber,
+    areaSqm: i.areaSqm,
+    outer: i.outer,
+  }));
+  const optResult = optimizeGroupPlacement(optimizerInstances, rankedSources, config, optimizerOptions);
+  const { placedCountByPart, failureReasonByPart } = optResult;
 
-  // Build sheet results only for sheets that actually received placements —
-  // an opened-but-empty trailing sheet (e.g. the loop opened one more sheet
-  // than needed while probing) is not persisted.
-  const usedPackers = openPackers.filter((p) => p.placements.length > 0);
-  const sheets: EngineSheetResult[] = usedPackers.map((packer) => {
-    const sheetAreaSqm = (packer.widthMm * packer.lengthMm) / 1_000_000;
-    const usedAreaSqm = packer.placements.reduce((sum, placement) => {
+  const sheets: EngineSheetResult[] = optResult.sheets.map((sheet) => {
+    const sheetAreaSqm = (sheet.widthMm * sheet.lengthMm) / 1_000_000;
+    const usedAreaSqm = sheet.placements.reduce((sum, placement) => {
       const part = parts.find((p) => p.takeoffPartId === placement.takeoffPartId);
       return sum + (part?.areaSqm ?? 0);
     }, 0);
@@ -595,15 +624,15 @@ function runGroup(
 
     return {
       sheetNumber: nextSheetNumber(),
-      sourceSheetId: packer.sourceSheetId,
-      material: packer.material,
-      thicknessMm: packer.thicknessMm,
-      widthMm: packer.widthMm,
-      lengthMm: packer.lengthMm,
+      sourceSheetId: sheet.sourceSheetId,
+      material: sheet.material,
+      thicknessMm: sheet.thicknessMm,
+      widthMm: sheet.widthMm,
+      lengthMm: sheet.lengthMm,
       usedAreaSqm,
       scrapAreaSqm,
       utilizationPercent,
-      placements: packer.placements,
+      placements: sheet.placements,
     };
   });
 
@@ -639,6 +668,7 @@ function runGroup(
       partsPlaced,
       partsUnplaced: partsRequired - partsPlaced,
       sheets,
+      optimization: optResult.metrics,
     },
     shortage,
     rankedSources,
@@ -653,6 +683,7 @@ export function runNestingAlgorithm(
   parts: EnginePartInput[],
   sources: EngineSourceInput[],
   config: EngineConfig = DEFAULT_ENGINE_CONFIG,
+  optimizerOptions?: OptimizerOptions,
 ): NestingAlgorithmResult {
   const partsByGroup = new Map<string, EnginePartInput[]>();
   for (const part of parts) {
@@ -680,7 +711,7 @@ export function runNestingAlgorithm(
     const groupParts = partsByGroup.get(key)!;
     const { material, thicknessMm } = groupParts[0];
     const groupSources = sourcesByGroup.get(key) ?? [];
-    return runGroup(material, thicknessMm, groupParts, groupSources, config, nextSheetNumber);
+    return runGroup(material, thicknessMm, groupParts, groupSources, config, nextSheetNumber, optimizerOptions);
   });
   const groups: EngineGroupResult[] = groupRuns.map((r) => r.group);
   const sourceShortages: GroupSourceShortage[] = groupRuns
@@ -755,6 +786,17 @@ export function runNestingAlgorithm(
     (a, b) => a.material.localeCompare(b.material) || a.thicknessMm - b.thicknessMm || a.widthMm - b.widthMm,
   );
 
+  // Aggregate optimization metrics across every group's optimizer run
+  // (spec §13): score simply sums (lower is still better — each group's
+  // score already carries its own sheet-count penalty), iterations and
+  // time sum across groups since they ran sequentially.
+  const optimizationScore = groups.reduce((sum, g) => sum + g.optimization.finalScore, 0);
+  const optimizationIterations = groups.reduce(
+    (sum, g) => sum + g.optimization.strategiesEvaluated + g.optimization.localImprovementMoves + g.optimization.ruinAndRecreateIterations,
+    0,
+  );
+  const optimizationTimeMs = groups.reduce((sum, g) => sum + g.optimization.timeMs, 0);
+
   return {
     algorithmName: ALGORITHM_NAME,
     algorithmVersion: ALGORITHM_VERSION,
@@ -770,5 +812,8 @@ export function runNestingAlgorithm(
     unplacedParts,
     sourceRequirements,
     sourceShortages,
+    optimizationScore,
+    optimizationIterations,
+    optimizationTimeMs,
   };
 }
