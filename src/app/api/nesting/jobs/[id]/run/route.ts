@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
 import { nestingRunConfigSchema } from "@/server/validators/nesting";
-import { runNestingForJob, NestingRunError } from "@/server/services/nesting-run.service";
+import { runNestingForJob, getPartGeometryForRun, NestingRunError } from "@/server/services/nesting-run.service";
 import { DEFAULT_ENGINE_CONFIG } from "@/server/calc/nesting-engine";
 
 // POST /api/nesting/jobs/:id/run — the real "Run Nesting" endpoint
@@ -43,7 +43,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const { run } = await runNestingForJob(id, session!.user.id, config);
-    return NextResponse.json(run, { status: 201 });
+    if (!run) {
+      return NextResponse.json({ error: "Nesting run failed to persist" }, { status: 500 });
+    }
+    const partGeometryById = await getPartGeometryForRun(run);
+    return NextResponse.json({ ...run, partGeometryById }, { status: 201 });
   } catch (err) {
     if (err instanceof NestingRunError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
