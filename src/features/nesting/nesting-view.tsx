@@ -13,7 +13,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import type { NestingJobRow, NestingJobDetail, NestingRunDetail } from "./types";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
-import { NestingSheetPreview, type PartBBoxInfo } from "./nesting-sheet-preview";
+import { NestingSheetPreview, type PartBBoxInfo, type PartGeometryInfo } from "./nesting-sheet-preview";
 
 function fmt(n: number, digits = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -580,6 +580,18 @@ function NestingResults({
     return map;
   }, [eligible]);
 
+  // Real outer/hole polygon geometry per part, keyed once per distinct
+  // takeoffPartId regardless of how many instances are placed on however
+  // many sheets — comes straight from the run payload (Phase 2B), never
+  // recomputed client-side.
+  const partGeometryById = React.useMemo(() => {
+    const map = new Map<string, PartGeometryInfo>();
+    for (const [partId, geo] of Object.entries(run.partGeometryById ?? {})) {
+      map.set(partId, geo);
+    }
+    return map;
+  }, [run]);
+
   // Group sheets by material + thickness for the "Material Groups" table.
   const groups = React.useMemo(() => {
     const map = new Map<string, { material: string; thicknessMm: number; sheets: typeof run.sheets; parts: number; usedArea: number; scrapArea: number }>();
@@ -741,7 +753,7 @@ function NestingResults({
                   </button>
                   {isOpen && (
                     <div className="p-3">
-                      <NestingSheetPreview sheet={sheet} partInfoById={partInfoById} />
+                      <NestingSheetPreview sheet={sheet} partInfoById={partInfoById} partGeometryById={partGeometryById} />
                     </div>
                   )}
                 </div>
