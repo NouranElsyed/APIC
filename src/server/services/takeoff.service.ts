@@ -121,8 +121,33 @@ export async function updatePart(id: string, data: TakeoffPartInputData, userId:
   return part;
 }
 
+// Narrow, dependency-light check for a Prisma known-request-error code —
+// avoids importing the `Prisma` namespace class just for an instanceof
+// check, so this keeps working across Prisma client versions/generation
+// states.
+function isPrismaErrorCode(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === code;
+}
+
 export async function deletePart(id: string, userId: string) {
-  const part = await prisma.takeoffPart.delete({ where: { id } });
+  let part;
+  try {
+    part = await prisma.takeoffPart.delete({ where: { id } });
+  } catch (err) {
+    // NestingPlacement.takeoffPart uses onDelete: Restrict — a part that
+    // has ever been placed in a nesting run must not be deletable out from
+    // under historical results (see schema comment on NestingPlacement).
+    // Surface that as a clear, actionable error instead of a raw FK message.
+    if (isPrismaErrorCode(err, "P2003")) {
+      throw new Error("This part is used in a nesting job and cannot be deleted.");
+    }
+    // Record not found (already deleted / bad id) — let the caller map this
+    // to a 404 rather than a generic failure.
+    if (isPrismaErrorCode(err, "P2025")) {
+      throw new Error("NOT_FOUND");
+    }
+    throw err;
+  }
   await logActivity({
     userId,
     action: "DELETE",
