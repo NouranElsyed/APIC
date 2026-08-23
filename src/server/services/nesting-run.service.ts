@@ -42,6 +42,32 @@ export async function getNestingRun(id: string) {
   });
 }
 
+// Real outer/hole polygon geometry (already validated, DXF-derived — see
+// dxf.ts) for every distinct TakeoffPart placed in this run, keyed by
+// takeoffPartId. Used by the frontend sheet preview to render each placed
+// part's ACTUAL shape instead of a bounding-box rectangle (PROJECT.md §18 /
+// Phase 2B). One lookup per run render, not per placement — a part placed
+// 20 times shares a single geometry entry.
+export async function getPartGeometryForRun(
+  run: NonNullable<Awaited<ReturnType<typeof getNestingRun>>>,
+): Promise<Record<string, StoredGeometry>> {
+  const partIds = [...new Set(run.sheets.flatMap((s) => s.placements.map((p) => p.takeoffPartId)))];
+  if (partIds.length === 0) return {};
+
+  const dxfRows = await prisma.partDxf.findMany({
+    where: { takeoffPartId: { in: partIds } },
+    select: { takeoffPartId: true, geometryJson: true },
+  });
+
+  const out: Record<string, StoredGeometry> = {};
+  for (const row of dxfRows) {
+    if (isStoredGeometry(row.geometryJson)) {
+      out[row.takeoffPartId] = row.geometryJson;
+    }
+  }
+  return out;
+}
+
 export async function deleteNestingRun(id: string, userId: string) {
   const run = await prisma.nestingRun.delete({ where: { id } });
   await logActivity({
@@ -55,7 +81,7 @@ export async function deleteNestingRun(id: string, userId: string) {
 }
 
 // Shape of PartDxf.geometryJson as written by dxf.service.ts / dxf.ts.
-interface StoredGeometry {
+export interface StoredGeometry {
   outer: Point[];
   holes: Point[][];
 }
