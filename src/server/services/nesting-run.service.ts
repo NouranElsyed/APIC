@@ -144,17 +144,19 @@ export async function runNestingForJob(
     });
   }
 
-  // Source sheets are unlimited to purchase (PROJECT.md §2/§4) — the
-  // engine is never given a quantity to cap against, only the purchasable
-  // definitions themselves. See EngineSourceInput / runNestingAlgorithm's
-  // sourceRequirements output for the automatically-calculated "how many
-  // do I need to buy" answer.
+  // Source sheets: `availableQty` is a HARD LIMIT when the user set one
+  // (Phase 2B §2) — the engine will never open more physical sheets of
+  // that definition than this. Omitted/null availableQty stays unlimited
+  // (PROJECT.md §4). See EngineSourceInput / runNestingAlgorithm's
+  // sourceRequirements + sourceShortages output for the automatically
+  // calculated "how many do I need to buy" / "am I short" answers.
   const sources: EngineSourceInput[] = job.sources.map((s) => ({
     sourceSheetId: s.id,
     material: s.material,
     thicknessMm: s.thicknessMm,
     widthMm: s.widthMm,
     lengthMm: s.lengthMm,
+    availableQty: s.availableQty,
   }));
 
   // Enforce "one current nesting result per project": a re-run REPLACES the
@@ -215,10 +217,16 @@ export async function runNestingForJob(
       await prisma.nestingPlacement.createMany({ data: placementRows });
     }
 
+    // No fake success (Phase 2B §16): only report COMPLETED when every
+    // eligible part instance was actually placed. Any shortfall — for any
+    // reason, including a hard availableQty cap — is PARTIAL, never a
+    // silently-truncated "Nesting Complete".
+    const finalStatus = result.totalPartsPlaced === result.totalPartsRequired ? "COMPLETED" : "PARTIAL";
+
     await prisma.nestingRun.update({
       where: { id: run.id },
       data: {
-        status: "COMPLETED",
+        status: finalStatus,
         completedAt: new Date(),
         algorithmName: result.algorithmName,
         algorithmVersion: result.algorithmVersion,
@@ -237,6 +245,7 @@ export async function runNestingForJob(
         totalPartsUnplaced: result.totalPartsUnplaced,
         unplacedPartsJson: JSON.parse(JSON.stringify(result.unplacedParts)),
         sourceRequirementJson: JSON.parse(JSON.stringify(result.sourceRequirements)),
+        sourceShortageJson: JSON.parse(JSON.stringify(result.sourceShortages)),
       },
     });
 
@@ -245,7 +254,7 @@ export async function runNestingForJob(
       action: "CREATE",
       entity: "NESTING_RUN",
       entityId: run.id,
-      detail: `Nesting run completed for job ${jobId}: ${result.totalPartsPlaced}/${result.totalPartsRequired} placed on ${result.totalSheetsUsed} sheet(s)`,
+      detail: `Nesting run ${finalStatus === "COMPLETED" ? "completed" : "partially completed"} for job ${jobId}: ${result.totalPartsPlaced}/${result.totalPartsRequired} placed on ${result.totalSheetsUsed} sheet(s)`,
     });
 
     return { run: await getNestingRun(run.id), result };
