@@ -279,5 +279,108 @@ describe("runNestingAlgorithm", () => {
     const [a, b] = result.groups[0].sheets[0].placements;
     expect(b.xMm - (a.xMm + a.widthMm)).toBeCloseTo(10, 6);
   });
-});
 
+  // --------------------------------------------------------------------------
+  // Phase 2B — availableQty is now a HARD LIMIT (PROJECT.md §2), automatic
+  // sheet-size selection (§3), and shortage reporting (§9/§16).
+  // --------------------------------------------------------------------------
+
+  it("availableQty caps how many physical sheets of a source can be opened", () => {
+    // Only 1 fits per 400x400 sheet; 3 parts required but only 2 sheets available.
+    const parts = [part({ widthMm: 330, heightMm: 330, qty: 3 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400, availableQty: 2 })];
+
+    const result = runNestingAlgorithm(parts, sources);
+
+    expect(result.totalSheetsUsed).toBe(2);
+    expect(result.totalPartsPlaced).toBe(2);
+    expect(result.totalPartsUnplaced).toBe(1);
+    expect(result.unplacedParts[0].reason).toBe("INSUFFICIENT_SOURCE_QTY");
+    expect(result.unplacedParts[0].remainingQty).toBe(1);
+  });
+
+  it("reports a clear shortage (required / available / shortfall) when capped sources run out", () => {
+    const parts = [part({ widthMm: 330, heightMm: 330, qty: 5 })];
+    const sources = [source({ widthMm: 400, lengthMm: 400, availableQty: 2 })];
+
+    const result = runNestingAlgorithm(parts, sources);
+
+    expect(result.sourceShortages).toHaveLength(1);
+    expect(result.sourceShortages[0]).toMatchObject({
+      material: "Steel",
+      thicknessMm: 6,
+      requiredSheets: 5,
+      availableSheets: 2,
+      shortageSheets: 3,
+    });
+  });
+
+  it("never opens more sheets of a source than its availableQty even across multiple parts", () => {
+    const a = part({ takeoffPartId: "a", itemNo: 1, widthMm: 330, heightMm: 330, qty: 2 });
+    const b = part({ takeoffPartId: "b", itemNo: 2, widthMm: 330, heightMm: 330, qty: 2 });
+    const sources = [source({ widthMm: 400, lengthMm: 400, availableQty: 3 })];
+
+    const result = runNestingAlgorithm([a, b], sources);
+
+    expect(result.totalSheetsUsed).toBe(3);
+    expect(result.sourceRequirements[0].requiredQty).toBe(3);
+    expect(result.sourceRequirements[0].availableQty).toBe(3);
+    expect(result.totalPartsPlaced).toBe(3);
+    expect(result.totalPartsUnplaced).toBe(1);
+  });
+
+  it("a source with no availableQty stays unlimited even alongside a capped source (no false shortage)", () => {
+    const parts = [part({ widthMm: 330, heightMm: 330, qty: 10 })];
+    const sources = [
+      source({ sourceSheetId: "capped", widthMm: 400, lengthMm: 400, availableQty: 1 }),
+      source({ sourceSheetId: "unlimited", widthMm: 400, lengthMm: 400 }),
+    ];
+
+    const result = runNestingAlgorithm(parts, sources);
+
+    expect(result.totalPartsPlaced).toBe(10);
+    expect(result.totalPartsUnplaced).toBe(0);
+    expect(result.sourceShortages).toHaveLength(0);
+  });
+
+  it("automatic sheet-size selection prefers the source that yields fewer sheets / less scrap", () => {
+    // 900x900mm parts, qty 4. A 1000x1000 sheet fits exactly 1 per sheet
+    // (needs 4 sheets); a 2000x1000 sheet (usable ~1990x990) fits 1 per
+    // sheet too under this shelf packer's row logic for a 900x900 part
+    // (two per row would need ~1800 width, which DOES fit) — so the larger
+    // sheet should win by needing fewer physical sheets.
+    const parts = [part({ widthMm: 900, heightMm: 900, qty: 4 })];
+    const sources = [
+      source({ sourceSheetId: "small", widthMm: 1000, lengthMm: 1000 }),
+      source({ sourceSheetId: "large", widthMm: 2000, lengthMm: 1000 }),
+    ];
+
+    const result = runNestingAlgorithm(parts, sources);
+
+    expect(result.totalPartsPlaced).toBe(4);
+    // The engine should have preferred opening the more efficient "large"
+    // definition over blindly round-robining between the two.
+    const usedSourceIds = new Set(result.groups[0].sheets.map((s) => s.sourceSheetId));
+    expect(usedSourceIds.has("large")).toBe(true);
+    const largeRequirement = result.sourceRequirements.find((r) => r.sourceSheetId === "large");
+    const smallRequirement = result.sourceRequirements.find((r) => r.sourceSheetId === "small");
+    // Large sheets should carry most/all of the load since they pack 2-per-sheet.
+    expect(largeRequirement?.requiredQty ?? 0).toBeGreaterThan(smallRequirement?.requiredQty ?? 0);
+  });
+
+  it("falls back to a lower-ranked source once the best one's availableQty is exhausted", () => {
+    const parts = [part({ widthMm: 900, heightMm: 900, qty: 4 })];
+    const sources = [
+      source({ sourceSheetId: "small", widthMm: 1000, lengthMm: 1000 }), // unlimited fallback
+      source({ sourceSheetId: "large", widthMm: 2000, lengthMm: 1000, availableQty: 1 }), // best but capped
+    ];
+
+    const result = runNestingAlgorithm(parts, sources);
+
+    expect(result.totalPartsPlaced).toBe(4);
+    expect(result.totalPartsUnplaced).toBe(0);
+    const usedSourceIds = result.groups[0].sheets.map((s) => s.sourceSheetId);
+    expect(usedSourceIds.filter((id) => id === "large")).toHaveLength(1);
+    expect(usedSourceIds.some((id) => id === "small")).toBe(true);
+  });
+});
