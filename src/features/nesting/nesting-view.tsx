@@ -438,7 +438,7 @@ function NestingJobCard({
                             {s.material} · {s.thicknessMm} mm<br />
                             {fmt(s.widthMm, 0)} × {fmt(s.lengthMm, 0)} mm<br />
                             <span className="text-emerald-600">Available for Purchase</span>
-                            {s.availableQty != null && ` · ${s.availableQty} in stock`}
+                            {s.availableQty != null && ` · max ${s.availableQty} sheet${s.availableQty === 1 ? "" : "s"}`}
                           </p>
                         </div>
                         <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => handleRemoveSource(s.id)} title="Remove source">
@@ -621,8 +621,64 @@ function NestingResults({
     );
   }
 
+  // No fake success (Phase 2B §16): only ever say "Nesting Complete" when
+  // every required part instance was actually placed. Anything short of
+  // that is explicitly "Partially Completed" — never dressed up as done.
+  const isFullyComplete = run.status === "COMPLETED" && (run.totalPartsUnplaced ?? 0) === 0;
+
   return (
     <div className="px-4 py-4">
+      <div className={`mb-3 flex items-start gap-2 rounded-lg border px-3 py-3 text-xs ${
+        isFullyComplete
+          ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-800"
+          : "border-amber-500/30 bg-amber-500/10 text-amber-800"
+      }`}>
+        {isFullyComplete ? (
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+        ) : (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        )}
+        <div>
+          <p className="font-semibold">{isFullyComplete ? "Nesting Complete" : "Nesting Partially Completed"}</p>
+          <p className="mt-0.5">
+            {run.totalPartsPlaced ?? 0} / {run.totalPartsRequired ?? 0} required parts placed
+            {!isFullyComplete && " — see the shortage and unplaced-parts details below."}
+          </p>
+        </div>
+      </div>
+
+      {/* SOURCE SHORTAGE — Phase 2B §2/§9: "Required sheets: X, Available
+          sheets: Y, Shortage: Z" whenever a capped source ran out. */}
+      {run.sourceShortageJson && run.sourceShortageJson.length > 0 && (
+        <div className="mb-3 overflow-x-auto rounded-lg border border-destructive/30 bg-destructive/5">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-destructive/30 text-left text-xs text-destructive">
+                <th className="px-3 py-1.5 font-medium">Material</th>
+                <th className="px-3 py-1.5 text-right font-medium">Thickness</th>
+                <th className="px-3 py-1.5 text-right font-medium">Required Sheets</th>
+                <th className="px-3 py-1.5 text-right font-medium">Available Sheets</th>
+                <th className="px-3 py-1.5 text-right font-medium">Shortage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {run.sourceShortageJson.map((s) => (
+                <tr key={`${s.material}||${s.thicknessMm}`} className="border-b border-destructive/20 last:border-0 text-destructive">
+                  <td className="px-3 py-1.5">{s.material}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{s.thicknessMm} mm</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{s.requiredSheets}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{s.availableSheets}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{s.shortageSheets}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="px-3 py-1.5 text-[11px] text-destructive/80">
+            Not enough source sheets are available for this material/thickness — purchase the shortage above to complete this nest.
+          </p>
+        </div>
+      )}
+
       <div className="mb-2 flex items-center justify-between">
         <h4 className="text-sm font-semibold text-foreground">Nesting Results</h4>
         {run.sheets.length > 0 && (
@@ -660,6 +716,7 @@ function NestingResults({
                   <th className="px-3 py-1.5 text-right font-medium">Thickness</th>
                   <th className="px-3 py-1.5 font-medium">Sheet Size</th>
                   <th className="px-3 py-1.5 text-right font-medium">Required Qty</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Available Qty</th>
                 </tr>
               </thead>
               <tbody>
@@ -669,6 +726,7 @@ function NestingResults({
                     <td className="px-3 py-1.5 text-right tabular-nums">{r.thicknessMm} mm</td>
                     <td className="px-3 py-1.5">{fmt(r.widthMm, 0)} × {fmt(r.lengthMm, 0)} mm</td>
                     <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{r.requiredQty} Sheet{r.requiredQty === 1 ? "" : "s"}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">{r.availableQty != null ? r.availableQty : "Unlimited"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -857,10 +915,10 @@ function AddSourceDialog({
               <Input type="number" step="any" value={thicknessMm} onChange={(e) => setThicknessMm(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label>Stock on hand (optional)</Label>
-              <Input type="number" step="1" value={availableQty} onChange={(e) => setAvailableQty(e.target.value)} placeholder="Available for Purchase" />
+              <Label>Available Qty (optional)</Label>
+              <Input type="number" step="1" value={availableQty} onChange={(e) => setAvailableQty(e.target.value)} placeholder="Max sheets available" />
               <p className="text-[11px] text-muted-foreground">
-                Leave blank — sheets of this size are available for purchase, not a fixed inventory. The nesting engine will calculate how many to buy.
+                If set, the engine will never use more than this many physical sheets of this size — it's a hard limit, not just informational. Leave blank to treat this size as unlimited to purchase.
               </p>
             </div>
             <div className="space-y-1.5">
