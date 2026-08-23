@@ -1,5 +1,10 @@
 export type NestingJobStatus = "DRAFT" | "READY";
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
 export type ExcludedReason =
   | "DXF missing"
   | "DXF invalid"
@@ -181,6 +186,11 @@ export interface NestingSheetRow {
 // Full detail payload returned by GET /api/nesting/runs/[runId]
 export interface NestingRunDetail extends NestingRunSummary {
   sheets: NestingSheetRow[];
+  // Real outer/hole polygon geometry per takeoffPartId (already validated,
+  // DXF-derived — see dxf.ts), keyed once per distinct part regardless of
+  // how many instances are placed. Lets the sheet preview render the
+  // ACTUAL part shape instead of a bounding-box rectangle (Phase 2B).
+  partGeometryById: Record<string, { outer: Point[]; holes: Point[][] }>;
 }
 
 // Full detail payload returned by GET /api/nesting/jobs/[id]
