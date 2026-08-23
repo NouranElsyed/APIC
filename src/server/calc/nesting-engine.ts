@@ -85,25 +85,26 @@ export interface EnginePartInput {
 }
 
 // A purchasable source sheet definition — material + thickness + size.
-// There is deliberately NO quantity field here: the engine treats every
-// definition as available an unlimited number of times to purchase, and
-// reports back how many were actually required (see sourceRequirements on
-// NestingAlgorithmResult). `availableQty`, if present on the caller's
-// underlying record, is informational stock only and is never read by the
-// engine (PROJECT.md §4).
+// `availableQty`, when present, is a HARD LIMIT (Phase 2B §2): the engine
+// may open at most that many physical sheets of this exact definition. When
+// omitted/null, this definition is treated as unlimited stock (backward
+// compatible with older records that never set it) — the engine will keep
+// opening fresh sheets of it for as long as needed.
 export interface EngineSourceInput {
   sourceSheetId: string;
   material: string;
   thicknessMm: number;
   widthMm: number;
   lengthMm: number;
+  availableQty?: number | null;
 }
 
 export type UnplacedReason =
   | "NO_SOURCE_SHEET"
   | "INSUFFICIENT_SHEET_AREA"
   | "PART_TOO_LARGE"
-  | "NO_VALID_PLACEMENT";
+  | "NO_VALID_PLACEMENT"
+  | "INSUFFICIENT_SOURCE_QTY";
 
 export interface UnplacedPart {
   takeoffPartId: string;
@@ -152,6 +153,10 @@ export interface EngineGroupResult {
 // The automatically-calculated purchasing requirement for one source sheet
 // definition (PROJECT.md §3/§16): "to manufacture all required parts, buy
 // `requiredQty` sheets of widthMm × lengthMm × thicknessMm `material`."
+// `requiredQty` is how many sheets of this definition were ACTUALLY used
+// (never exceeds `availableQty` when that's a hard cap — see §2). If the
+// true demand exceeds what's available, that shortfall is reported per
+// group via `sourceShortages` below, not by inflating this number.
 export interface SourceRequirement {
   sourceSheetId: string;
   material: string;
@@ -159,6 +164,21 @@ export interface SourceRequirement {
   widthMm: number;
   lengthMm: number;
   requiredQty: number;
+  availableQty: number | null;
+}
+
+// Reported once per material/thickness group when its compatible source
+// sheets all have a hard availableQty cap and that combined cap was not
+// enough to place every required instance (PROJECT.md §2/§9): "Required
+// sheets: 10, Available sheets: 8, Shortage: 2". `requiredSheets` is the
+// TRUE demand (computed by a second, uncapped simulation purely for this
+// report — the actual placement/export always respects the hard cap).
+export interface GroupSourceShortage {
+  material: string;
+  thicknessMm: number;
+  requiredSheets: number;
+  availableSheets: number;
+  shortageSheets: number;
 }
 
 export interface NestingAlgorithmResult {
@@ -175,6 +195,7 @@ export interface NestingAlgorithmResult {
   totalPartsUnplaced: number;
   unplacedParts: UnplacedPart[];
   sourceRequirements: SourceRequirement[];
+  sourceShortages: GroupSourceShortage[];
 }
 
 function groupKey(material: string, thicknessMm: number): string {
@@ -394,32 +415,46 @@ function expandPartInstances(parts: EnginePartInput[]): PartInstance[] {
   });
 }
 
-function runGroup(
-  material: string,
-  thicknessMm: number,
-  parts: EnginePartInput[],
-  sources: EngineSourceInput[],
-  config: EngineConfig,
-  nextSheetNumber: () => number,
-): EngineGroupResult {
-  const instances = expandPartInstances(parts);
+// Result of one full packing pass over a set of instances against an
+// ordered list of source definitions.
+interface PackResult {
+  packers: SheetPacker[];
+  placedCountByPart: Map<string, number>;
+  failureReasonByPart: Map<string, UnplacedReason>;
+}
 
+// Packs every instance against `sources`, which MUST already be in the
+// order the engine should prefer to open them (best-fit first — see
+// rankSourcesByEfficiency). When `respectCaps` is true, a source whose
+// `availableQty` has already been fully opened is skipped when choosing
+// where to open a fresh sheet (Phase 2B §2: a hard limit, not a
+// suggestion). When false, every source is treated as unlimited stock —
+// used only for the "how many sheets would this truly take" shadow
+// simulation that powers the shortage report, never for real placement.
+function packInstances(instances: PartInstance[], sources: EngineSourceInput[], config: EngineConfig, respectCaps: boolean): PackResult {
   const openPackers: SheetPacker[] = [];
-  // Sources are unlimited to purchase (PROJECT.md §2): rather than
-  // pre-expanding a finite pool, we cycle through the distinct source
-  // definitions declared for this group, opening a brand-new physical
-  // sheet each time one is needed. The final per-source open count (see
-  // sourceRequirements below) is simply "how many times did we open a
-  // sheet of this definition".
-  let cycleIndex = 0;
+  const openedCountBySourceId = new Map<string, number>();
 
   function openNextSheet(): SheetPacker | null {
-    if (sources.length === 0) return null;
-    const sourceDef = sources[cycleIndex % sources.length];
-    cycleIndex++;
-    const packer = new SheetPacker(sourceDef, config);
-    openPackers.push(packer);
-    return packer;
+    for (const sourceDef of sources) {
+      const cap = sourceDef.availableQty ?? null;
+      const openedSoFar = openedCountBySourceId.get(sourceDef.sourceSheetId) ?? 0;
+      if (respectCaps && cap != null && openedSoFar >= cap) continue;
+      openedCountBySourceId.set(sourceDef.sourceSheetId, openedSoFar + 1);
+      const packer = new SheetPacker(sourceDef, config);
+      openPackers.push(packer);
+      return packer;
+    }
+    return null;
+  }
+
+  function hasRemainingCapacity(): boolean {
+    if (!respectCaps) return sources.length > 0;
+    return sources.some((s) => {
+      const cap = s.availableQty ?? null;
+      if (cap == null) return true;
+      return (openedCountBySourceId.get(s.sourceSheetId) ?? 0) < cap;
+    });
   }
 
   // Per-part-id running tally so the final unplaced-parts report always
@@ -439,13 +474,10 @@ function runGroup(
       }
     }
 
-    // Open new sheets — one purchasable definition at a time — until the
-    // instance fits. Since supply is unlimited, the only thing that can
-    // stop this is having already tried a fresh sheet of every distinct
-    // source size/definition without success; trying more copies of sizes
-    // already proven not to fit would never help, so fresh-sheet attempts
-    // are capped at `sources.length` per instance rather than looping
-    // forever.
+    // Open new sheets — best-fit definition first — until the instance
+    // fits. Fresh-sheet attempts are capped at `sources.length` per
+    // instance: trying more copies of sizes already proven not to fit (or
+    // already fully opened when caps apply) would never help.
     if (!placed) {
       let freshAttempts = 0;
       while (!placed && freshAttempts < sources.length) {
@@ -471,12 +503,82 @@ function runGroup(
         const probe = new SheetPacker(s, config);
         return probe.couldEverFit(instance);
       });
-      reason = fitsAnyKnownSheetSize ? "INSUFFICIENT_SHEET_AREA" : "PART_TOO_LARGE";
+      if (!fitsAnyKnownSheetSize) {
+        reason = "PART_TOO_LARGE";
+      } else if (respectCaps && !hasRemainingCapacity()) {
+        // It fits a known sheet size, but every compatible source
+        // definition has already been purchased up to its hard limit
+        // (PROJECT.md §2) — this is a purchasing shortage, not a geometry
+        // failure.
+        reason = "INSUFFICIENT_SOURCE_QTY";
+      } else {
+        reason = "INSUFFICIENT_SHEET_AREA";
+      }
     }
     if (!failureReasonByPart.has(instance.takeoffPartId)) {
       failureReasonByPart.set(instance.takeoffPartId, reason);
     }
   }
+
+  return { packers: openPackers, placedCountByPart, failureReasonByPart };
+}
+
+// Automatic sheet-size selection (Phase 2B §3): rather than round-robining
+// blindly through every compatible source definition, simulate packing ALL
+// of this group's instances using each candidate definition alone (as
+// unlimited stock) and rank definitions by the result — fewest sheets
+// first, then least scrap, then highest utilization. The real packing pass
+// then opens sheets in this best-first order, only falling back to a
+// lower-ranked (worse) definition once a better one's hard availableQty
+// cap is exhausted.
+function rankSourcesByEfficiency(instances: PartInstance[], sources: EngineSourceInput[], config: EngineConfig): EngineSourceInput[] {
+  if (sources.length <= 1) return sources;
+
+  const scored = sources.map((s) => {
+    const { packers } = packInstances(instances, [s], config, false);
+    const used = packers.filter((p) => p.placements.length > 0);
+    const sheetsNeeded = used.length;
+    const sheetAreaSqm = (s.widthMm * s.lengthMm) / 1_000_000;
+    let usedAreaSqm = 0;
+    for (const packer of used) {
+      for (const placement of packer.placements) {
+        const instance = instances.find((i) => i.takeoffPartId === placement.takeoffPartId);
+        usedAreaSqm += instance?.areaSqm ?? 0;
+      }
+    }
+    const totalAreaSqm = sheetAreaSqm * sheetsNeeded;
+    const scrapAreaSqm = Math.max(0, totalAreaSqm - usedAreaSqm);
+    const utilizationPercent = totalAreaSqm > 0 ? (usedAreaSqm / totalAreaSqm) * 100 : 0;
+    return { source: s, sheetsNeeded, scrapAreaSqm, utilizationPercent };
+  });
+
+  scored.sort((a, b) => {
+    if (a.sheetsNeeded !== b.sheetsNeeded) return a.sheetsNeeded - b.sheetsNeeded;
+    if (Math.abs(a.scrapAreaSqm - b.scrapAreaSqm) > 1e-9) return a.scrapAreaSqm - b.scrapAreaSqm;
+    return b.utilizationPercent - a.utilizationPercent;
+  });
+
+  return scored.map((s) => s.source);
+}
+
+function runGroup(
+  material: string,
+  thicknessMm: number,
+  parts: EnginePartInput[],
+  sources: EngineSourceInput[],
+  config: EngineConfig,
+  nextSheetNumber: () => number,
+): {
+  group: EngineGroupResult;
+  shortage: GroupSourceShortage | null;
+  rankedSources: EngineSourceInput[];
+  placedCountByPart: Map<string, number>;
+  failureReasonByPart: Map<string, UnplacedReason>;
+} {
+  const instances = expandPartInstances(parts);
+  const rankedSources = rankSourcesByEfficiency(instances, sources, config);
+
+  const { packers: openPackers, placedCountByPart, failureReasonByPart } = packInstances(instances, rankedSources, config, true);
 
   // Build sheet results only for sheets that actually received placements —
   // an opened-but-empty trailing sheet (e.g. the loop opened one more sheet
@@ -508,14 +610,40 @@ function runGroup(
   const partsRequired = parts.reduce((sum, p) => sum + p.qty, 0);
   const partsPlaced = [...placedCountByPart.values()].reduce((sum, n) => sum + n, 0);
 
+  // Shortage report (Phase 2B §2/§9): only meaningful when every compatible
+  // source for this group has an explicit hard cap — if even one is
+  // unlimited, the engine never runs out of purchasable stock for this
+  // group, so there is nothing to report.
+  let shortage: GroupSourceShortage | null = null;
+  if (partsPlaced < partsRequired && rankedSources.length > 0 && rankedSources.every((s) => s.availableQty != null)) {
+    const availableSheets = rankedSources.reduce((sum, s) => sum + (s.availableQty ?? 0), 0);
+    const { packers: shadowPackers } = packInstances(instances, rankedSources, config, false);
+    const requiredSheets = shadowPackers.filter((p) => p.placements.length > 0).length;
+    if (requiredSheets > availableSheets) {
+      shortage = {
+        material,
+        thicknessMm,
+        requiredSheets,
+        availableSheets,
+        shortageSheets: requiredSheets - availableSheets,
+      };
+    }
+  }
+
   return {
-    key: groupKey(material, thicknessMm),
-    material,
-    thicknessMm,
-    partsRequired,
-    partsPlaced,
-    partsUnplaced: partsRequired - partsPlaced,
-    sheets,
+    group: {
+      key: groupKey(material, thicknessMm),
+      material,
+      thicknessMm,
+      partsRequired,
+      partsPlaced,
+      partsUnplaced: partsRequired - partsPlaced,
+      sheets,
+    },
+    shortage,
+    rankedSources,
+    placedCountByPart,
+    failureReasonByPart,
   };
 }
 
@@ -548,49 +676,31 @@ export function runNestingAlgorithm(
   let sheetCounter = 0;
   const nextSheetNumber = () => ++sheetCounter;
 
-  const groups: EngineGroupResult[] = groupKeys.map((key) => {
+  const groupRuns = groupKeys.map((key) => {
     const groupParts = partsByGroup.get(key)!;
     const { material, thicknessMm } = groupParts[0];
     const groupSources = sourcesByGroup.get(key) ?? [];
     return runGroup(material, thicknessMm, groupParts, groupSources, config, nextSheetNumber);
   });
+  const groups: EngineGroupResult[] = groupRuns.map((r) => r.group);
+  const sourceShortages: GroupSourceShortage[] = groupRuns
+    .map((r) => r.shortage)
+    .filter((s): s is GroupSourceShortage => s != null);
 
-  // Build the flat unplaced-parts report from each group's per-part tallies.
+  // Build the flat unplaced-parts report straight from each group's own
+  // packing pass (respects hard availableQty caps — see packInstances)
+  // rather than recomputing placement independently.
   const unplacedParts: UnplacedPart[] = [];
-  for (const key of groupKeys) {
+  groupKeys.forEach((key, idx) => {
     const groupParts = partsByGroup.get(key)!;
-    const groupSources = sourcesByGroup.get(key) ?? [];
-    const group = groups.find((g) => g.key === key)!;
-
-    const placedByPart = new Map<string, number>();
-    for (const sheet of group.sheets) {
-      for (const placement of sheet.placements) {
-        placedByPart.set(placement.takeoffPartId, (placedByPart.get(placement.takeoffPartId) ?? 0) + 1);
-      }
-    }
+    const { placedCountByPart, failureReasonByPart } = groupRuns[idx];
 
     for (const part of groupParts) {
-      const placedQty = placedByPart.get(part.takeoffPartId) ?? 0;
+      const placedQty = placedCountByPart.get(part.takeoffPartId) ?? 0;
       const remainingQty = part.qty - placedQty;
       if (remainingQty <= 0) continue;
 
-      let reason: UnplacedReason;
-      if (groupSources.length === 0) {
-        reason = "NO_SOURCE_SHEET";
-      } else {
-        const fitsAnyKnownSheetSize = groupSources.some((s) => {
-          const probe = new SheetPacker(s, config);
-          return probe.couldEverFit({
-            takeoffPartId: part.takeoffPartId,
-            itemNo: part.itemNo,
-            instanceNumber: 1,
-            areaSqm: part.areaSqm,
-            outer: part.outer,
-            rawBBox: computeBoundingBox(part.outer),
-          });
-        });
-        reason = fitsAnyKnownSheetSize ? "INSUFFICIENT_SHEET_AREA" : "PART_TOO_LARGE";
-      }
+      const reason = failureReasonByPart.get(part.takeoffPartId) ?? "NO_VALID_PLACEMENT";
 
       unplacedParts.push({
         takeoffPartId: part.takeoffPartId,
@@ -603,7 +713,7 @@ export function runNestingAlgorithm(
         reason,
       });
     }
-  }
+  });
 
   const totalSheetsUsed = groups.reduce((sum, g) => sum + g.sheets.length, 0);
   const totalUsedAreaSqm = groups.reduce((sum, g) => sum + g.sheets.reduce((s, sh) => s + sh.usedAreaSqm, 0), 0);
@@ -621,6 +731,7 @@ export function runNestingAlgorithm(
   // Required purchase quantity per source definition (PROJECT.md §3/§16):
   // simply how many actually-used sheets (sheets.length > 0 placements)
   // came from each sourceSheetId, tallied across every group.
+  const availableQtyBySourceId = new Map(sources.map((s) => [s.sourceSheetId, s.availableQty ?? null]));
   const requirementBySourceId = new Map<string, SourceRequirement>();
   for (const group of groups) {
     for (const sheet of group.sheets) {
@@ -635,6 +746,7 @@ export function runNestingAlgorithm(
           widthMm: sheet.widthMm,
           lengthMm: sheet.lengthMm,
           requiredQty: 1,
+          availableQty: availableQtyBySourceId.get(sheet.sourceSheetId) ?? null,
         });
       }
     }
@@ -657,5 +769,6 @@ export function runNestingAlgorithm(
     totalPartsUnplaced,
     unplacedParts,
     sourceRequirements,
+    sourceShortages,
   };
 }
