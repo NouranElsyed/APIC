@@ -74,9 +74,9 @@ export interface NestingSourceRow {
   thicknessMm: number;
   widthMm: number;
   lengthMm: number;
-  // Informational stock-on-hand only — never a hard limit for nesting
-  // (PROJECT.md §2/§4). null/undefined means "not tracked, unlimited to
-  // purchase".
+  // A hard limit when set (Phase 2B §2): the nesting engine will never
+  // open more physical sheets of this definition than this. null/undefined
+  // means "not tracked, unlimited to purchase" (PROJECT.md §4).
   availableQty: number | null;
   createdAt: string;
 }
@@ -102,13 +102,14 @@ export interface NestingJobRow {
   partsSummary: NestingJobPartsSummary;
 }
 
-export type NestingRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type NestingRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
 
 export type UnplacedReason =
   | "NO_SOURCE_SHEET"
   | "INSUFFICIENT_SHEET_AREA"
   | "PART_TOO_LARGE"
-  | "NO_VALID_PLACEMENT";
+  | "NO_VALID_PLACEMENT"
+  | "INSUFFICIENT_SOURCE_QTY";
 
 export interface UnplacedPartRow {
   takeoffPartId: string;
@@ -130,6 +131,18 @@ export interface SourceRequirementRow {
   widthMm: number;
   lengthMm: number;
   requiredQty: number;
+  availableQty: number | null;
+}
+
+// Per material/thickness group shortage (Phase 2B §2/§9): only present when
+// every compatible source for that group has a hard availableQty cap and
+// that combined cap fell short of true demand.
+export interface SourceShortageRow {
+  material: string;
+  thicknessMm: number;
+  requiredSheets: number;
+  availableSheets: number;
+  shortageSheets: number;
 }
 
 // Lightweight run summary — this is what NestingJobDetail.runs contains
@@ -158,6 +171,7 @@ export interface NestingRunSummary {
   totalPartsUnplaced: number | null;
   unplacedPartsJson: UnplacedPartRow[] | null;
   sourceRequirementJson: SourceRequirementRow[] | null;
+  sourceShortageJson: SourceShortageRow[] | null;
 }
 
 export interface NestingPlacementRow {
