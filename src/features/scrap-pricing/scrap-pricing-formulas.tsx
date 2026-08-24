@@ -1,4 +1,3 @@
-
 "use client";
 // Read-only reference showing exactly how every number on the Scrap &
 // Material screen is calculated. Pulls its formula list from the same
@@ -317,13 +316,13 @@ export function FormulasDialogTrigger({ scope }: { scope: FormulaScope | null })
     <Dialog open={open} onOpenChange={setOpen}>
       <Button variant="outline" onClick={() => setOpen(true)}>
         <Sigma className="h-4 w-4" />
-        عرض المعادلات
+        Show Formulas
       </Button>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>كل حساب في هذه الصفحة — خطوة بخطوة</DialogTitle>
+          <DialogTitle>How every number on this page is calculated</DialogTitle>
           <DialogDescription>
-            {values.itemLabel} — كل صيغة موضّح جنبها الرمز، ثم نفس الصيغة بالأرقام الحقيقية الحالية، ثم الناتج.
+            {values.itemLabel} — each row below shows the formula, then the same formula with the real current numbers substituted in, then the result.
           </DialogDescription>
         </DialogHeader>
         <FormulaTable values={values} showTotalsOnly={showTotalsOnly} />
@@ -342,14 +341,14 @@ export function RowFormulaButton({ row }: { row: ScrapPricingRow }) {
         type="button"
         onClick={() => setOpen(true)}
         className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-        title="عرض طريقة الحساب لهذا الصنف"
+        title="Show how this item was calculated"
       >
         <Info className="h-3.5 w-3.5" />
       </button>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>طريقة حساب: {row.itemLabel}</DialogTitle>
-          <DialogDescription>كل صيغة بالرمز، ثم بالأرقام الحقيقية لهذا الصنف، ثم الناتج.</DialogDescription>
+          <DialogTitle>Calculation breakdown: {row.itemLabel}</DialogTitle>
+          <DialogDescription>Each formula, with this item&apos;s real numbers substituted in, then the result.</DialogDescription>
         </DialogHeader>
         <FormulaTable values={values} showTotalsOnly={false} />
       </DialogContent>
@@ -361,17 +360,17 @@ export function RowFormulaButton({ row }: { row: ScrapPricingRow }) {
 // headers in scrap-pricing-view.tsx, for quick native-tooltip (title=) hints
 // without opening the full dialog.
 export const QUICK_TOOLTIPS: Record<string, string> = {
-  usedArea: "من نتيجة الـ DXF Nesting الحالية مباشرة (المساحة الحقيقية، مش bounding box)",
-  usedWeight: "من نتيجة الـ DXF Nesting الحالية مباشرة",
-  buyWeight: "من عدد الألواح المطلوب شراؤها (Nesting Engine)",
-  usedLater: "= (وزن الشراء − وزن الاستخدام) × %المستخدم لاحقًا",
-  actualScrap: "= وزن الشراء − وزن الاستخدام − وزن المستخدم لاحقًا",
-  buyCost: "= سعر الكيلو × وزن الشراء",
-  usedLaterValue: "= وزن المستخدم لاحقًا × سعر المستخدم لاحقًا للكيلو",
-  scrapValue: "= وزن الخردة الفعلي × سعر بيع الخردة للكيلو",
-  scrapPctBought: "= 1 − (إجمالي القيمة المستخدمة ÷ إجمالي تكلفة الشراء)",
-  scrapPctUsed: "= إجمالي صافي تسوية الخردة ÷ إجمالي تكلفة الاستخدام",
-  primaryScrapPct: "= 1 − (وزن الاستخدام ÷ وزن الشراء)",
-  costUsed: "= سعر الكيلو × وزن الاستخدام",
-  actualScrapPct: "= 1 − (القيمة المستخدمة ÷ تكلفة الشراء)",
+  usedArea: "Straight from the current DXF Nesting result (real nested area, not a bounding box)",
+  usedWeight: "Straight from the current DXF Nesting result",
+  buyWeight: "From the number of sheets the Nesting Engine says had to be purchased",
+  usedLater: "= (Buy Wt − Used Wt) × %Used Later",
+  actualScrap: "= Buy Wt − Used Wt − Used Later Wt",
+  buyCost: "= Cost/kg × Buy Wt",
+  usedLaterValue: "= Used Later Wt × Used Later Price/kg",
+  scrapValue: "= Actual Scrap Wt × Scrap Selling Price/kg",
+  scrapPctBought: "= 1 − (Total Value Used ÷ Total Buy Cost)",
+  scrapPctUsed: "= Total Net Scrap Adjustment ÷ Total Cost Used",
+  primaryScrapPct: "= 1 − (Used Wt ÷ Buy Wt)",
+  costUsed: "= Cost/kg × Used Wt",
+  actualScrapPct: "= 1 − (Value Used ÷ Buy Cost)",
 };
