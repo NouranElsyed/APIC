@@ -234,6 +234,31 @@ export function AssistedNestingCanvas({
 
   const svgRef = React.useRef<SVGSVGElement | null>(null);
 
+  // React attaches onWheel as a PASSIVE listener, so e.preventDefault()
+  // inside a React onWheel handler is silently ignored by the browser and
+  // the page scrolls anyway while the user is rotating a part. Attaching a
+  // native, non-passive listener is the only reliable fix.
+  const placingRef = React.useRef(placing);
+  React.useEffect(() => {
+    placingRef.current = placing;
+  }, [placing]);
+
+  React.useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const nativeWheelHandler = (e: WheelEvent) => {
+      if (!placingRef.current) return;
+      e.preventDefault();
+      setGhostRotation((r) => {
+        const delta = e.deltaY > 0 ? -rotationStepDeg : rotationStepDeg;
+        const next = (r + delta) % 360;
+        return next < 0 ? next + 360 : next;
+      });
+    };
+    el.addEventListener("wheel", nativeWheelHandler, { passive: false });
+    return () => el.removeEventListener("wheel", nativeWheelHandler);
+  }, [rotationStepDeg]);
+
   function commitHistory(nextInstances: AssistedInstance[]) {
     setSheetSessions((prev) =>
       prev.map((s, i) => {
@@ -324,30 +349,64 @@ export function AssistedNestingCanvas({
   }, [instances, partsById]);
 
   // ---- live ghost validation (placement) ----------------------------------
+  // Last VALID ghost position/rotation. When the cursor would put the part
+  // outside the sheet, on the margin, or overlapping another part, we keep
+  // the ghost pinned here instead of following the cursor into an invalid
+  // spot — the part "stops" at the boundary rather than crossing it.
+  const lastValidGhostRef = React.useRef<{ xMm: number; yMm: number; rotationDeg: number } | null>(null);
+
+  React.useEffect(() => {
+    // Reset the anchor whenever we stop placing or switch parts, so a new
+    // placement session doesn't inherit a stale position.
+    lastValidGhostRef.current = null;
+  }, [placing, selectedPartId]);
+
   const ghost = React.useMemo(() => {
     if (!placing || !cursor || !selectedPartId) return null;
     const part = partsById.get(selectedPartId);
     if (!part) return null;
 
-    const shape = computeOrientedShape(part.outer, ghostRotation);
-    // Cursor tracks the shape's own center for a natural feel.
-    const originX = cursor.x - shape.width / 2;
-    const originY = cursor.y - shape.height / 2;
-    const polygon = translatePoints(shape.points, originX, originY);
-
-    let reason: InvalidReason = null;
-    if (!boundsContain(polygon, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
-      reason = "CROSSES_MARGIN";
-    } else {
-      for (const c of committedPolygons) {
-        if (polygonsOverlap(polygon, c.polygon)) {
-          reason = "OVERLAPS_EXISTING_PART";
-          break;
+    function evaluate(originX: number, originY: number, rotationDeg: number) {
+      const shape = computeOrientedShape(part!.outer, rotationDeg);
+      const polygon = translatePoints(shape.points, originX, originY);
+      let reason: InvalidReason = null;
+      if (!boundsContain(polygon, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
+        reason = "CROSSES_MARGIN";
+      } else {
+        for (const c of committedPolygons) {
+          if (polygonsOverlap(polygon, c.polygon)) {
+            reason = "OVERLAPS_EXISTING_PART";
+            break;
+          }
         }
       }
+      return { polygon, reason };
     }
 
-    return { polygon, xMm: originX, yMm: originY, rotationDeg: ghostRotation, reason, part };
+    const shape = computeOrientedShape(part.outer, ghostRotation);
+    // Cursor tracks the shape's own center for a natural feel.
+    const candidateX = cursor.x - shape.width / 2;
+    const candidateY = cursor.y - shape.height / 2;
+    const candidate = evaluate(candidateX, candidateY, ghostRotation);
+
+    if (!candidate.reason) {
+      // Valid spot — move there and remember it as the new anchor.
+      lastValidGhostRef.current = { xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation };
+      return { polygon: candidate.polygon, xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation, reason: null, part };
+    }
+
+    // Invalid spot — stay pinned at the last valid position/rotation
+    // instead of drawing the part outside the sheet/over another
+    // part/on the margin.
+    const anchor = lastValidGhostRef.current;
+    if (anchor) {
+      const pinned = evaluate(anchor.xMm, anchor.yMm, anchor.rotationDeg);
+      return { polygon: pinned.polygon, xMm: anchor.xMm, yMm: anchor.yMm, rotationDeg: anchor.rotationDeg, reason: null, part };
+    }
+
+    // No valid anchor yet (e.g. first move already invalid) — show the
+    // red invalid preview so the user gets feedback on where NOT to go.
+    return { polygon: candidate.polygon, xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation, reason: candidate.reason, part };
   }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons]);
 
   // ---- pattern detection ---------------------------------------------------
@@ -394,16 +453,6 @@ export function AssistedNestingCanvas({
     if (!placing) return;
     const p = svgPointFromEvent(e);
     if (p) setCursor(p);
-  }
-
-  function handleWheel(e: React.WheelEvent<SVGSVGElement>) {
-    if (!placing) return;
-    e.preventDefault();
-    setGhostRotation((r) => {
-      const delta = e.deltaY > 0 ? -rotationStepDeg : rotationStepDeg;
-      const next = (r + delta) % 360;
-      return next < 0 ? next + 360 : next;
-    });
   }
 
   function handleClick() {
@@ -853,7 +902,6 @@ export function AssistedNestingCanvas({
             style={{ aspectRatio: `${viewW} / ${viewH}` }}
             tabIndex={0}
             onMouseMove={handleMouseMove}
-            onWheel={handleWheel}
             onClick={handleClick}
             onKeyDown={handleKeyDown}
           >
