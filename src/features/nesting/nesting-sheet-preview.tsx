@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import type { NestingSheetRow, Point } from "./types";
-import { transformGeometryForPlacement, type RotationDeg } from "@/server/calc/nesting-geometry";
+import { transformGeometryForPlacement } from "@/server/calc/nesting-geometry";
 
 export interface PartBBoxInfo {
   itemNo: number;
@@ -12,10 +12,6 @@ export interface PartBBoxInfo {
 export interface PartGeometryInfo {
   outer: Point[];
   holes: Point[][];
-}
-
-function isSupportedRotation(deg: number): deg is RotationDeg {
-  return deg === 0 || deg === 90 || deg === 180 || deg === 270;
 }
 
 function pointsToPath(points: Point[]): string {
@@ -68,10 +64,13 @@ export function NestingSheetPreview({
         {sheet.placements.map((p) => {
           const info = partInfoById.get(p.takeoffPartId);
           const geo = partGeometryById.get(p.takeoffPartId);
-          const rotation = isSupportedRotation(p.rotationDeg) ? p.rotationDeg : 0;
 
           if (geo) {
-            const transformed = transformGeometryForPlacement(geo.outer, geo.holes, rotation, p.xMm, p.yMm);
+            // Phase 2B: p.rotationDeg is an arbitrary degree value now —
+            // use it verbatim, never clamp to an axis rotation, or a
+            // legitimately tilted (and validated) placement would render
+            // upright and look like it collides with its neighbors.
+            const transformed = transformGeometryForPlacement(geo.outer, geo.holes, p.rotationDeg, p.xMm, p.yMm);
             const xs = transformed.outer.map((pt) => pt.x);
             const ys = transformed.outer.map((pt) => pt.y);
             const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
