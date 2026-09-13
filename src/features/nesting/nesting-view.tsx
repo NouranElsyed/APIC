@@ -151,10 +151,10 @@ function NestingJobCard({
   // Nesting Parameters (PROJECT.md §5/§20) — configurable per run, never
   // hard-coded. Defaults match the engine's own DEFAULT_ENGINE_CONFIG.
   const [partGapMm, setPartGapMm] = React.useState("0");
-  const [marginLeftMm, setMarginLeftMm] = React.useState("25");
-  const [marginRightMm, setMarginRightMm] = React.useState("25");
-  const [marginTopMm, setMarginTopMm] = React.useState("25");
-  const [marginBottomMm, setMarginBottomMm] = React.useState("25");
+  const [marginLeftMm, setMarginLeftMm] = React.useState("0");
+  const [marginRightMm, setMarginRightMm] = React.useState("0");
+  const [marginTopMm, setMarginTopMm] = React.useState("0");
+  const [marginBottomMm, setMarginBottomMm] = React.useState("0");
 
   const loadDetail = React.useCallback(async () => {
     setDetailLoading(true);
@@ -192,7 +192,10 @@ function NestingJobCard({
 
   const nestingParamsInvalid =
     partGap < 0 || marginLeft < 0 || marginRight < 0 || marginTop < 0 || marginBottom < 0 ||
-    (detail?.sources.some((s) => marginLeft + marginRight >= s.widthMm || marginTop + marginBottom >= s.lengthMm) ?? false);
+    // Axis convention: marginLeft/Right shrink the X-axis extent, which is
+    // lengthMm (horizontal); marginTop/Bottom shrink the Y-axis extent,
+    // which is widthMm (vertical) — matches nesting-engine.ts.
+    (detail?.sources.some((s) => marginLeft + marginRight >= s.lengthMm || marginTop + marginBottom >= s.widthMm) ?? false);
 
   async function handleRunNesting() {
     if (running || nestingParamsInvalid) return; // prevent duplicate clicks / invalid config
@@ -503,8 +506,8 @@ function NestingJobCard({
                   <div className="mt-3 space-y-1">
                     <p className="text-[11px] font-medium text-muted-foreground">Effective usable nesting area (updates live):</p>
                     {detail.sources.map((s) => {
-                      const usableW = s.widthMm - marginLeft - marginRight;
-                      const usableH = s.lengthMm - marginTop - marginBottom;
+                      const usableW = s.lengthMm - marginLeft - marginRight;
+                      const usableH = s.widthMm - marginTop - marginBottom;
                       const invalid = usableW <= 0 || usableH <= 0;
                       return (
                         <p key={s.id} className={`text-[11px] ${invalid ? "text-destructive" : "text-muted-foreground"}`}>
@@ -818,10 +821,10 @@ function NestingResults({
                 sheetConfig={{
                   widthMm: assistedCandidateSources[0].widthMm,
                   lengthMm: assistedCandidateSources[0].lengthMm,
-                  marginLeftMm: run.marginLeftMm ?? 5,
-                  marginRightMm: run.marginRightMm ?? 5,
-                  marginTopMm: run.marginTopMm ?? 5,
-                  marginBottomMm: run.marginBottomMm ?? 5,
+                  marginLeftMm: run.marginLeftMm ?? 0,
+                  marginRightMm: run.marginRightMm ?? 0,
+                  marginTopMm: run.marginTopMm ?? 0,
+                  marginBottomMm: run.marginBottomMm ?? 0,
                   partGapMm: run.partGapMm ?? 0,
                 }}
                 sheetIdentity={{
