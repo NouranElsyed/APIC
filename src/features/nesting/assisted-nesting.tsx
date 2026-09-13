@@ -98,11 +98,13 @@ function nextId(prefix: string): string {
 }
 
 function sheetBounds(config: AssistedSheetConfig): PatternSheetBounds {
+  // Axis convention: lengthMm runs along X (horizontal), widthMm runs
+  // along Y (vertical) — matches nesting-engine.ts and the DXF writer.
   return {
     minX: config.marginLeftMm,
     minY: config.marginBottomMm,
-    maxX: config.widthMm - config.marginRightMm,
-    maxY: config.lengthMm - config.marginTopMm,
+    maxX: config.lengthMm - config.marginRightMm,
+    maxY: config.widthMm - config.marginTopMm,
   };
 }
 
@@ -438,8 +440,8 @@ export function AssistedNestingCanvas({
     if (!svg) return null;
     const rect = svg.getBoundingClientRect();
     const padding = Math.max(activeSheetConfig.widthMm, activeSheetConfig.lengthMm) * 0.03;
-    const viewW = activeSheetConfig.widthMm + padding * 2;
-    const viewH = activeSheetConfig.lengthMm + padding * 2;
+    const viewW = activeSheetConfig.lengthMm + padding * 2;
+    const viewH = activeSheetConfig.widthMm + padding * 2;
     const scaleX = viewW / rect.width;
     const scaleY = viewH / rect.height;
     const svgX = (e.clientX - rect.left) * scaleX - padding;
@@ -782,8 +784,8 @@ export function AssistedNestingCanvas({
 
   // ---- render ------------------------------------------------------------
   const padding = Math.max(activeSheetConfig.widthMm, activeSheetConfig.lengthMm) * 0.03;
-  const viewW = activeSheetConfig.widthMm + padding * 2;
-  const viewH = activeSheetConfig.lengthMm + padding * 2;
+  const viewW = activeSheetConfig.lengthMm + padding * 2;
+  const viewH = activeSheetConfig.widthMm + padding * 2;
   const strokeW = Math.max(activeSheetConfig.widthMm, activeSheetConfig.lengthMm) * 0.003;
 
   const selectedPart = selectedPartId ? partsById.get(selectedPartId) : null;
@@ -907,7 +909,7 @@ export function AssistedNestingCanvas({
           >
             <g transform={`translate(${padding}, ${viewH - padding}) scale(1, -1)`}>
               {/* sheet */}
-              <rect x={0} y={0} width={activeSheetConfig.widthMm} height={activeSheetConfig.lengthMm} fill="#f8fafc" stroke="#94a3b8" strokeWidth={strokeW} />
+              <rect x={0} y={0} width={activeSheetConfig.lengthMm} height={activeSheetConfig.widthMm} fill="#f8fafc" stroke="#94a3b8" strokeWidth={strokeW} />
               {/* usable/margin boundary */}
               <rect
                 x={bounds.minX}
