@@ -9,6 +9,7 @@ import {
   type EngineConfig,
   type NestingAlgorithmResult,
 } from "@/server/calc/nesting-engine";
+import { validateSessionForExport, type AssistedSheetSession, type SessionPartCatalogEntry } from "@/server/calc/nesting-assisted-session";
 import type { Point } from "@/server/calc/dxf";
 
 // ----------------------------------------------------------------------------
@@ -18,7 +19,7 @@ import type { Point } from "@/server/calc/dxf";
 //
 // Coordinate convention for placements (see schema.prisma for the
 // authoritative doc comment): millimeters, sheet origin at bottom-left,
-// x right / y up, rotationDeg counter-clockwise (0/90/180/270 only for now).
+// x right / y up, rotationDeg counter-clockwise (arbitrary degree value as of Phase 2B).
 // ----------------------------------------------------------------------------
 
 const runInclude = {
@@ -276,6 +277,177 @@ export async function runNestingForJob(
       entity: "NESTING_RUN",
       entityId: run.id,
       detail: `Nesting run failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    throw err;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Phase 2C — persists an assisted-nesting session (nesting-view.tsx's
+// AssistedNestingCanvas) as a real NestingRun, reusing the EXACT same
+// NestingRun/NestingSheet/NestingPlacement models and the same
+// "replace the job's previous run" convention runNestingForJob already
+// uses — no parallel/duplicate nesting system. The only new fields are
+// NestingRun.mode ("ASSISTED") and NestingPlacement.origin/isLocked
+// (Phase 2C migration), so the existing GET /api/nesting/runs/[runId] and
+// DXF export routes work on an assisted result completely unchanged.
+// ----------------------------------------------------------------------------
+
+export interface SaveAssistedSessionInput {
+  jobId: string;
+  userId: string;
+  sheets: AssistedSheetSession[];
+  partCatalog: Map<string, SessionPartCatalogEntry>;
+  config: EngineConfig;
+}
+
+export class AssistedSessionValidationError extends NestingRunError {
+  constructor(
+    message: string,
+    public readonly issues: { kind: string; message: string }[],
+  ) {
+    super(message);
+  }
+}
+
+export async function saveAssistedNestingRun(input: SaveAssistedSessionInput) {
+  const { jobId, userId, sheets, partCatalog, config } = input;
+
+  // Never persist an invalid session (spec: "Never persist overlapping
+  // placements / placements outside usable sheet boundaries / quantities
+  // exceeding required quantities") — reuse the SAME validator the client
+  // already runs before allowing DXF export, so client and server agree.
+  const { valid, issues } = validateSessionForExport(sheets, partCatalog, config);
+  const blocking = issues.filter((i) => i.kind !== "QUANTITY_SHORTFALL");
+  if (!valid || blocking.length > 0) {
+    throw new AssistedSessionValidationError("Cannot save an invalid assisted nesting session.", blocking);
+  }
+
+  // Reject placements that reference a part not in the catalog (spec
+  // "invalid part references") — a defensive check independent of the
+  // geometry validator above, since a bad takeoffPartId wouldn't show up
+  // as an overlap/margin/quantity issue.
+  for (const sheet of sheets) {
+    for (const inst of sheet.instances) {
+      if (!partCatalog.has(inst.takeoffPartId)) {
+        throw new AssistedSessionValidationError(`Placement references an unknown part (${inst.takeoffPartId}).`, [
+          { kind: "INVALID_PART", message: `Unknown part reference: ${inst.takeoffPartId}` },
+        ]);
+      }
+    }
+  }
+
+  const job = await prisma.nestingJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new NestingRunError("Nesting job not found");
+
+  // Same "one current result per job" convention as runNestingForJob.
+  await prisma.nestingRun.deleteMany({ where: { nestingJobId: jobId } });
+
+  const run = await prisma.nestingRun.create({
+    data: {
+      nestingJobId: jobId,
+      status: "RUNNING",
+      mode: "ASSISTED",
+      startedAt: new Date(),
+      createdById: userId,
+      partGapMm: config.partGapMm,
+      marginLeftMm: config.marginLeftMm,
+      marginRightMm: config.marginRightMm,
+      marginTopMm: config.marginTopMm,
+      marginBottomMm: config.marginBottomMm,
+      configJson: JSON.parse(JSON.stringify(config)),
+      algorithmName: "assisted-nesting-session",
+      algorithmVersion: "1.0.0",
+    },
+  });
+
+  try {
+    let sheetNumber = 0;
+    for (const sheet of sheets) {
+      sheetNumber += 1;
+      const sheetAreaSqm = (sheet.widthMm * sheet.lengthMm) / 1_000_000;
+      const usedAreaSqm = sheet.instances.reduce((sum, i) => sum + (partCatalog.get(i.takeoffPartId)?.areaSqm ?? 0), 0);
+      const dbSheet = await prisma.nestingSheet.create({
+        data: {
+          nestingRunId: run.id,
+          sheetNumber,
+          sourceSheetId: sheet.sourceSheetId,
+          material: sheet.material,
+          thicknessMm: sheet.thicknessMm,
+          widthMm: sheet.widthMm,
+          lengthMm: sheet.lengthMm,
+          usedAreaSqm,
+          scrapAreaSqm: Math.max(0, sheetAreaSqm - usedAreaSqm),
+          utilizationPercent: sheetAreaSqm > 0 ? (usedAreaSqm / sheetAreaSqm) * 100 : 0,
+        },
+      });
+
+      const placementRows = sheet.instances.map((inst) => ({
+        nestingSheetId: dbSheet.id,
+        nestingRunId: run.id,
+        takeoffPartId: inst.takeoffPartId,
+        instanceNumber: inst.instanceNumber,
+        xMm: inst.xMm,
+        yMm: inst.yMm,
+        rotationDeg: inst.rotationDeg,
+        origin: inst.origin,
+        isLocked: inst.locked,
+      }));
+      if (placementRows.length > 0) {
+        await prisma.nestingPlacement.createMany({ data: placementRows });
+      }
+    }
+
+    const totalPartsRequired = [...partCatalog.values()].reduce((sum, p) => sum + p.requiredQty, 0);
+    const totalPartsPlaced = sheets.reduce((sum, s) => sum + s.instances.length, 0);
+    const totalUsedAreaSqm = sheets.reduce(
+      (sum, s) => sum + s.instances.reduce((a, i) => a + (partCatalog.get(i.takeoffPartId)?.areaSqm ?? 0), 0),
+      0,
+    );
+    const totalSheetAreaSqm = sheets.reduce((sum, s) => sum + (s.widthMm * s.lengthMm) / 1_000_000, 0);
+    const totalScrapAreaSqm = Math.max(0, totalSheetAreaSqm - totalUsedAreaSqm);
+
+    const finalStatus = totalPartsPlaced >= totalPartsRequired ? "COMPLETED" : "PARTIAL";
+
+    await prisma.nestingRun.update({
+      where: { id: run.id },
+      data: {
+        status: finalStatus,
+        completedAt: new Date(),
+        totalSheets: sheets.length,
+        totalUsedAreaSqm,
+        totalScrapAreaSqm,
+        overallUtilizationPercent: totalSheetAreaSqm > 0 ? (totalUsedAreaSqm / totalSheetAreaSqm) * 100 : 0,
+        totalPartsRequired,
+        totalPartsPlaced,
+        totalPartsUnplaced: Math.max(0, totalPartsRequired - totalPartsPlaced),
+      },
+    });
+
+    await logActivity({
+      userId,
+      action: "CREATE",
+      entity: "NESTING_RUN",
+      entityId: run.id,
+      detail: `Assisted nesting saved for job ${jobId}: ${totalPartsPlaced}/${totalPartsRequired} placed on ${sheets.length} sheet(s)`,
+    });
+
+    return getNestingRun(run.id);
+  } catch (err) {
+    await prisma.nestingRun.update({
+      where: { id: run.id },
+      data: {
+        status: "FAILED",
+        completedAt: new Date(),
+        errorMessage: err instanceof Error ? err.message : "Unknown error saving assisted nesting session",
+      },
+    });
+    await logActivity({
+      userId,
+      action: "UPDATE",
+      entity: "NESTING_RUN",
+      entityId: run.id,
+      detail: `Assisted nesting save failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
     });
     throw err;
   }
