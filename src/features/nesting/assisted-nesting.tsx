@@ -30,6 +30,8 @@ import {
   translatePoints,
   polygonsOverlap,
   boundsContain,
+  computeBoundingBox,
+  findNearestValidOrigin,
   type RotationDeg,
 } from "@/server/calc/nesting-geometry";
 import {
@@ -351,70 +353,79 @@ export function AssistedNestingCanvas({
   }, [instances, partsById]);
 
   // ---- live ghost validation (placement) ----------------------------------
-  // Last VALID ghost position/rotation. When the cursor would put the part
-  // outside the sheet, on the margin, or overlapping another part, we keep
-  // the ghost pinned here instead of following the cursor into an invalid
-  // spot — the part "stops" at the boundary rather than crossing it.
-  const lastValidGhostRef = React.useRef<{ xMm: number; yMm: number; rotationDeg: number } | null>(null);
-
-  React.useEffect(() => {
-    // Reset the anchor whenever we stop placing or switch parts, so a new
-    // placement session doesn't inherit a stale position.
-    lastValidGhostRef.current = null;
-  }, [placing, selectedPartId]);
+  // NOTE (Phase 2C): this used to "pin" the ghost to the last remembered
+  // valid mouse position (lastValidGhostRef). That produced confusing
+  // jump-back behavior and, worse, could stack a new part exactly on top
+  // of one just committed. It has been replaced with a pure geometric
+  // projection (findNearestValidOrigin): for any given raw cursor position
+  // we compute, from scratch, the nearest position that keeps the part
+  // fully inside the usable sheet area and at least partGapMm away from
+  // every committed part. The result depends only on the CURRENT cursor
+  // position/rotation and the CURRENT committed parts — never on history —
+  // so it can't "remember" a stale, now-invalid spot.
+  const committedBoxes = React.useMemo(
+    () => committedPolygons.map((c) => computeBoundingBox(c.polygon)),
+    [committedPolygons],
+  );
 
   const ghost = React.useMemo(() => {
     if (!placing || !cursor || !selectedPartId) return null;
     const part = partsById.get(selectedPartId);
     if (!part) return null;
 
-    function evaluate(originX: number, originY: number, rotationDeg: number) {
-      const shape = computeOrientedShape(part!.outer, rotationDeg);
-      const polygon = translatePoints(shape.points, originX, originY);
-      let reason: InvalidReason = null;
-      if (!boundsContain(polygon, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
-        reason = "CROSSES_MARGIN";
-      } else {
-        for (const c of committedPolygons) {
-          if (polygonsOverlap(polygon, c.polygon)) {
+    const shape = computeOrientedShape(part.outer, ghostRotation);
+    // Cursor tracks the shape's own center for a natural feel.
+    const rawOriginX = cursor.x - shape.width / 2;
+    const rawOriginY = cursor.y - shape.height / 2;
+
+    const projected = findNearestValidOrigin(
+      rawOriginX,
+      rawOriginY,
+      shape.width,
+      shape.height,
+      bounds,
+      committedBoxes,
+      activeSheetConfig.partGapMm,
+    );
+
+    const polygon = translatePoints(shape.points, projected.x, projected.y);
+
+    // Exact (non-bbox) re-check for the actual invalid-state indicator
+    // shown to the user and used to gate the click. The projection above
+    // is a bounding-box approximation (matches how the automatic engine
+    // itself packs parts); this final check uses the real outline and the
+    // real per-part gap distance, so it's the source of truth for whether
+    // a click may commit here.
+    let reason: InvalidReason = null;
+    if (!projected.fits || !boundsContain(polygon, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
+      reason = "CROSSES_MARGIN";
+    } else {
+      for (let i = 0; i < committedPolygons.length; i++) {
+        const c = committedPolygons[i];
+        if (polygonsOverlap(polygon, c.polygon)) {
+          reason = "OVERLAPS_EXISTING_PART";
+          break;
+        }
+        if (activeSheetConfig.partGapMm > 0) {
+          const box = committedBoxes[i];
+          const ex = {
+            minX: box.minX - activeSheetConfig.partGapMm,
+            minY: box.minY - activeSheetConfig.partGapMm,
+            maxX: box.maxX + activeSheetConfig.partGapMm,
+            maxY: box.maxY + activeSheetConfig.partGapMm,
+          };
+          const pBox = computeBoundingBox(polygon);
+          const collides = pBox.minX < ex.maxX && pBox.maxX > ex.minX && pBox.minY < ex.maxY && pBox.maxY > ex.minY;
+          if (collides) {
             reason = "OVERLAPS_EXISTING_PART";
             break;
           }
         }
       }
-      return { polygon, reason };
     }
 
-    const shape = computeOrientedShape(part.outer, ghostRotation);
-    // Cursor tracks the shape's own center for a natural feel.
-    const candidateX = cursor.x - shape.width / 2;
-    const candidateY = cursor.y - shape.height / 2;
-    const candidate = evaluate(candidateX, candidateY, ghostRotation);
-
-    if (!candidate.reason) {
-      // Valid spot — move there and remember it as the new anchor.
-      lastValidGhostRef.current = { xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation };
-      return { polygon: candidate.polygon, xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation, reason: null, part };
-    }
-
-    // Invalid spot — stay pinned at the last valid position/rotation
-    // instead of drawing the part outside the sheet/over another
-    // part/on the margin. Re-validate the anchor against the CURRENT
-    // committed placements (not just the pass that saved it) — a spot
-    // that was valid a moment ago can become invalid the instant a new
-    // part gets committed there, and pinning must reflect that or two
-    // parts can be stacked on the exact same spot without moving the
-    // mouse in between.
-    const anchor = lastValidGhostRef.current;
-    if (anchor) {
-      const pinned = evaluate(anchor.xMm, anchor.yMm, anchor.rotationDeg);
-      return { polygon: pinned.polygon, xMm: anchor.xMm, yMm: anchor.yMm, rotationDeg: anchor.rotationDeg, reason: pinned.reason, part };
-    }
-
-    // No valid anchor yet (e.g. first move already invalid) — show the
-    // red invalid preview so the user gets feedback on where NOT to go.
-    return { polygon: candidate.polygon, xMm: candidateX, yMm: candidateY, rotationDeg: ghostRotation, reason: candidate.reason, part };
-  }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons]);
+    return { polygon, xMm: projected.x, yMm: projected.y, rotationDeg: ghostRotation, reason, part };
+  }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons, committedBoxes, activeSheetConfig.partGapMm]);
 
   // ---- pattern detection ---------------------------------------------------
   const patternInstances: PatternPlacedInstance[] = React.useMemo(
@@ -479,10 +490,6 @@ export function AssistedNestingCanvas({
       origin: "MANUAL",
     };
     commitHistory([...instances, newInstance]);
-    // Force re-validation on the next mouse move: the spot we just
-    // committed to is now occupied, so it must not be reused as a
-    // "last valid" anchor for the very next placement.
-    lastValidGhostRef.current = null;
   }
 
   function handleKeyDown(e: React.KeyboardEvent<SVGSVGElement>) {
