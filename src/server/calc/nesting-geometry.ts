@@ -1,18 +1,7 @@
-// Geometry abstraction for the nesting engine (Phase 2).
-//
-// This module intentionally knows nothing about Prisma, HTTP, or React —
-// it is pure geometry so it can be unit tested and reused independently of
-// the rest of the app (see nesting-engine.ts).
-//
-// Convention: all coordinates here are millimeters. Rotation is expressed
-// in degrees, counter-clockwise, and restricted to {0, 90, 180, 270} for
-// Phase 2 (see PROJECT.md §5). A "shape" produced by computeOrientedShape
-// is always normalized so its own bounding box starts at (0, 0) — callers
-// translate it to a placement's (x, y) origin before storing/rendering it.
-
+// Geometry abstraction for the nesting engine (Phase 2 / Phase 2B).
 import type { Point } from "./dxf";
 
-export type RotationDeg = 0 | 90 | 180 | 270;
+export type RotationDeg = number;
 
 export const SUPPORTED_ROTATIONS: RotationDeg[] = [0, 90, 180, 270];
 
@@ -27,28 +16,16 @@ export interface BoundingBox {
 
 export interface OrientedShape {
   rotationDeg: RotationDeg;
-  // Outer contour, rotated and translated so its bounding box's
-  // bottom-left corner sits at (0, 0). This is what gets translated again
-  // to a placement's (xMm, yMm) to obtain the final on-sheet polygon.
   points: Point[];
   width: number;
   height: number;
 }
 
-// A part's full geometric identity as used by the engine. `outer` is the
-// raw, untransformed contour straight from the DXF parser (dxf.ts) — the
-// engine never mutates it, only derives OrientedShapes from it on demand.
-// `holes` are carried through for completeness/future use (e.g. a future
-// true-shape nesting pass) but are NOT subtracted again here: `areaSqm`
-// already comes from the DXF parser's outer-minus-holes calculation, which
-// remains the single source of truth for actual part area (bounding-box
-// area is only ever used for fast collision pre-checks, never for
-// utilization/scrap math — see PROJECT.md §4 and §12).
 export interface PartGeometry {
   outer: Point[];
   holes: Point[][];
-  areaSqm: number; // real, DXF-derived area (outer − holes), in m²
-  bbox: BoundingBox; // raw (0° / untransformed) bounding box, in mm
+  areaSqm: number;
+  bbox: BoundingBox;
 }
 
 export function computeBoundingBox(points: Point[]): BoundingBox {
@@ -72,8 +49,14 @@ export function makePartGeometry(outer: Point[], holes: Point[][], areaSqm: numb
   return { outer, holes, areaSqm, bbox: computeBoundingBox(outer) };
 }
 
+export function normalizeRotationDeg(deg: number): number {
+  const m = deg % 360;
+  return m < 0 ? m + 360 : m;
+}
+
 function rotatePointCcw(p: Point, deg: RotationDeg): Point {
-  switch (deg) {
+  const norm = normalizeRotationDeg(deg);
+  switch (norm) {
     case 0:
       return { x: p.x, y: p.y };
     case 90:
@@ -82,14 +65,15 @@ function rotatePointCcw(p: Point, deg: RotationDeg): Point {
       return { x: -p.x, y: -p.y };
     case 270:
       return { x: p.y, y: -p.x };
+    default: {
+      const rad = (norm * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      return { x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos };
+    }
   }
 }
 
-// Rotates the outer contour about the origin, then normalizes it so the
-// resulting bounding box's bottom-left corner is (0, 0). This is the single
-// place rotation is applied — placement, collision detection, area/bbox
-// reasoning, and the SVG preview all derive from this same transform, so
-// there is no risk of rotation being handled inconsistently between them.
 export function computeOrientedShape(outer: Point[], rotationDeg: RotationDeg): OrientedShape {
   const rotated = outer.map((p) => rotatePointCcw(p, rotationDeg));
   const bbox = computeBoundingBox(rotated);
@@ -101,15 +85,6 @@ export function translatePoints(points: Point[], dx: number, dy: number): Point[
   return points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
 }
 
-// Applies the EXACT same transform the engine used when it placed this
-// instance (rotate about the origin, normalize so the outer contour's own
-// bounding box starts at (0,0), then translate to xMm/yMm — see
-// computeOrientedShape above) to both the outer contour and every hole, so
-// DXF export (dxf-writer.ts) reproduces the real placement rather than
-// recomputing new coordinates (PROJECT.md §28: "Do NOT calculate new
-// nesting coordinates during export"). Holes are normalized against the
-// OUTER contour's bounding box, never their own, since that's the offset
-// computeOrientedShape actually applied.
 export function transformGeometryForPlacement(
   outer: Point[],
   holes: Point[][],
@@ -144,27 +119,14 @@ function orientation(a: Point, b: Point, c: Point): number {
   return val > 0 ? 1 : 2;
 }
 
-// Strict segment intersection: two segments are considered intersecting
-// only when they properly cross (opposite orientations on both sides).
-// Collinear/touching cases (shared endpoints, one segment's endpoint
-// lying exactly on the other, or overlapping collinear edges) are
-// deliberately NOT reported as intersections here — parts placed flush
-// against each other (partGap = 0, or two bounding boxes sharing an exact
-// edge) are a valid, common outcome of shelf packing and must not be
-// flagged as overlapping. Stage 1's epsilon-tolerant AABB check uses the
-// same "touching is fine" convention, so both stages agree.
 function segmentsIntersect(p1: Point, p2: Point, p3: Point, p4: Point): boolean {
   const o1 = orientation(p1, p2, p3);
   const o2 = orientation(p1, p2, p4);
   const o3 = orientation(p3, p4, p1);
   const o4 = orientation(p3, p4, p2);
-
   return o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4;
 }
 
-// Point-in-polygon with a small negative epsilon bias: a point exactly on
-// (or a hair inside, within tolerance of) the polygon boundary is treated
-// as outside, so touching shapes don't register as containing one another.
 export function pointInPolygon(pt: Point, poly: Point[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -178,11 +140,6 @@ export function pointInPolygon(pt: Point, poly: Point[]): boolean {
   return inside;
 }
 
-// Returns a point strictly inside the polygon (its centroid, which is
-// guaranteed interior for the convex/near-convex outer contours this
-// engine deals with) — used instead of a raw vertex for containment
-// testing, since a shared vertex sitting exactly on the other polygon's
-// boundary must not register as "contained".
 function centroid(poly: Point[]): Point {
   let x = 0;
   let y = 0;
@@ -193,13 +150,8 @@ function centroid(poly: Point[]): Point {
   return { x: x / poly.length, y: y / poly.length };
 }
 
-// Accurate (Stage 2) overlap check between two simple polygons: true if any
-// edge pair crosses, or if either polygon contains a vertex of the other
-// (covers the case where one shape sits fully inside the other with no
-// edge crossings, e.g. concentric contours).
 export function polygonsOverlap(polyA: Point[], polyB: Point[]): boolean {
   if (polyA.length < 3 || polyB.length < 3) return false;
-
   for (let i = 0; i < polyA.length; i++) {
     const a1 = polyA[i];
     const a2 = polyA[(i + 1) % polyA.length];
@@ -209,16 +161,11 @@ export function polygonsOverlap(polyA: Point[], polyB: Point[]): boolean {
       if (segmentsIntersect(a1, a2, b1, b2)) return true;
     }
   }
-
   if (pointInPolygon(centroid(polyA), polyB)) return true;
   if (pointInPolygon(centroid(polyB), polyA)) return true;
-
   return false;
 }
 
-// Inclusive containment check used for "does this placement stay on the
-// sheet" validation: every vertex of `points` must fall within
-// [minX, maxX] x [minY, maxY] (an already edge-clearance-adjusted box).
 export function boundsContain(points: Point[], minX: number, minY: number, maxX: number, maxY: number, epsilon = 1e-6): boolean {
   for (const p of points) {
     if (p.x < minX - epsilon || p.x > maxX + epsilon || p.y < minY - epsilon || p.y > maxY + epsilon) {
@@ -226,4 +173,81 @@ export function boundsContain(points: Point[], minX: number, minY: number, maxX:
     }
   }
   return true;
+}
+
+export function convexHull(points: Point[]): Point[] {
+  const pts = [...points]
+    .sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y))
+    .filter((p, i, arr) => i === 0 || p.x !== arr[i - 1].x || p.y !== arr[i - 1].y);
+  if (pts.length <= 2) return pts;
+  const cross = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Point[] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: Point[] = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
+}
+
+export function computeMinBoundingBoxAngles(outer: Point[]): number[] {
+  const hull = convexHull(outer);
+  if (hull.length < 2) return [0];
+  const seen = new Set<string>();
+  const angles: number[] = [];
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i];
+    const b = hull[(i + 1) % hull.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) continue;
+    let deg = normalizeRotationDeg(-(Math.atan2(dy, dx) * 180) / Math.PI);
+    deg = deg % 90;
+    const key = deg.toFixed(2);
+    if (!seen.has(key)) {
+      seen.add(key);
+      angles.push(deg);
+    }
+  }
+  return angles.length > 0 ? angles : [0];
+}
+
+export function generateRotationCandidates(outer: Point[], rotationStepDeg: number, maxCandidates: number): RotationDeg[] {
+  const priority: number[] = [0, 90, 180, 270];
+  const hullAngles = computeMinBoundingBoxAngles(outer);
+  for (const base of hullAngles) {
+    for (const add of [0, 90, 180, 270]) {
+      priority.push(normalizeRotationDeg(base + add));
+    }
+  }
+  const fallback: number[] = [];
+  if (rotationStepDeg > 0 && rotationStepDeg < 360) {
+    for (let d = 0; d < 360; d += rotationStepDeg) fallback.push(d);
+  }
+  const seen = new Set<string>();
+  const result: RotationDeg[] = [];
+  const addUnique = (deg: number) => {
+    const norm = normalizeRotationDeg(deg);
+    const key = norm.toFixed(2);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    result.push(norm);
+    return true;
+  };
+  for (const deg of priority) {
+    if (result.length >= maxCandidates) break;
+    addUnique(deg);
+  }
+  for (const deg of fallback) {
+    if (result.length >= maxCandidates) break;
+    addUnique(deg);
+  }
+  return result;
 }
