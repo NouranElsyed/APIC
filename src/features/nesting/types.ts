@@ -151,6 +151,11 @@ export interface NestingRunSummary {
   id: string;
   nestingJobId: string;
   status: NestingRunStatus;
+  // Phase 2C — "AUTO" (ordinary automatic run) or "ASSISTED" (produced, in
+  // whole or in part, via the Assisted Nesting canvas). Optional so this
+  // type keeps working against any older API response that predates the
+  // field.
+  mode?: string;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -181,6 +186,10 @@ export interface NestingPlacementRow {
   xMm: number;
   yMm: number;
   rotationDeg: number;
+  // Phase 2C — provenance/lock state (see schema.prisma). Optional for the
+  // same backward-compat reason as NestingRunSummary.mode.
+  origin?: string;
+  isLocked?: boolean;
 }
 
 export interface NestingSheetRow {
