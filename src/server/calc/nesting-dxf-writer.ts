@@ -17,7 +17,7 @@
 // Coordinates are real millimeters, Z = 0, never scaled (PROJECT.md §32).
 
 import type { Point } from "./dxf";
-import { transformGeometryForPlacement, type RotationDeg } from "./nesting-geometry";
+import { transformGeometryForPlacement } from "./nesting-geometry";
 
 export interface DxfPlacementInput {
   takeoffPartId: string;
@@ -40,10 +40,6 @@ export interface DxfSheetInput {
   marginTopMm: number;
   marginBottomMm: number;
   placements: DxfPlacementInput[];
-}
-
-function isSupportedRotation(deg: number): deg is RotationDeg {
-  return deg === 0 || deg === 90 || deg === 180 || deg === 270;
 }
 
 function lwpolyline(points: Point[], layer: string, closed = true): string {
@@ -106,8 +102,16 @@ export function writeNestingSheetDxf(sheet: DxfSheetInput): string {
   // PARTS / HOLES / LABELS — one entity set per NestingPlacement, using
   // the exact stored x/y/rotation (PROJECT.md §28-§30). Never recomputed.
   for (const placement of sheet.placements) {
-    const rotation = isSupportedRotation(placement.rotationDeg) ? placement.rotationDeg : 0;
-    const transformed = transformGeometryForPlacement(placement.outer, placement.holes, rotation, placement.xMm, placement.yMm);
+    // Phase 2B: rotationDeg is now an arbitrary degree value, not just
+    // 0/90/180/270 — use it verbatim so the exported DXF reproduces the
+    // exact geometry the optimizer placed (never clamp to 0°).
+    const transformed = transformGeometryForPlacement(
+      placement.outer,
+      placement.holes,
+      placement.rotationDeg,
+      placement.xMm,
+      placement.yMm,
+    );
 
     entities.push(lwpolyline(transformed.outer, "PARTS"));
     for (const hole of transformed.holes) {
