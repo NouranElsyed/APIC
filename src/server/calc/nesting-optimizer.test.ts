@@ -91,10 +91,12 @@ function assertLayoutIsCollisionFree(
           placement.yMm,
         );
         // Must stay within the margin-adjusted usable sheet area.
+        // Axis convention: lengthMm runs along X (horizontal), widthMm
+        // runs along Y (vertical) — matches nesting-optimizer.ts.
         const minX = config.marginLeftMm;
         const minY = config.marginBottomMm;
-        const maxX = sheet.widthMm - config.marginRightMm;
-        const maxY = sheet.lengthMm - config.marginTopMm;
+        const maxX = sheet.lengthMm - config.marginRightMm;
+        const maxY = sheet.widthMm - config.marginTopMm;
         expect(boundsContain(transformed, minX, minY, maxX, maxY)).toBe(true);
         polygons.push(transformed);
       }
@@ -186,7 +188,10 @@ describe("optimizeGroupPlacement (via runNestingAlgorithm)", () => {
 
   it("Rotated parts — a long thin part only fits after a 90-degree rotation", () => {
     const parts: EnginePartInput[] = [part({ outer: rect(900, 100), qty: 1 })];
-    const sources: EngineSourceInput[] = [source({ widthMm: 200, lengthMm: 1000 })];
+    // X-axis (horizontal) = lengthMm, Y-axis (vertical) = widthMm. A narrow
+    // 200mm-long / 1000mm-wide sheet only has 200mm along X, so the 900mm
+    // side of the part must rotate onto Y (which has 1000mm of room).
+    const sources: EngineSourceInput[] = [source({ widthMm: 1000, lengthMm: 200 })];
 
     const result = runNestingAlgorithm(parts, sources);
 
