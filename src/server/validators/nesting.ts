@@ -57,3 +57,46 @@ export const scrapPricingInputsSchema = z.object({
   overridesByGroupKey: z.record(z.string(), scrapPricingGroupOverrideSchema).optional(),
 });
 export type ScrapPricingInputs = z.infer<typeof scrapPricingInputsSchema>;
+
+// ----------------------------------------------------------------------------
+// Phase 2C — Assisted Nesting save payload. The client already validates
+// this session with validateSessionForExport() before sending it, and the
+// server (saveAssistedNestingRun) re-validates with the SAME function
+// before persisting — this schema only checks shape/types, never geometry.
+// ----------------------------------------------------------------------------
+const pointSchema = z.object({ x: z.number(), y: z.number() });
+
+const assistedPartCatalogEntrySchema = z.object({
+  takeoffPartId: z.string().min(1),
+  itemNo: z.number().int(),
+  outer: z.array(pointSchema).min(3, "A part's outer contour needs at least 3 points"),
+  areaSqm: z.number().min(0),
+  requiredQty: z.number().int().min(0),
+});
+
+const assistedInstanceSchema = z.object({
+  instanceKey: z.string().min(1),
+  takeoffPartId: z.string().min(1),
+  instanceNumber: z.number().int().positive(),
+  xMm: z.number(),
+  yMm: z.number(),
+  rotationDeg: z.number(),
+  locked: z.boolean(),
+  origin: z.enum(["MANUAL", "PATTERN", "OPTIMIZED"]),
+});
+
+const assistedSheetSchema = z.object({
+  sourceSheetId: z.string().min(1),
+  material: z.string().min(1),
+  thicknessMm: z.number().positive(),
+  widthMm: z.number().positive(),
+  lengthMm: z.number().positive(),
+  instances: z.array(assistedInstanceSchema),
+});
+
+export const assistedNestingSaveSchema = z.object({
+  parts: z.array(assistedPartCatalogEntrySchema).min(1, "At least one part is required"),
+  sheets: z.array(assistedSheetSchema).min(1, "At least one sheet is required"),
+  config: nestingRunConfigSchema.optional(),
+});
+export type AssistedNestingSaveInput = z.infer<typeof assistedNestingSaveSchema>;
