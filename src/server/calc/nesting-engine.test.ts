@@ -94,13 +94,13 @@ describe("runNestingAlgorithm", () => {
   });
 
   it("Test 3 — a part that only fits after rotation is placed with rotation = 90", () => {
-    // Sheet interior (after default 5mm edge clearance) is 190x990. A part
-    // that is 900mm wide and 150mm tall cannot fit at 0 deg (900 > 190
-    // horizontally is fine actually — flip the numbers to force rotation):
-    // width 900 > usable width 190 at 0deg, but usable height 990 is plenty,
-    // so rotating 90 degrees swaps width/height to 150x900, which fits.
+    // Sheet interior (after default 5mm edge clearance) is 990x190. A part
+    // that is 900mm wide and 150mm tall cannot fit at 0 deg on the X-axis
+    // (lengthMm) if lengthMm itself is too short, so we force rotation by
+    // making the sheet 200mm long (X) and 1000mm wide (Y): the 900mm side
+    // must rotate onto Y (which has 1000mm of room).
     const parts = [part({ widthMm: 900, heightMm: 150 })];
-    const sources = [source({ widthMm: 200, lengthMm: 1000 })];
+    const sources = [source({ widthMm: 1000, lengthMm: 200 })];
 
     const result = runNestingAlgorithm(parts, sources);
     const placements = result.groups[0].sheets.flatMap((s) => s.placements);
