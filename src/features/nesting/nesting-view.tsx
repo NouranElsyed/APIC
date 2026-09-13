@@ -11,9 +11,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
-import type { NestingJobRow, NestingJobDetail, NestingRunDetail } from "./types";
+import type { NestingJobRow, NestingJobDetail, NestingRunDetail, NestingSourceRow } from "./types";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import { NestingSheetPreview, type PartBBoxInfo, type PartGeometryInfo } from "./nesting-sheet-preview";
+import { AssistedNestingCanvas, type AssistedPart } from "./assisted-nesting";
+import type { EngineSourceInput } from "@/server/calc/nesting-engine";
 
 function fmt(n: number, digits = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -538,7 +540,7 @@ function NestingJobCard({
               {runLoading && !activeRun ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">Loading last run…</div>
               ) : activeRun ? (
-                <NestingResults run={activeRun} eligible={detail.eligible} onDownloadDxf={handleDownloadDxf} downloadingDxf={downloadingDxf} />
+                <NestingResults run={activeRun} eligible={detail.eligible} sources={detail.sources} jobId={job.id} onDownloadDxf={handleDownloadDxf} downloadingDxf={downloadingDxf} onAssistedSaved={loadDetail} />
               ) : null}
             </>
           )}
@@ -563,14 +565,19 @@ function NestingJobCard({
 // ----------------------------------------------------------------------------
 
 function NestingResults({
-  run, eligible, onDownloadDxf, downloadingDxf,
+  run, eligible, sources, jobId, onDownloadDxf, downloadingDxf, onAssistedSaved,
 }: {
   run: NestingRunDetail;
   eligible: NestingJobDetail["eligible"];
+  sources: NestingSourceRow[];
+  jobId: string;
   onDownloadDxf: () => void;
   downloadingDxf: boolean;
+  onAssistedSaved: () => void;
 }) {
   const [expandedSheetId, setExpandedSheetId] = React.useState<string | null>(null);
+  const [assistedGroupKey, setAssistedGroupKey] = React.useState<string | null>(null);
+  const [editingSavedAssistedRun, setEditingSavedAssistedRun] = React.useState(false);
 
   const partInfoById = React.useMemo(() => {
     const map = new Map<string, PartBBoxInfo>();
@@ -605,6 +612,84 @@ function NestingResults({
       map.set(key, entry);
     }
     return [...map.values()];
+  }, [run]);
+
+  // ---- Assisted Nesting (Phase 2C) -----------------------------------
+  // Groups every ELIGIBLE part (required qty, independent of whether the
+  // automatic run placed it) by material + thickness, since assisted
+  // nesting works one material/thickness group at a time — same grouping
+  // convention runNestingAlgorithm itself uses server-side.
+  const assistedGroups = React.useMemo(() => {
+    const map = new Map<string, { material: string; thicknessMm: number; parts: typeof eligible.included }>();
+    for (const p of eligible.included) {
+      const key = `${p.material}||${p.thicknessMm}`;
+      const entry = map.get(key) ?? { material: p.material, thicknessMm: p.thicknessMm, parts: [] };
+      entry.parts.push(p);
+      map.set(key, entry);
+    }
+    return [...map.entries()].map(([key, v]) => ({ key, ...v }));
+  }, [eligible]);
+
+  const selectedAssistedGroup = assistedGroups.find((g) => g.key === assistedGroupKey) ?? null;
+
+  // Compatible source sheet definitions for the selected group — same
+  // material + thickness, ranked cheapest/smallest-first isn't computed
+  // here (that's the optimizer's job); this is just the candidate list.
+  const assistedCandidateSources: EngineSourceInput[] = React.useMemo(() => {
+    if (!selectedAssistedGroup) return [];
+    return sources
+      .filter((s) => s.material === selectedAssistedGroup.material && s.thicknessMm === selectedAssistedGroup.thicknessMm)
+      .map((s) => ({ sourceSheetId: s.id, material: s.material, thicknessMm: s.thicknessMm, widthMm: s.widthMm, lengthMm: s.lengthMm, availableQty: s.availableQty }));
+  }, [selectedAssistedGroup, sources]);
+
+  const assistedParts: AssistedPart[] = React.useMemo(() => {
+    if (!selectedAssistedGroup) return [];
+    const out: AssistedPart[] = [];
+    for (const p of selectedAssistedGroup.parts) {
+      const geo = partGeometryById.get(p.id);
+      if (!geo) continue; // no DXF geometry available for this part — cannot place it in assisted mode
+      out.push({
+        takeoffPartId: p.id,
+        itemNo: p.itemNo,
+        description: p.description,
+        requiredQty: p.qty,
+        areaSqm: p.dxfAreaSqm ?? 0,
+        outer: geo.outer,
+        holes: geo.holes,
+      });
+    }
+    return out;
+  }, [selectedAssistedGroup, partGeometryById]);
+
+  const assistedMissingGeometryCount = selectedAssistedGroup
+    ? selectedAssistedGroup.parts.length - assistedParts.length
+    : 0;
+
+  // Phase 2C §5 — "Saved Assisted Run → Editable Session": reconstruct the
+  // exact per-sheet placement state (coordinates, rotation, origin, lock)
+  // straight from the persisted NestingRun, never approximated from
+  // bounding boxes. Only meaningful when this run WAS produced by an
+  // assisted session (run.mode === "ASSISTED" — set by
+  // saveAssistedNestingRun, defaults to "AUTO" for every ordinary run).
+  const savedAssistedInitialSheets = React.useMemo(() => {
+    if (run.mode !== "ASSISTED") return null;
+    return run.sheets.map((sheet) => ({
+      sourceSheetId: sheet.sourceSheetId ?? sheet.id,
+      material: sheet.material,
+      thicknessMm: sheet.thicknessMm,
+      widthMm: sheet.widthMm,
+      lengthMm: sheet.lengthMm,
+      instances: sheet.placements.map((p) => ({
+        id: p.id,
+        takeoffPartId: p.takeoffPartId,
+        instanceNumber: p.instanceNumber,
+        xMm: p.xMm,
+        yMm: p.yMm,
+        rotationDeg: p.rotationDeg,
+        locked: p.isLocked ?? p.origin === "MANUAL",
+        origin: (p.origin as "MANUAL" | "PATTERN" | "OPTIMIZED" | undefined) ?? "MANUAL",
+      })),
+    }));
   }, [run]);
 
   if (run.status === "FAILED") {
@@ -645,6 +730,128 @@ function NestingResults({
             {!isFullyComplete && " — see the shortage and unplaced-parts details below."}
           </p>
         </div>
+      </div>
+
+      {/* Phase 2C — Assisted Nesting entry point. Placed near the top of
+          the automatic results so the user can see the automatic baseline
+          and then choose to improve a specific material/thickness group
+          by teaching the optimizer a pattern, without losing the
+          automatic run. */}
+      <div className="mb-3 rounded-lg border border-border p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold">Assisted Nesting</p>
+            <p className="text-xs text-muted-foreground">
+              Teach the optimizer your preferred pattern for one material/thickness group, then let it finish the nest automatically.
+            </p>
+          </div>
+          {!assistedGroupKey ? (
+            <div className="flex items-center gap-2">
+              {savedAssistedInitialSheets && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const firstSheet = run.sheets[0];
+                    if (!firstSheet) return;
+                    const key = `${firstSheet.material}||${firstSheet.thicknessMm}`;
+                    setAssistedGroupKey(key);
+                    setEditingSavedAssistedRun(true);
+                  }}
+                >
+                  Edit Assisted Nesting
+                </Button>
+              )}
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                defaultValue=""
+                onChange={(e) => {
+                  setEditingSavedAssistedRun(false);
+                  setAssistedGroupKey(e.target.value || null);
+                }}
+              >
+                <option value="" disabled>
+                  Choose a material/thickness group…
+                </option>
+                {assistedGroups.map((g) => (
+                  <option key={g.key} value={g.key}>
+                    {g.material} · {g.thicknessMm}mm ({g.parts.length} part{g.parts.length === 1 ? "" : "s"})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setAssistedGroupKey(null);
+                setEditingSavedAssistedRun(false);
+              }}
+            >
+              <XCircle className="mr-1 h-3.5 w-3.5" /> Exit Assisted Nesting
+            </Button>
+          )}
+        </div>
+
+        {selectedAssistedGroup && (
+          <div className="mt-3">
+            {assistedMissingGeometryCount > 0 && (
+              <div className="mb-2 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                {assistedMissingGeometryCount} part(s) in this group have no usable DXF geometry and are excluded from assisted placement.
+              </div>
+            )}
+            {assistedCandidateSources.length === 0 ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
+                No compatible source sheet ({selectedAssistedGroup.material} · {selectedAssistedGroup.thicknessMm}mm) is defined for this job yet — add one before starting assisted nesting.
+              </div>
+            ) : assistedParts.length === 0 ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
+                None of the parts in this group have usable DXF geometry.
+              </div>
+            ) : (
+              <AssistedNestingCanvas
+                key={selectedAssistedGroup.key}
+                parts={assistedParts}
+                jobId={jobId}
+                sheetConfig={{
+                  widthMm: assistedCandidateSources[0].widthMm,
+                  lengthMm: assistedCandidateSources[0].lengthMm,
+                  marginLeftMm: run.marginLeftMm ?? 5,
+                  marginRightMm: run.marginRightMm ?? 5,
+                  marginTopMm: run.marginTopMm ?? 5,
+                  marginBottomMm: run.marginBottomMm ?? 5,
+                  partGapMm: run.partGapMm ?? 0,
+                }}
+                sheetIdentity={{
+                  sourceSheetId: assistedCandidateSources[0].sourceSheetId,
+                  material: selectedAssistedGroup.material,
+                  thicknessMm: selectedAssistedGroup.thicknessMm,
+                }}
+                candidateSources={assistedCandidateSources}
+                initialSheets={editingSavedAssistedRun && savedAssistedInitialSheets ? savedAssistedInitialSheets : undefined}
+                initialRunId={editingSavedAssistedRun ? run.id : undefined}
+                onExit={() => {
+                  setAssistedGroupKey(null);
+                  setEditingSavedAssistedRun(false);
+                }}
+                onFinish={() => {
+                  // AssistedNestingCanvas already saved via POST
+                  // /api/nesting/jobs/:id/assisted and shown its own
+                  // success/error toast — reload the job detail so the
+                  // automatic-results view above picks up the newly saved
+                  // ASSISTED run (saveAssistedNestingRun replaces the
+                  // job's current run, same convention as the automatic
+                  // /run endpoint).
+                  setAssistedGroupKey(null);
+                  setEditingSavedAssistedRun(false);
+                  onAssistedSaved();
+                }}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* SOURCE SHORTAGE — Phase 2B §2/§9: "Required sheets: X, Available
