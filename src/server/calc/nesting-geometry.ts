@@ -175,6 +175,117 @@ export function boundsContain(points: Point[], minX: number, minY: number, maxX:
   return true;
 }
 
+export interface UsableBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface ObstacleBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/**
+ * Projects a raw, mouse-derived shape origin onto the nearest position that
+ * keeps the shape's bounding box fully inside `bounds` (the usable/margin
+ * area) and at least `gapMm` away from every obstacle box (already-committed
+ * parts, expanded by the gap).
+ *
+ * This is a pure function of its inputs — it does not remember anything
+ * about previous frames — so the result is deterministic for any given
+ * (rawOriginX, rawOriginY, shapeWidth, shapeHeight, bounds, obstacles, gap).
+ * The same rectangular, bounding-box based collision model used by the
+ * shelf-packing engine (nesting-engine.ts) is reused here for consistency.
+ *
+ * Note: this is a bounding-box projection, used purely to drive the visual
+ * ghost. It intentionally over-approximates non-rectangular outlines (a
+ * concave/L-shaped part is treated as its rectangular bbox for the purpose
+ * of "where can the ghost slide to"). Exact polygon-level validity (used to
+ * gate the actual click-to-place) must still be checked separately with
+ * `polygonsOverlap`/`boundsContain` against the real outline.
+ */
+export function findNearestValidOrigin(
+  rawOriginX: number,
+  rawOriginY: number,
+  shapeWidth: number,
+  shapeHeight: number,
+  bounds: UsableBounds,
+  obstacles: ObstacleBox[],
+  gapMm: number,
+): { x: number; y: number; fits: boolean } {
+  const usableW = bounds.maxX - bounds.minX;
+  const usableH = bounds.maxY - bounds.minY;
+
+  // The shape doesn't fit inside the usable area at all — nothing we do
+  // here can make it valid. Clamp to the top-left corner and report
+  // fits: false so the caller can still show a (necessarily invalid) ghost.
+  if (shapeWidth > usableW || shapeHeight > usableH) {
+    return { x: bounds.minX, y: bounds.minY, fits: false };
+  }
+
+  // 1) Clamp to the usable/margin rectangle (handles source-edge + margin).
+  let x = clampNum(rawOriginX, bounds.minX, bounds.maxX - shapeWidth);
+  let y = clampNum(rawOriginY, bounds.minY, bounds.maxY - shapeHeight);
+
+  // 2) Iteratively push out of any obstacle (expanded by the required
+  // gap), resolving along the axis of minimum overlap each pass, then
+  // re-clamping to the usable rectangle after every push. A handful of
+  // passes is enough for the small, mostly-disjoint obstacle sets a
+  // nesting sheet has.
+  const MAX_PASSES = 12;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    let moved = false;
+    for (const box of obstacles) {
+      const ex = { minX: box.minX - gapMm, minY: box.minY - gapMm, maxX: box.maxX + gapMm, maxY: box.maxY + gapMm };
+      const candMaxX = x + shapeWidth;
+      const candMaxY = y + shapeHeight;
+
+      const overlapX = Math.min(candMaxX, ex.maxX) - Math.max(x, ex.minX);
+      const overlapY = Math.min(candMaxY, ex.maxY) - Math.max(y, ex.minY);
+      if (overlapX <= 0 || overlapY <= 0) continue; // no collision with this obstacle
+
+      moved = true;
+      const candCenterX = x + shapeWidth / 2;
+      const candCenterY = y + shapeHeight / 2;
+      const exCenterX = (ex.minX + ex.maxX) / 2;
+      const exCenterY = (ex.minY + ex.maxY) / 2;
+
+      // Push out along the axis with the smaller overlap — the shortest
+      // way out of the collision.
+      if (overlapX < overlapY) {
+        x += candCenterX < exCenterX ? -overlapX : overlapX;
+      } else {
+        y += candCenterY < exCenterY ? -overlapY : overlapY;
+      }
+      // Re-clamp to the usable rectangle: pushing out of one obstacle
+      // must never push the shape past the sheet/margin boundary.
+      x = clampNum(x, bounds.minX, bounds.maxX - shapeWidth);
+      y = clampNum(y, bounds.minY, bounds.maxY - shapeHeight);
+    }
+    if (!moved) break;
+  }
+
+  // Final check: did we actually land somewhere clear of every obstacle?
+  // (Dense obstacle layouts can leave no valid spot near the cursor.)
+  const finalMaxX = x + shapeWidth;
+  const finalMaxY = y + shapeHeight;
+  const stillColliding = obstacles.some((box) => {
+    const ex = { minX: box.minX - gapMm, minY: box.minY - gapMm, maxX: box.maxX + gapMm, maxY: box.maxY + gapMm };
+    return x < ex.maxX && finalMaxX > ex.minX && y < ex.maxY && finalMaxY > ex.minY;
+  });
+
+  return { x, y, fits: !stillColliding };
+}
+
+function clampNum(v: number, min: number, max: number): number {
+  if (max < min) return min; // degenerate range — shouldn't happen once `fits` is checked upstream
+  return Math.min(Math.max(v, min), max);
+}
+
 export function convexHull(points: Point[]): Point[] {
   const pts = [...points]
     .sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y))
