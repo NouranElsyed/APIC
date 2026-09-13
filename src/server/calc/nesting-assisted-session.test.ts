@@ -366,7 +366,7 @@ describe("optimizeEntireSessionWithFullOptimizer", () => {
         for (const inst of s.instances) expect(inst.origin).toBe("OPTIMIZED");
       }
     }
-    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
   });
 
   it("never reduces the number of placed parts or accepts a worse score than the original", () => {
@@ -426,7 +426,7 @@ describe("multi-sheet isolation", () => {
     expect(result.fullyPlaced).toBe(true);
     expect(result.sheets[0].instances[0].xMm).toBe(100);
     expect(result.sheets[1].instances[0].xMm).toBe(100);
-    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
   });
 
   it("validateSessionForExport checks collisions per-sheet, never across sheets", () => {
@@ -458,7 +458,7 @@ describe("multi-sheet isolation", () => {
     const totalPlaced = result.sheets.reduce((sum, s) => sum + s.instances.length, 0);
     expect(totalPlaced).toBe(3);
     expect(result.sheets.length).toBeGreaterThan(1);
-    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+    allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
   });
 });
 
@@ -494,7 +494,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
       // Required quantity (6) reached without moving anything.
       expect(result.sheets[0].instances.length).toBe(6);
       expect(result.kept).toBe("ORIGINAL");
-      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
   });
 
@@ -609,7 +609,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
         .some((i) => Math.abs(i.xMm - 50) < 1e-6 && Math.abs(i.yMm - 50) < 1e-6 && i.rotationDeg === 0);
       expect(stillAtBadSpot).toBe(false);
 
-      allPolygonsCollisionFree(flexible.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(flexible.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
 
     it("MANUAL stays exactly fixed while PATTERN and OPTIMIZED placements may be repositioned", () => {
@@ -641,7 +641,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
 
       // Exactly 3 required parts, never more, never fewer.
       expect(countAllInstances(result.sheets)).toBe(3);
-      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
 
     it("never reduces total placed required quantity and never exceeds requiredQty", () => {
@@ -685,7 +685,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
 
       expect(countAllInstances(result.sheets)).toBe(3);
       expect(result.sheets.length).toBeGreaterThan(1);
-      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
 
     it("rejects a same-quantity rebuild that would score worse than the original", () => {
@@ -772,7 +772,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
       const result = optimizeRemainingWithPreference([sheet], catalog, sources, ZERO_MARGIN, "OPTIMIZE");
 
       expect(countAllInstances(result.sheets)).toBe(4);
-      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
 
     it("can distribute complete required quantity across multiple sheets", () => {
@@ -792,7 +792,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
 
       expect(countAllInstances(result.sheets)).toBe(3);
       expect(result.sheets.length).toBeGreaterThan(1);
-      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.widthMm, maxY: s.lengthMm }));
+      allPolygonsCollisionFree(result.sheets, (s) => ({ minX: 0, minY: 0, maxX: s.lengthMm, maxY: s.widthMm }));
     });
 
     it("retains the existing valid solution when the rebuild would place fewer parts", () => {
