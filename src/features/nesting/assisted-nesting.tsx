@@ -399,11 +399,16 @@ export function AssistedNestingCanvas({
 
     // Invalid spot — stay pinned at the last valid position/rotation
     // instead of drawing the part outside the sheet/over another
-    // part/on the margin.
+    // part/on the margin. Re-validate the anchor against the CURRENT
+    // committed placements (not just the pass that saved it) — a spot
+    // that was valid a moment ago can become invalid the instant a new
+    // part gets committed there, and pinning must reflect that or two
+    // parts can be stacked on the exact same spot without moving the
+    // mouse in between.
     const anchor = lastValidGhostRef.current;
     if (anchor) {
       const pinned = evaluate(anchor.xMm, anchor.yMm, anchor.rotationDeg);
-      return { polygon: pinned.polygon, xMm: anchor.xMm, yMm: anchor.yMm, rotationDeg: anchor.rotationDeg, reason: null, part };
+      return { polygon: pinned.polygon, xMm: anchor.xMm, yMm: anchor.yMm, rotationDeg: anchor.rotationDeg, reason: pinned.reason, part };
     }
 
     // No valid anchor yet (e.g. first move already invalid) — show the
@@ -474,6 +479,10 @@ export function AssistedNestingCanvas({
       origin: "MANUAL",
     };
     commitHistory([...instances, newInstance]);
+    // Force re-validation on the next mouse move: the spot we just
+    // committed to is now occupied, so it must not be reused as a
+    // "last valid" anchor for the very next placement.
+    lastValidGhostRef.current = null;
   }
 
   function handleKeyDown(e: React.KeyboardEvent<SVGSVGElement>) {
