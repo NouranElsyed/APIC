@@ -82,10 +82,10 @@ export interface EngineConfig {
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
-  marginLeftMm: 5,
-  marginRightMm: 5,
-  marginTopMm: 5,
-  marginBottomMm: 5,
+  marginLeftMm: 0,
+  marginRightMm: 0,
+  marginTopMm: 0,
+  marginBottomMm: 0,
   partGapMm: 0,
 };
 
@@ -268,10 +268,14 @@ class SheetPacker {
     // physical sheet shrunk by each side's own margin — never a single
     // uniform "edge clearance". The physical sheet boundary exported to
     // DXF always stays the full widthMm × lengthMm regardless of these.
+    //
+    // Axis convention: lengthMm runs along X (horizontal), widthMm runs
+    // along Y (vertical) — kept consistent across the engine, DXF writer,
+    // optimizer and the assisted-nesting canvas.
     this.minX = config.marginLeftMm;
     this.minY = config.marginBottomMm;
-    this.maxX = source.widthMm - config.marginRightMm;
-    this.maxY = source.lengthMm - config.marginTopMm;
+    this.maxX = source.lengthMm - config.marginRightMm;
+    this.maxY = source.widthMm - config.marginTopMm;
     this.gap = config.partGapMm;
 
     this.cursorX = this.minX;
