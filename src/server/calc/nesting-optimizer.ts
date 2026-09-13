@@ -119,8 +119,8 @@ function makeWorkingSheet(source: EngineSourceInput, config: EngineConfig): Work
     lengthMm: source.lengthMm,
     minX: config.marginLeftMm,
     minY: config.marginBottomMm,
-    maxX: source.widthMm - config.marginRightMm,
-    maxY: source.lengthMm - config.marginTopMm,
+    maxX: source.lengthMm - config.marginRightMm,
+    maxY: source.widthMm - config.marginTopMm,
     placements: [],
     polygons: [],
   };
@@ -172,8 +172,8 @@ class RotationCandidateCache {
 }
 
 function couldEverFit(instance: OptimizerPartInstance, source: EngineSourceInput, config: EngineConfig, rotations: RotationCandidateCache): boolean {
-  const w = Math.max(0, source.widthMm - config.marginLeftMm - config.marginRightMm);
-  const h = Math.max(0, source.lengthMm - config.marginTopMm - config.marginBottomMm);
+  const w = Math.max(0, source.lengthMm - config.marginLeftMm - config.marginRightMm);
+  const h = Math.max(0, source.widthMm - config.marginTopMm - config.marginBottomMm);
   for (const rotation of rotations.get(instance)) {
     const shape = computeOrientedShape(instance.outer, rotation);
     if (shape.width <= w + 1e-6 && shape.height <= h + 1e-6) return true;
