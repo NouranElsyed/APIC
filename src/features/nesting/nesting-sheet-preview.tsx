@@ -40,9 +40,12 @@ export function NestingSheetPreview({
   partInfoById: Map<string, PartBBoxInfo>;
   partGeometryById: Map<string, PartGeometryInfo>;
 }) {
+  // Axis convention: lengthMm runs along X (horizontal), widthMm runs
+  // along Y (vertical) — matches nesting-engine.ts, the DXF writer, and
+  // the assisted-nesting canvas.
   const padding = Math.max(sheet.widthMm, sheet.lengthMm) * 0.03;
-  const viewW = sheet.widthMm + padding * 2;
-  const viewH = sheet.lengthMm + padding * 2;
+  const viewW = sheet.lengthMm + padding * 2;
+  const viewH = sheet.widthMm + padding * 2;
   const strokeW = Math.max(sheet.widthMm, sheet.lengthMm) * 0.003;
 
   return (
@@ -55,8 +58,8 @@ export function NestingSheetPreview({
         <rect
           x={0}
           y={0}
-          width={sheet.widthMm}
-          height={sheet.lengthMm}
+          width={sheet.lengthMm}
+          height={sheet.widthMm}
           fill="#f8fafc"
           stroke="#94a3b8"
           strokeWidth={strokeW}
