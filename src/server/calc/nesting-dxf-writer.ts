@@ -68,13 +68,16 @@ export function writeNestingSheetDxf(sheet: DxfSheetInput): string {
 
   // SHEET layer — full physical sheet boundary (PROJECT.md §26): always
   // the real widthMm × lengthMm, never the shrunk usable area.
+  // Axis convention: lengthMm runs along X (horizontal), widthMm runs
+  // along Y (vertical) — matches nesting-engine.ts and the assisted-nesting
+  // canvas.
   entities.push(
     lwpolyline(
       [
         { x: 0, y: 0 },
-        { x: sheet.widthMm, y: 0 },
-        { x: sheet.widthMm, y: sheet.lengthMm },
-        { x: 0, y: sheet.lengthMm },
+        { x: sheet.lengthMm, y: 0 },
+        { x: sheet.lengthMm, y: sheet.widthMm },
+        { x: 0, y: sheet.widthMm },
       ],
       "SHEET",
     ),
@@ -83,8 +86,8 @@ export function writeNestingSheetDxf(sheet: DxfSheetInput): string {
   // MARGIN layer — usable nesting boundary inside the sheet (PROJECT.md §27).
   const usableMinX = sheet.marginLeftMm;
   const usableMinY = sheet.marginBottomMm;
-  const usableMaxX = sheet.widthMm - sheet.marginRightMm;
-  const usableMaxY = sheet.lengthMm - sheet.marginTopMm;
+  const usableMaxX = sheet.lengthMm - sheet.marginRightMm;
+  const usableMaxY = sheet.widthMm - sheet.marginTopMm;
   if (usableMaxX > usableMinX && usableMaxY > usableMinY) {
     entities.push(
       lwpolyline(
