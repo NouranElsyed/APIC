@@ -166,6 +166,55 @@ export function polygonsOverlap(polyA: Point[], polyB: Point[]): boolean {
   return false;
 }
 
+function distPointToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = a.x + t * dx;
+  const projY = a.y + t * dy;
+  return Math.hypot(p.x - projX, p.y - projY);
+}
+
+function distSegmentToSegment(a1: Point, a2: Point, b1: Point, b2: Point): number {
+  if (segmentsIntersect(a1, a2, b1, b2)) return 0;
+  return Math.min(
+    distPointToSegment(a1, b1, b2),
+    distPointToSegment(a2, b1, b2),
+    distPointToSegment(b1, a1, a2),
+    distPointToSegment(b2, a1, a2),
+  );
+}
+
+/**
+ * Exact minimum distance between two simple polygons' boundaries (edge to
+ * edge), or 0 if they overlap/touch. Unlike a bounding-box comparison,
+ * this correctly handles non-rectangular outlines (triangles, cut
+ * corners, L-shapes, etc.) — a shape's bbox can include a lot of empty
+ * space that isn't actually part of the outline, which makes a
+ * bbox-based gap check reject positions that are, geometrically, still
+ * far enough away. Used to enforce partGapMm as a real clearance
+ * requirement rather than a bounding-box approximation.
+ */
+export function polygonsMinDistance(polyA: Point[], polyB: Point[]): number {
+  if (polyA.length < 2 || polyB.length < 2) return Infinity;
+  if (polygonsOverlap(polyA, polyB)) return 0;
+  let min = Infinity;
+  for (let i = 0; i < polyA.length; i++) {
+    const a1 = polyA[i];
+    const a2 = polyA[(i + 1) % polyA.length];
+    for (let j = 0; j < polyB.length; j++) {
+      const b1 = polyB[j];
+      const b2 = polyB[(j + 1) % polyB.length];
+      const d = distSegmentToSegment(a1, a2, b1, b2);
+      if (d < min) min = d;
+    }
+  }
+  return min;
+}
+
 export function boundsContain(points: Point[], minX: number, minY: number, maxX: number, maxY: number, epsilon = 1e-6): boolean {
   for (const p of points) {
     if (p.x < minX - epsilon || p.x > maxX + epsilon || p.y < minY - epsilon || p.y > maxY + epsilon) {
