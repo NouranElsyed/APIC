@@ -235,6 +235,14 @@ export function AssistedNestingCanvas({
   const [cursor, setCursor] = React.useState<Point | null>(null);
   const [ghostRotation, setGhostRotation] = React.useState<RotationDeg>(0);
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<string | null>(null);
+  // Double-click-to-replace (Phase 2C §2): the id of the committed
+  // instance currently being repositioned, or null when not replacing.
+  // While set, that instance is excluded from the collision set and from
+  // the committed-instance render list, and appears only as the moving
+  // ghost. We deliberately never mutate `instances` until the user clicks
+  // a valid new spot — Esc just clears this ref, and since the original
+  // instance was never touched, the "restore" is automatic and exact.
+  const [replacingInstanceId, setReplacingInstanceId] = React.useState<string | null>(null);
 
   const svgRef = React.useRef<SVGSVGElement | null>(null);
 
@@ -276,11 +284,15 @@ export function AssistedNestingCanvas({
 
   function undo() {
     setSheetSessions((prev) => prev.map((s, i) => (i !== activeSheetIndex ? s : { ...s, historyIndex: Math.max(0, s.historyIndex - 1) })));
+    setReplacingInstanceId(null);
+    setPlacing(false);
   }
   function redo() {
     setSheetSessions((prev) =>
       prev.map((s, i) => (i !== activeSheetIndex ? s : { ...s, historyIndex: Math.min(s.history.length - 1, s.historyIndex + 1) })),
     );
+    setReplacingInstanceId(null);
+    setPlacing(false);
   }
 
   function addSheet() {
@@ -344,13 +356,15 @@ export function AssistedNestingCanvas({
 
   // ---- committed polygons for collision testing (ACTIVE SHEET ONLY — spec §2 "All validation must use the active sheet's placements only") ----
   const committedPolygons = React.useMemo(() => {
-    return instances.map((inst) => {
-      const part = partsById.get(inst.takeoffPartId);
-      if (!part) return { instance: inst, polygon: [] as Point[] };
-      const shape = computeOrientedShape(part.outer, inst.rotationDeg);
-      return { instance: inst, polygon: translatePoints(shape.points, inst.xMm, inst.yMm) };
-    });
-  }, [instances, partsById]);
+    return instances
+      .filter((inst) => inst.id !== replacingInstanceId)
+      .map((inst) => {
+        const part = partsById.get(inst.takeoffPartId);
+        if (!part) return { instance: inst, polygon: [] as Point[] };
+        const shape = computeOrientedShape(part.outer, inst.rotationDeg);
+        return { instance: inst, polygon: translatePoints(shape.points, inst.xMm, inst.yMm) };
+      });
+  }, [instances, partsById, replacingInstanceId]);
 
   // ---- live ghost validation (placement) ----------------------------------
   // NOTE (Phase 2C): this used to "pin" the ghost to the last remembered
@@ -372,6 +386,17 @@ export function AssistedNestingCanvas({
     if (!placing || !cursor || !selectedPartId) return null;
     const part = partsById.get(selectedPartId);
     if (!part) return null;
+    // A part that has already reached its required quantity must never
+    // show a ghost, even if some stale UI state still thinks it's "held".
+    // Exception: while repositioning an already-placed instance
+    // (replacingInstanceId set), that instance's own quantity slot is
+    // "free" again — it's not counted twice (see committedPolygons above,
+    // which already excludes it), so the quantity gate doesn't apply.
+    if (!replacingInstanceId) {
+      const requiredQty = requiredQtyByPart.get(selectedPartId) ?? 0;
+      const placedQty = placedQtyByPart.get(selectedPartId) ?? 0;
+      if (placedQty >= requiredQty) return null;
+    }
 
     const shape = computeOrientedShape(part.outer, ghostRotation);
     // Cursor tracks the shape's own center for a natural feel.
@@ -425,7 +450,7 @@ export function AssistedNestingCanvas({
     }
 
     return { polygon, xMm: projected.x, yMm: projected.y, rotationDeg: ghostRotation, reason, part };
-  }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons, committedBoxes, activeSheetConfig.partGapMm]);
+  }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons, committedBoxes, activeSheetConfig.partGapMm, replacingInstanceId, requiredQtyByPart, placedQtyByPart]);
 
   // ---- pattern detection ---------------------------------------------------
   const patternInstances: PatternPlacedInstance[] = React.useMemo(
@@ -478,7 +503,31 @@ export function AssistedNestingCanvas({
     const part = partsById.get(selectedPartId);
     if (!part) return;
 
-    const nextInstanceNumber = (placedQtyByPart.get(selectedPartId) ?? 0) + 1;
+    // Replacement mode: update the SAME instance in place instead of
+    // creating a new one. Quantity is unaffected (we're moving an
+    // existing instance, not adding one), so the requiredQty guard below
+    // does not apply here.
+    if (replacingInstanceId) {
+      const updated = instances.map((inst) =>
+        inst.id === replacingInstanceId
+          ? { ...inst, xMm: ghost.xMm, yMm: ghost.yMm, rotationDeg: ghost.rotationDeg }
+          : inst,
+      );
+      commitHistory(updated);
+      setReplacingInstanceId(null);
+      setPlacing(false);
+      setCursor(null);
+      return;
+    }
+
+    // Commit-layer quantity guard (spec: "never allow placedQty >
+    // requiredQty" even with stale UI state) — re-checked here
+    // independently of the ghost memo above.
+    const requiredQty = requiredQtyByPart.get(selectedPartId) ?? 0;
+    const placedQtyNow = placedQtyByPart.get(selectedPartId) ?? 0;
+    if (placedQtyNow >= requiredQty) return;
+
+    const nextInstanceNumber = placedQtyNow + 1;
     const newInstance: AssistedInstance = {
       id: nextId("inst"),
       takeoffPartId: selectedPartId,
@@ -490,10 +539,26 @@ export function AssistedNestingCanvas({
       origin: "MANUAL",
     };
     commitHistory([...instances, newInstance]);
+
+    // Auto-release: the instance we just committed may have completed
+    // this part's required quantity. Check against the up-to-date count
+    // (placedQtyNow + 1) rather than the stale `placedQtyByPart` memo,
+    // which hasn't re-derived from `instances` yet on this same tick.
+    if (nextInstanceNumber >= requiredQty) {
+      setPlacing(false);
+      setCursor(null);
+      setSelectedPartId(null);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<SVGSVGElement>) {
     if (e.key === "Escape") {
+      // Cancel a replacement-in-progress: since the original instance was
+      // never mutated (only excluded from the collision set/render list
+      // while its ghost was shown), simply clearing this restores its
+      // exact original position, rotation, and metadata — no explicit
+      // "undo" needed.
+      setReplacingInstanceId(null);
       setPlacing(false);
       setCursor(null);
     } else if (e.key.toLowerCase() === "r") {
@@ -508,6 +573,13 @@ export function AssistedNestingCanvas({
   function deleteInstance(id: string) {
     commitHistory(instances.filter((i) => i.id !== id));
     if (selectedInstanceId === id) setSelectedInstanceId(null);
+    if (replacingInstanceId === id) {
+      // The instance being repositioned was deleted out from under the
+      // replacement — cancel the in-progress ghost cleanly.
+      setReplacingInstanceId(null);
+      setPlacing(false);
+      setCursor(null);
+    }
   }
 
   // ---- pattern application ---------------------------------------------
@@ -543,8 +615,23 @@ export function AssistedNestingCanvas({
 
   function applyPattern() {
     if (!patternResult) return;
-    commitHistory([...instances, ...patternResult.generated]);
+    const finalInstances = [...instances, ...patternResult.generated];
+    commitHistory(finalInstances);
     setPatternResult(null);
+
+    // If every part is now at its required quantity, release any
+    // currently-held part — there's nothing left it could validly place.
+    const finalPlacedByPart = new Map<string, number>();
+    for (const inst of finalInstances) {
+      finalPlacedByPart.set(inst.takeoffPartId, (finalPlacedByPart.get(inst.takeoffPartId) ?? 0) + 1);
+    }
+    const allComplete = parts.every((p) => (finalPlacedByPart.get(p.takeoffPartId) ?? 0) >= p.requiredQty);
+    if (allComplete || (selectedPartId && (finalPlacedByPart.get(selectedPartId) ?? 0) >= (requiredQtyByPart.get(selectedPartId) ?? 0))) {
+      setPlacing(false);
+      setCursor(null);
+      setSelectedPartId(null);
+      setReplacingInstanceId(null);
+    }
   }
 
   function clearPatternPreview() {
@@ -554,6 +641,8 @@ export function AssistedNestingCanvas({
   function clearAll() {
     commitHistory([]);
     setPatternResult(null);
+    setReplacingInstanceId(null);
+    setPlacing(false);
   }
 
   function resetPattern() {
@@ -849,6 +938,7 @@ export function AssistedNestingCanvas({
                 onClick={() => {
                   setSelectedPartId(p.takeoffPartId);
                   setPlacing(false);
+                  setReplacingInstanceId(null);
                 }}
                 className={`flex flex-col rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
                   selectedPartId === p.takeoffPartId ? "border-primary bg-primary/5" : "border-transparent hover:bg-muted"
@@ -874,6 +964,7 @@ export function AssistedNestingCanvas({
                 className="mt-2 w-full"
                 disabled={placedForSelected >= requiredForSelected}
                 onClick={() => {
+                  setReplacingInstanceId(null);
                   setPlacing(true);
                   setGhostRotation(0);
                 }}
@@ -882,6 +973,55 @@ export function AssistedNestingCanvas({
               </Button>
             </div>
           )}
+
+          {/* Part selection list (spec: shown directly below "Start
+              Placing"). Mirrors the Parts Queue above but is the primary
+              live-updating list of what can still be manually placed —
+              required/placed/remaining per part, click to select, and
+              completed parts are disabled so they can't be reselected for
+              another placement. */}
+          <div className="mt-3 border-t border-border pt-2">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">Parts</div>
+            <div className="flex flex-col gap-1">
+              {parts.map((p) => {
+                const placedQty = placedQtyByPart.get(p.takeoffPartId) ?? 0;
+                const requiredQty = p.requiredQty;
+                const remaining = Math.max(0, requiredQty - placedQty);
+                const complete = remaining === 0;
+                return (
+                  <button
+                    key={p.takeoffPartId}
+                    disabled={complete}
+                    onClick={() => {
+                      if (complete) return;
+                      setReplacingInstanceId(null);
+                      setSelectedPartId(p.takeoffPartId);
+                      setPlacing(true);
+                      setGhostRotation(0);
+                    }}
+                    className={`flex flex-col rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
+                      complete
+                        ? "cursor-not-allowed border-transparent opacity-60"
+                        : selectedPartId === p.takeoffPartId
+                          ? "border-primary bg-primary/5"
+                          : "border-transparent hover:bg-muted"
+                    }`}
+                  >
+                    <span className="flex items-center justify-between font-medium">
+                      <span>
+                        #{p.itemNo}
+                        {p.description ? ` · ${p.description}` : ""}
+                      </span>
+                      {complete && <CheckCircle2 className="h-3 w-3 text-emerald-600" />}
+                    </span>
+                    <span className={complete ? "text-emerald-600" : "text-muted-foreground"}>
+                      {complete ? "Complete" : `${placedQty} / ${requiredQty} placed · Remaining ${remaining}`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         {/* Canvas */}
@@ -896,6 +1036,7 @@ export function AssistedNestingCanvas({
                     setActiveSheetIndex(idx);
                     setPlacing(false);
                     setSelectedInstanceId(null);
+                    setReplacingInstanceId(null);
                   }}
                   className={`rounded-md border px-2 py-1 text-[11px] ${
                     activeSheetIndex === idx ? "border-primary bg-primary/10 font-medium" : "border-border text-muted-foreground hover:bg-muted"
@@ -943,7 +1084,25 @@ export function AssistedNestingCanvas({
                 const part = partsById.get(instance.takeoffPartId);
                 const isPatternPreview = instance.origin === "PATTERN";
                 return (
-                  <g key={instance.id} onClick={(e) => { e.stopPropagation(); setSelectedInstanceId(instance.id); }}>
+                  <g
+                    key={instance.id}
+                    onClick={(e) => { e.stopPropagation(); setSelectedInstanceId(instance.id); }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      // Double-click-to-replace (spec §2): hold this exact
+                      // instance for repositioning. Native SVG hit-testing
+                      // on the <path> below already resolves to the
+                      // correct instance even when bounding boxes
+                      // visually overlap, since it tests the real filled
+                      // polygon area, not a box.
+                      setReplacingInstanceId(instance.id);
+                      setSelectedPartId(instance.takeoffPartId);
+                      setGhostRotation(instance.rotationDeg);
+                      setSelectedInstanceId(instance.id);
+                      setPlacing(true);
+                    }}
+                    className="cursor-pointer"
+                  >
                     <path
                       d={pointsToPath(polygon)}
                       fill={isPatternPreview ? "#16a34a" : "#2563eb"}
@@ -951,7 +1110,7 @@ export function AssistedNestingCanvas({
                       stroke={isPatternPreview ? "#16a34a" : "#2563eb"}
                       strokeWidth={strokeW}
                     >
-                      <title>{`#${part?.itemNo ?? "?"} — rotation ${instance.rotationDeg}°${instance.locked ? " (locked)" : ""}`}</title>
+                      <title>{`#${part?.itemNo ?? "?"} — rotation ${instance.rotationDeg}°${instance.locked ? " (locked)" : ""} — double-click to reposition`}</title>
                     </path>
                   </g>
                 );
