@@ -29,6 +29,7 @@ import {
   computeOrientedShape,
   translatePoints,
   polygonsOverlap,
+  polygonsMinDistance,
   boundsContain,
   computeBoundingBox,
   findNearestValidOrigin,
@@ -432,16 +433,13 @@ export function AssistedNestingCanvas({
           break;
         }
         if (activeSheetConfig.partGapMm > 0) {
-          const box = committedBoxes[i];
-          const ex = {
-            minX: box.minX - activeSheetConfig.partGapMm,
-            minY: box.minY - activeSheetConfig.partGapMm,
-            maxX: box.maxX + activeSheetConfig.partGapMm,
-            maxY: box.maxY + activeSheetConfig.partGapMm,
-          };
-          const pBox = computeBoundingBox(polygon);
-          const collides = pBox.minX < ex.maxX && pBox.maxX > ex.minX && pBox.minY < ex.maxY && pBox.maxY > ex.minY;
-          if (collides) {
+          // Exact polygon-to-polygon distance, not a bounding-box
+          // approximation: a bbox check over-rejects non-rectangular
+          // outlines (triangles, cut corners) because their bbox
+          // includes empty area that isn't part of the actual shape,
+          // so it would refuse to let the part get as close as the
+          // configured gap even though it geometrically could.
+          if (polygonsMinDistance(polygon, c.polygon) < activeSheetConfig.partGapMm - 1e-6) {
             reason = "OVERLAPS_EXISTING_PART";
             break;
           }
