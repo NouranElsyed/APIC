@@ -129,6 +129,7 @@ describe("findNearestValidOrigin — Phase 2C constrained ghost movement", () =>
     expect(clearanceX >= gap - 1e-6 || withinLeft).toBe(true);
   });
 
+  
   it("TEST 6 — cursor sweeping across an obstacle never yields a spot that overlaps it", () => {
     const obstacle = { minX: 1000, minY: 0, maxX: 1500, maxY: 500 };
     for (let x = 900; x <= 1600; x += 25) {
