@@ -201,6 +201,59 @@ describe("nesting-pattern — quantity-aware pattern remainder (Phase 2C §4)", 
     expect(result.shortfallCycles).toBeGreaterThan(0);
   });
 
+  it("TEST 23 (regression) — a vertical column pattern wraps into a new column instead of stopping dead at the sheet's bottom edge", () => {
+    // Reproduces the reported bug exactly: two identical 300x300 squares
+    // stacked vertically (a single-part, single-column pattern) on a
+    // sheet that only has room for 3 total rows before hitting the
+    // bottom margin, but plenty of room to the right for more columns.
+    const partOuter = rect(300, 300);
+    const seed = [
+      inst({ takeoffPartId: "A", outer: partOuter, xMm: 100, yMm: 100 }),
+      inst({ takeoffPartId: "A", outer: partOuter, xMm: 100, yMm: 450 }), // 350mm pitch downward
+    ];
+    const pattern = detectPattern(seed)!;
+    expect(pattern).not.toBeNull();
+
+    // Sheet: 1500mm wide (room for ~4 columns of 350mm pitch), 1200mm
+    // tall (room for only ~3 rows of 350mm pitch) — deliberately narrow
+    // vertically and wide horizontally, like the screenshot's 1500x6000
+    // sheet with only a sliver of vertical room left.
+    const bounds: PatternSheetBounds = { minX: 0, minY: 0, maxX: 1500, maxY: 1200 };
+
+    const result = expandPatternOnSheet(pattern, seed, bounds, {
+      requiredQtyByPart: new Map([["A", 6]]),
+      placedQtyByPart: new Map([["A", 2]]),
+      partGapMm: 0,
+    });
+
+    // Old (broken) behavior: 0 generated, because the 3rd square in the
+    // SAME column would cross the bottom edge and the whole thing gave
+    // up immediately. New behavior: it must wrap into additional
+    // columns to the right and keep placing.
+    expect(result.generated.length).toBeGreaterThan(0);
+
+    // Every generated instance must be a real, non-overlapping, in-bounds
+    // placement — no shortcuts.
+    const allPolys = [...seed, ...result.generated].map((i) => {
+      const shape = computeOrientedShape(i.outer, i.rotationDeg);
+      return translatePoints(shape.points, i.xMm, i.yMm);
+    });
+    for (const p of allPolys) {
+      expect(boundsContain(p, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)).toBe(true);
+    }
+    for (let i = 0; i < allPolys.length; i++) {
+      for (let j = i + 1; j < allPolys.length; j++) {
+        expect(polygonsOverlap(allPolys[i], allPolys[j])).toBe(false);
+      }
+    }
+
+    // At least one generated instance must sit in a NEW column (different
+    // X from the original column at x=100) — proving it actually wrapped
+    // rather than just finding one more slot in the same column.
+    const wrappedIntoNewColumn = result.generated.some((g) => Math.abs(g.xMm - 100) > 1);
+    expect(wrappedIntoNewColumn).toBe(true);
+  });
+
   it("computeRepetitionsNeeded never demands a negative or NaN cycle count once a part is already complete", () => {
     const pattern: DetectedPattern = {
       slots: [{ takeoffPartId: "A", outer: rect(10, 10), areaSqm: 0, rotationDeg: 0, dxMm: 0, dyMm: 0 }],
