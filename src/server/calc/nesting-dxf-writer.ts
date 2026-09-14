@@ -15,7 +15,6 @@
 //             number, non-cutting geometry only.
 //
 // Coordinates are real millimeters, Z = 0, never scaled (PROJECT.md §32).
-
 import type { Point } from "./dxf";
 import { transformGeometryForPlacement } from "./nesting-geometry";
 
