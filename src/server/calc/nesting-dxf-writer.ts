@@ -173,6 +173,7 @@ export function writeNestingSheetDxf(sheet: DxfSheetInput): string {
     "ENDSEC",
   ].join("\n");
 
+  
   const entitiesSection = ["0", "SECTION", "2", "ENTITIES", ...entities, "0", "ENDSEC"].join("\n");
 
   const eof = ["0", "EOF"].join("\n");
