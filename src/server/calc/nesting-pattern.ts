@@ -188,12 +188,21 @@ export function expandPatternOnSheet(
 
     const cycleCandidates: { instance: GeneratedInstance; polygon: Point[] }[] = [];
     let cycleValid = true;
+    // BUGFIX (Phase 2C §4): track quantities used so far WITHIN this
+    // cycle separately from the committed `placedQtyByPart`. The pattern
+    // can reference the same part more than once per cycle (e.g. A,B,A);
+    // checking `alreadyPlaced >= required` against the outer map alone
+    // let two slots of the same part both pass the same stale count and
+    // both get placed, silently exceeding requiredQty. Every slot below
+    // must see the effect of every slot processed earlier in this same
+    // cycle.
+    const withinCycleUsed = new Map(placedQtyByPart);
 
     for (let slotIndex = 0; slotIndex < pattern.slots.length; slotIndex++) {
       const slot = pattern.slots[slotIndex];
 
       const required = options.requiredQtyByPart.get(slot.takeoffPartId) ?? 0;
-      const alreadyPlaced = placedQtyByPart.get(slot.takeoffPartId) ?? 0;
+      const alreadyPlaced = withinCycleUsed.get(slot.takeoffPartId) ?? 0;
       if (alreadyPlaced >= required) continue;
 
       const rotationDeg = normalizeRotationDeg(slot.rotationDeg + pattern.repeatDRotationDeg * cycle);
@@ -229,6 +238,10 @@ export function expandPatternOnSheet(
         cycleValid = false;
         break;
       }
+
+      // Reserve this slot's quantity immediately so any later slot in the
+      // SAME cycle for the same part sees the updated count.
+      withinCycleUsed.set(slot.takeoffPartId, alreadyPlaced + 1);
 
       cycleCandidates.push({
         instance: {
