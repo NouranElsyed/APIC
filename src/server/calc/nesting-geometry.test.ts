@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeOrientedShape, findNearestValidOrigin, polygonsOverlap, translatePoints } from "./nesting-geometry";
+import { computeOrientedShape, findNearestValidOrigin, polygonsOverlap, polygonsMinDistance, translatePoints } from "./nesting-geometry";
 import type { Point } from "./dxf";
 
 function rect(w: number, h: number): Point[] {
@@ -129,7 +129,6 @@ describe("findNearestValidOrigin — Phase 2C constrained ghost movement", () =>
     expect(clearanceX >= gap - 1e-6 || withinLeft).toBe(true);
   });
 
-  
   it("TEST 6 — cursor sweeping across an obstacle never yields a spot that overlaps it", () => {
     const obstacle = { minX: 1000, minY: 0, maxX: 1500, maxY: 500 };
     for (let x = 900; x <= 1600; x += 25) {
@@ -151,5 +150,65 @@ describe("findNearestValidOrigin — Phase 2C constrained ghost movement", () =>
     const tiny = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
     const result = findNearestValidOrigin(0, 0, 500, 500, tiny, [], 0);
     expect(result.fits).toBe(false);
+  });
+});
+
+describe("polygonsMinDistance — exact gap distance (not bounding-box)", () => {
+  it("returns 0 for overlapping polygons", () => {
+    const a = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    const b = [{ x: 5, y: 5 }, { x: 15, y: 5 }, { x: 15, y: 15 }, { x: 5, y: 15 }];
+    expect(polygonsMinDistance(a, b)).toBe(0);
+  });
+
+  it("returns the exact edge-to-edge gap between two disjoint rectangles", () => {
+    const a = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    const b = [{ x: 35, y: 0 }, { x: 45, y: 0 }, { x: 45, y: 10 }, { x: 35, y: 10 }];
+    expect(polygonsMinDistance(a, b)).toBeCloseTo(25, 6);
+  });
+
+  it("does NOT over-report distance for a triangle the way a bounding-box check would", () => {
+    // A right triangle whose bbox is 100x100, but whose hypotenuse cuts
+    // straight through the bbox — its far corner along the hypotenuse is
+    // much closer to a neighboring shape than the bbox would suggest.
+    const triangle = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 0, y: 100 },
+    ];
+    // Placed so the triangle's hypotenuse-side bbox corner (100,0) is the
+    // closest point to a small square sitting just past it.
+    const square = [
+      { x: 125, y: 0 },
+      { x: 135, y: 0 },
+      { x: 135, y: 10 },
+      { x: 125, y: 10 },
+    ];
+    // Real (exact) gap: 125 - 100 = 25.
+    expect(polygonsMinDistance(triangle, square)).toBeCloseTo(25, 6);
+
+    // A bounding-box-based check of the SAME configuration would agree
+    // here (since the closest bbox edge is the same corner) — the point
+    // of this suite is the next case, where bbox and exact geometry
+    // diverge because the shape is missing area near its own bbox edge.
+    const cutCornerSquare = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 70 },
+      { x: 70, y: 100 },
+      { x: 0, y: 100 },
+    ]; // a 100x100 square with a corner cut off near (100,100)
+    const farSquare = [
+      { x: 105, y: 85 },
+      { x: 115, y: 85 },
+      { x: 115, y: 95 },
+      { x: 105, y: 95 },
+    ];
+    // A bbox check would see the cut-corner shape's bbox as a full
+    // 100x100 square and measure the gap from x=100 → 105 = 5mm.
+    // The EXACT nearest edge is the cut diagonal (100,70)-(70,100), which
+    // is farther than 5mm from the neighboring square — the true gap
+    // must be larger than the naive bbox estimate would report.
+    const exact = polygonsMinDistance(cutCornerSquare, farSquare);
+    expect(exact).toBeGreaterThan(5);
   });
 });
