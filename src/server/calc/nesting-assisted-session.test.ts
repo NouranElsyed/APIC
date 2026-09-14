@@ -821,6 +821,7 @@ describe("STRICT/FLEXIBLE/OPTIMIZE semantics", () => {
     });
 
     it("more placed parts wins over raw score even when it costs an extra sheet", () => {
+      
       const partOuter = rect(400, 400);
       const sheet: AssistedSheetSession = {
         sourceSheetId: "s1",
