@@ -254,6 +254,48 @@ describe("nesting-pattern — quantity-aware pattern remainder (Phase 2C §4)", 
     expect(wrappedIntoNewColumn).toBe(true);
   });
 
+  it("extraObstaclePolygons — a same-sheet part of a DIFFERENT type still blocks the pattern (fixes: mixed-part sheets couldn't detect a per-part pattern without losing collision safety)", () => {
+    const partOuter = rect(100, 100);
+    // Part A's own 2-instance pattern, detected on ITS OWN instances only.
+    const seed = [
+      inst({ takeoffPartId: "A", outer: partOuter, xMm: 0, yMm: 0 }),
+      inst({ takeoffPartId: "A", outer: partOuter, xMm: 110, yMm: 0 }),
+    ];
+    const pattern = detectPattern(seed)!;
+    expect(pattern).not.toBeNull();
+
+    // An unrelated Part B instance sitting exactly where the pattern's
+    // NEXT repetition would otherwise land.
+    const partBOuter = rect(60, 60);
+    const obstaclePolygon = translatePoints(
+      computeOrientedShape(partBOuter, 0).points,
+      220,
+      0,
+    );
+
+    const result = expandPatternOnSheet(
+      pattern,
+      seed,
+      HUGE,
+      {
+        requiredQtyByPart: new Map([["A", 6]]),
+        placedQtyByPart: new Map([["A", 2]]),
+        partGapMm: 0,
+      },
+      [obstaclePolygon],
+    );
+
+    // The pattern must have wrapped/skipped around Part B's instance
+    // rather than overlapping it.
+    const allPolys = [...seed.map((i) => translatePoints(computeOrientedShape(i.outer, i.rotationDeg).points, i.xMm, i.yMm)), obstaclePolygon, ...result.generated.map((g) => translatePoints(computeOrientedShape(g.outer, g.rotationDeg).points, g.xMm, g.yMm))];
+    for (let i = 0; i < allPolys.length; i++) {
+      for (let j = i + 1; j < allPolys.length; j++) {
+        expect(polygonsOverlap(allPolys[i], allPolys[j])).toBe(false);
+      }
+    }
+    expect(result.generated.length).toBeGreaterThan(0);
+  });
+
   it("computeRepetitionsNeeded never demands a negative or NaN cycle count once a part is already complete", () => {
     const pattern: DetectedPattern = {
       slots: [{ takeoffPartId: "A", outer: rect(10, 10), areaSqm: 0, rotationDeg: 0, dxMm: 0, dyMm: 0 }],

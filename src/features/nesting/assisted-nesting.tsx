@@ -439,16 +439,23 @@ export function AssistedNestingCanvas({
 
     let refinedX = projected.x;
     let refinedY = projected.y;
-    if (projected.fits) {
+    if (projected.fits && committedPolygons.length > 0) {
+      // Only worth the exact-geometry refinement once there's something
+      // non-rectangular to actually get closer to — with zero committed
+      // obstacles, the bbox clamp against the sheet/margin bounds is
+      // already exact (an axis-aligned rectangle has no "wasted" bbox
+      // area), so skip the extra work entirely in the common early case.
       const dx = rawOriginX - projected.x;
       const dy = rawOriginY - projected.y;
       if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
         // Binary search along the straight line from the safe bbox
         // position (t=0) toward the raw cursor position (t=1) for the
-        // largest t that's still exactly valid.
+        // largest t that's still exactly valid. 10 iterations is plenty
+        // (sub-0.1% precision of the offset) and keeps this cheap enough
+        // to run on every mouse move without feeling laggy.
         let lo = 0;
         let hi = 1;
-        for (let iter = 0; iter < 16; iter++) {
+        for (let iter = 0; iter < 10; iter++) {
           const mid = (lo + hi) / 2;
           if (isExactlyValid(projected.x + dx * mid, projected.y + dy * mid)) {
             lo = mid;
@@ -514,7 +521,22 @@ export function AssistedNestingCanvas({
     [instances, partsById],
   );
 
-  const pattern: DetectedPattern | null = React.useMemo(() => detectPattern(patternInstances), [patternInstances]);
+  // A pattern is demonstrated on ONE part at a time ("Select a part, place
+  // two instances with your desired pattern") — detecting it against the
+  // full mixed list of every manually-placed instance across every part
+  // breaks detection the moment a second, unrelated part has also been
+  // manually placed (its instances don't fit any single repeating unit
+  // together with the first part's), even though the first part's own
+  // instances form a perfectly good pattern on their own.
+  const selectedPartPatternInstances = React.useMemo(
+    () => patternInstances.filter((i) => i.takeoffPartId === selectedPartId),
+    [patternInstances, selectedPartId],
+  );
+
+  const pattern: DetectedPattern | null = React.useMemo(
+    () => detectPattern(selectedPartPatternInstances),
+    [selectedPartPatternInstances],
+  );
 
   // ---- mouse handlers --------------------------------------------------
   function svgPointFromEvent(e: React.MouseEvent<SVGSVGElement>): Point | null {
@@ -533,11 +555,32 @@ export function AssistedNestingCanvas({
     return { x: svgX, y: svgY };
   }
 
+  // Throttle cursor updates to at most once per animation frame. Native
+  // mousemove can fire far more often than the screen refreshes; without
+  // this, every single event triggers a full re-render plus the ghost's
+  // constraint math (bbox push-out + exact-geometry refinement), which
+  // is what made dragging feel non-smooth/laggy with several committed
+  // parts on the sheet.
+  const pendingCursorRef = React.useRef<Point | null>(null);
+  const rafIdRef = React.useRef<number | null>(null);
+
   function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     if (!placing) return;
     const p = svgPointFromEvent(e);
-    if (p) setCursor(p);
+    if (!p) return;
+    pendingCursorRef.current = p;
+    if (rafIdRef.current !== null) return; // an update is already scheduled
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      if (pendingCursorRef.current) setCursor(pendingCursorRef.current);
+    });
   }
+
+  React.useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
+    };
+  }, []);
 
   function handleClick() {
     if (!placing || !ghost || ghost.reason || !selectedPartId) return;
@@ -632,12 +675,25 @@ export function AssistedNestingCanvas({
 
   function previewPattern() {
     if (!pattern) return;
-    const existing: PatternPlacedInstance[] = patternInstances;
-    const result = expandPatternOnSheet(pattern, existing, bounds, {
-      requiredQtyByPart,
-      placedQtyByPart,
-      partGapMm: sheetConfig.partGapMm,
-    });
+    const existing: PatternPlacedInstance[] = selectedPartPatternInstances;
+    // Everything else already on this sheet (other parts' manual
+    // instances, this part's own instances are already in `existing`
+    // above so no need to duplicate them) must still block collisions
+    // even though pattern detection itself only looked at this part.
+    const otherObstaclePolygons = committedPolygons
+      .filter((c) => c.instance.takeoffPartId !== selectedPartId)
+      .map((c) => c.polygon);
+    const result = expandPatternOnSheet(
+      pattern,
+      existing,
+      bounds,
+      {
+        requiredQtyByPart,
+        placedQtyByPart,
+        partGapMm: sheetConfig.partGapMm,
+      },
+      otherObstaclePolygons,
+    );
     setPatternResult({
       generated: result.generated.map((g) => ({
         id: nextId("pattern"),
@@ -1127,9 +1183,24 @@ export function AssistedNestingCanvas({
                 return (
                   <g
                     key={instance.id}
-                    onClick={(e) => { e.stopPropagation(); setSelectedInstanceId(instance.id); }}
+                    onClick={(e) => {
+                      // While actively placing a new part, a click
+                      // anywhere on the canvas — including over an
+                      // existing committed part — must place the ghost
+                      // at its already-computed, already-valid position.
+                      // Only treat this as "select this instance" when
+                      // we're NOT placing; otherwise stopping propagation
+                      // here would silently swallow placement clicks
+                      // that happen to land over another part.
+                      if (placing) return;
+                      e.stopPropagation();
+                      setSelectedInstanceId(instance.id);
+                    }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
+                      // Don't start a replacement while another placement
+                      // is already in progress — finish/cancel that first.
+                      if (placing && !replacingInstanceId) return;
                       // Double-click-to-replace (spec §2): hold this exact
                       // instance for repositioning. Native SVG hit-testing
                       // on the <path> below already resolves to the

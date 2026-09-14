@@ -19,6 +19,7 @@ function pointsToPath(points: Point[]): string {
   const [first, ...rest] = points;
   return `M ${first.x} ${first.y} ` + rest.map((p) => `L ${p.x} ${p.y}`).join(" ") + " Z";
 }
+
 // True-shape 2D visualization of one nested sheet (PROJECT.md §18). Renders
 // the sheet boundary and every placed part using its ACTUAL transformed
 // outer/hole polygon geometry — the same transformGeometryForPlacement

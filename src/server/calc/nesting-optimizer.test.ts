@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runNestingAlgorithm, type EnginePartInput, type EngineSourceInput, type EngineConfig } from "./nesting-engine";
-import { polygonsOverlap, boundsContain, transformGeometryForPlacement, type RotationDeg } from "./nesting-geometry";
+import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, type RotationDeg } from "./nesting-geometry";
 import type { Point } from "./dxf";
 
 // ----------------------------------------------------------------------------
@@ -295,6 +295,30 @@ describe("optimizeGroupPlacement (via runNestingAlgorithm)", () => {
     assertLayoutIsCollisionFree(result, parts, result.config);
   });
 });
+
+describe("gap enforcement bug fix — partGapMm was only ever used to offset CANDIDATE positions, never actually verified before accepting a placement", () => {
+  it("every pair of placed parts is at least partGapMm apart (exact polygon distance, not just non-overlapping)", () => {
+    const gapMm = 25;
+    const parts: EnginePartInput[] = [
+      part({ outer: rect(150, 150), qty: 10 }),
+    ];
+    const sources: EngineSourceInput[] = [source({ widthMm: 1200, lengthMm: 1200 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: gapMm };
+
+    const result = runNestingAlgorithm(parts, sources, config);
+    const placements = result.groups[0].sheets.flatMap((s) => s.placements);
+    expect(placements.length).toBeGreaterThan(1);
+
+    const polys = placements.map((p) => transformGeometryForPlacement(rect(150, 150), [], p.rotationDeg as RotationDeg, p.xMm, p.yMm).outer);
+    for (let i = 0; i < polys.length; i++) {
+      for (let j = i + 1; j < polys.length; j++) {
+        const d = polygonsMinDistance(polys[i], polys[j]);
+        expect(d).toBeGreaterThanOrEqual(gapMm - 1e-6);
+      }
+    }
+  });
+});
+
 
 function DEFAULT_CONFIG(): EngineConfig {
   return {

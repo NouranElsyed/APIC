@@ -11,6 +11,7 @@ import {
   translatePoints,
   aabbOverlap,
   polygonsOverlap,
+  polygonsMinDistance,
   boundsContain,
 } from "./nesting-geometry";
 import type { EngineConfig, EngineSourceInput, EnginePlacementResult, UnplacedReason } from "./nesting-engine";
@@ -273,8 +274,35 @@ function findBestPlacement(
           width: p.widthMm,
           height: p.heightMm,
         };
-        if (!aabbOverlap(candidateBBox, existingBBox)) continue;
+        // Broad-phase: bbox expanded by the required gap. A candidate
+        // whose bbox doesn't even come within `gap` of this part's bbox
+        // can't possibly violate the gap either, so skip the expensive
+        // exact check entirely — this is a cheap pre-filter, not the
+        // final decision.
+        const expanded: BoundingBox = {
+          minX: existingBBox.minX - config.partGapMm,
+          minY: existingBBox.minY - config.partGapMm,
+          maxX: existingBBox.maxX + config.partGapMm,
+          maxY: existingBBox.maxY + config.partGapMm,
+          width: existingBBox.width + config.partGapMm * 2,
+          height: existingBBox.height + config.partGapMm * 2,
+        };
+        if (!aabbOverlap(candidateBBox, expanded)) continue;
+
         if (polygonsOverlap(polygon, sheet.polygons[i])) {
+          polygonCollision = true;
+          break;
+        }
+        // BUGFIX: the required gap was previously never actually
+        // verified here — `gap` was only ever used as an offset when
+        // GENERATING candidate origins near existing vertices, so a
+        // candidate reached via a different code path (e.g. the sheet's
+        // own corner, or a vertex-relative candidate for a DIFFERENT
+        // neighbor) could land closer than `partGapMm` to this part with
+        // nothing rejecting it. Exact (non-bbox) distance, so a
+        // non-rectangular outline's real clearance is measured, not its
+        // bounding box's.
+        if (config.partGapMm > 0 && polygonsMinDistance(polygon, sheet.polygons[i]) < config.partGapMm - 1e-6) {
           polygonCollision = true;
           break;
         }
@@ -652,12 +680,13 @@ function ruinAndRecreate(
   return { sheets: working, iterations };
 }
 
-function revalidate(sheets: WorkingSheet[]): boolean {
+function revalidate(sheets: WorkingSheet[], partGapMm = 0): boolean {
   for (const sheet of sheets) {
     for (let i = 0; i < sheet.polygons.length; i++) {
       if (!boundsContain(sheet.polygons[i], sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)) return false;
       for (let j = i + 1; j < sheet.polygons.length; j++) {
         if (polygonsOverlap(sheet.polygons[i], sheet.polygons[j])) return false;
+        if (partGapMm > 0 && polygonsMinDistance(sheet.polygons[i], sheet.polygons[j]) < partGapMm - 1e-6) return false;
       }
     }
   }
@@ -743,7 +772,7 @@ export function packRemainingOntoSeededSheet(
     }
   }
 
-  if (!revalidate([sheet])) {
+  if (!revalidate([sheet], config.partGapMm)) {
     return {
       placements: lockedSeed.map((l) => ({
         takeoffPartId: l.takeoffPartId,
@@ -873,8 +902,8 @@ export function optimizeGroupPlacement(
   const recreated = ruinAndRecreate(improved.sheets, areaByPartId, outerByPartId, config, opts.maxCandidatesPerPart, ruinBudget, deadline, rng, rotations);
 
   let finalSheets = recreated.sheets;
-  if (!revalidate(finalSheets)) {
-    finalSheets = revalidate(improved.sheets) ? improved.sheets : best.sheets;
+  if (!revalidate(finalSheets, config.partGapMm)) {
+    finalSheets = revalidate(improved.sheets, config.partGapMm) ? improved.sheets : best.sheets;
   }
 
   const finalScore = scoreLayout(finalSheets, areaByPartId);

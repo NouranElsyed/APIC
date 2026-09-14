@@ -162,13 +162,22 @@ export function expandPatternOnSheet(
   existingInstances: PatternPlacedInstance[],
   sheetBounds: PatternSheetBounds,
   options: ExpandPatternOptions,
+  // Extra committed geometry that must still block collisions/gap even
+  // though it isn't part of THIS pattern's own demonstrated sequence
+  // (e.g. manually placed instances of a completely different part).
+  // `existingInstances` stays "the pattern's own seed" for origin/cycle
+  // math, exactly as every existing test already assumes.
+  extraObstaclePolygons: Point[][] = [],
 ): ExpandPatternResult {
   const cyclesNeeded = computeRepetitionsNeeded(pattern, options);
 
-  const committedPolygons: Point[][] = existingInstances.map((inst) => {
-    const shape = computeOrientedShape(inst.outer, inst.rotationDeg);
-    return translatePoints(shape.points, inst.xMm, inst.yMm);
-  });
+  const committedPolygons: Point[][] = [
+    ...existingInstances.map((inst) => {
+      const shape = computeOrientedShape(inst.outer, inst.rotationDeg);
+      return translatePoints(shape.points, inst.xMm, inst.yMm);
+    }),
+    ...extraObstaclePolygons,
+  ];
 
   const generated: GeneratedInstance[] = [];
   const placedQtyByPart = new Map(options.placedQtyByPart);
