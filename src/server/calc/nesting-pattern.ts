@@ -176,15 +176,51 @@ export function expandPatternOnSheet(
 
   const existingCycles = Math.max(1, Math.round(pattern.sourceInstanceCount / pattern.slots.length));
 
-  for (let i = 1; i <= cyclesNeeded; i++) {
-    const cycle = existingCycles + i - 1;
+  // 2D grid wrapping (fixes: pattern stopped dead the instant a single
+  // repetition ran off one edge, even with plenty of room on the OTHER
+  // axis). We repeat along the detected (dx,dy) direction as before —
+  // that's the "primary" axis — but once a repetition there no longer
+  // fits, instead of giving up entirely we shift the whole tile over
+  // along the PERPENDICULAR axis (a new "column"/"row") and keep
+  // repeating along the primary axis again from that new offset, just
+  // like the manual columns in the reference screenshot.
+  const primaryIsVertical = Math.abs(pattern.repeatDyMm) >= Math.abs(pattern.repeatDxMm);
 
+  // Bounding box of the demonstrated tile itself (cycle 0), used to size
+  // the perpendicular step between columns/rows.
+  let tileMinX = Infinity, tileMaxX = -Infinity, tileMinY = Infinity, tileMaxY = -Infinity;
+  for (const slot of pattern.slots) {
+    const shape = computeOrientedShape(slot.outer, slot.rotationDeg);
+    const poly = translatePoints(shape.points, slot.dxMm, slot.dyMm);
+    for (const p of poly) {
+      tileMinX = Math.min(tileMinX, p.x);
+      tileMaxX = Math.max(tileMaxX, p.x);
+      tileMinY = Math.min(tileMinY, p.y);
+      tileMaxY = Math.max(tileMaxY, p.y);
+    }
+  }
+  const tilePerpExtent = primaryIsVertical ? tileMaxX - tileMinX : tileMaxY - tileMinY;
+  const perpStep = tilePerpExtent + options.partGapMm;
+
+  const originX = existingInstances[0]?.xMm ?? 0;
+  const originY = existingInstances[0]?.yMm ?? 0;
+
+  let column = 0;
+  let cycleInColumn = existingCycles; // column 0 continues right after the demonstrated cycles
+  let consecutiveEmptyColumns = 0;
+  const MAX_COLUMNS = 500; // hard safety cap — never loop forever
+
+  outerLoop: while (column <= MAX_COLUMNS) {
     const cycleWouldHelp = pattern.slots.some((slot) => {
       const required = options.requiredQtyByPart.get(slot.takeoffPartId) ?? 0;
       const placed = placedQtyByPart.get(slot.takeoffPartId) ?? 0;
       return placed < required;
     });
     if (!cycleWouldHelp) break;
+
+    const perpOffsetX = primaryIsVertical ? perpStep * column : 0;
+    const perpOffsetY = primaryIsVertical ? 0 : perpStep * column;
+    const cycle = cycleInColumn;
 
     const cycleCandidates: { instance: GeneratedInstance; polygon: Point[] }[] = [];
     let cycleValid = true;
@@ -206,10 +242,8 @@ export function expandPatternOnSheet(
       if (alreadyPlaced >= required) continue;
 
       const rotationDeg = normalizeRotationDeg(slot.rotationDeg + pattern.repeatDRotationDeg * cycle);
-      const originX = existingInstances[0]?.xMm ?? 0;
-      const originY = existingInstances[0]?.yMm ?? 0;
-      const finalX = originX + slot.dxMm + pattern.repeatDxMm * cycle;
-      const finalY = originY + slot.dyMm + pattern.repeatDyMm * cycle;
+      const finalX = originX + perpOffsetX + slot.dxMm + pattern.repeatDxMm * cycle;
+      const finalY = originY + perpOffsetY + slot.dyMm + pattern.repeatDyMm * cycle;
 
       const shape = computeOrientedShape(slot.outer, rotationDeg);
       const polygon = translatePoints(shape.points, finalX, finalY);
@@ -260,14 +294,35 @@ export function expandPatternOnSheet(
       });
     }
 
-    if (!cycleValid) break;
+    if (!cycleValid) {
+      // This tile didn't fit at (column, cycleInColumn). If this was the
+      // very FIRST tile attempted in this column, the column itself has
+      // no room at all (off the sheet, or fully blocked) — count it as
+      // an "empty" column. Two empty columns in a row means we've swept
+      // past the usable area on the perpendicular axis too, so stop;
+      // otherwise, this column simply ran out of room along the primary
+      // axis (like hitting the bottom edge) — move on to the next
+      // column/row and keep going.
+      const wasFirstAttemptInColumn = cycleInColumn === (column === 0 ? existingCycles : 0);
+      if (wasFirstAttemptInColumn) {
+        consecutiveEmptyColumns++;
+        if (consecutiveEmptyColumns >= 2) break outerLoop;
+      } else {
+        consecutiveEmptyColumns = 0;
+      }
+      column++;
+      cycleInColumn = 0;
+      continue;
+    }
 
+    consecutiveEmptyColumns = 0;
     for (const c of cycleCandidates) {
       generated.push(c.instance);
       committedPolygons.push(c.polygon);
       placedQtyByPart.set(c.instance.takeoffPartId, (placedQtyByPart.get(c.instance.takeoffPartId) ?? 0) + 1);
     }
-    cyclesPlaced = i;
+    cyclesPlaced++;
+    cycleInColumn++;
   }
 
   const fullyApplied = cyclesPlaced >= cyclesNeeded;
