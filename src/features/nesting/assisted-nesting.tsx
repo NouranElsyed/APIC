@@ -414,14 +414,57 @@ export function AssistedNestingCanvas({
       activeSheetConfig.partGapMm,
     );
 
-    const polygon = translatePoints(shape.points, projected.x, projected.y);
+    // Exact-geometry refinement (fixes: non-rectangular parts — triangles,
+    // cut corners — stopped far short of the real 25mm gap because the
+    // projection above only reasons about bounding boxes, and a shape's
+    // bbox is bigger than its real outline). A bbox-valid position is
+    // ALWAYS also exact-valid (the real outline sits inside its own bbox,
+    // so if bboxes already clear the gap, the real outlines clear it by
+    // at least as much) — so `projected` is a safe, if overly cautious,
+    // starting point. We slide from there back toward the cursor's raw
+    // desired position, using the REAL outline against the REAL
+    // committed outlines, and keep the closest point that's still
+    // actually valid.
+    function isExactlyValid(originX: number, originY: number): boolean {
+      const poly = translatePoints(shape.points, originX, originY);
+      if (!boundsContain(poly, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) return false;
+      for (const c of committedPolygons) {
+        if (polygonsOverlap(poly, c.polygon)) return false;
+        if (activeSheetConfig.partGapMm > 0 && polygonsMinDistance(poly, c.polygon) < activeSheetConfig.partGapMm - 1e-6) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    let refinedX = projected.x;
+    let refinedY = projected.y;
+    if (projected.fits) {
+      const dx = rawOriginX - projected.x;
+      const dy = rawOriginY - projected.y;
+      if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+        // Binary search along the straight line from the safe bbox
+        // position (t=0) toward the raw cursor position (t=1) for the
+        // largest t that's still exactly valid.
+        let lo = 0;
+        let hi = 1;
+        for (let iter = 0; iter < 16; iter++) {
+          const mid = (lo + hi) / 2;
+          if (isExactlyValid(projected.x + dx * mid, projected.y + dy * mid)) {
+            lo = mid;
+          } else {
+            hi = mid;
+          }
+        }
+        refinedX = projected.x + dx * lo;
+        refinedY = projected.y + dy * lo;
+      }
+    }
+
+    const polygon = translatePoints(shape.points, refinedX, refinedY);
 
     // Exact (non-bbox) re-check for the actual invalid-state indicator
-    // shown to the user and used to gate the click. The projection above
-    // is a bounding-box approximation (matches how the automatic engine
-    // itself packs parts); this final check uses the real outline and the
-    // real per-part gap distance, so it's the source of truth for whether
-    // a click may commit here.
+    // shown to the user and used to gate the click.
     let reason: InvalidReason = null;
     if (!projected.fits || !boundsContain(polygon, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
       reason = "CROSSES_MARGIN";
@@ -447,7 +490,7 @@ export function AssistedNestingCanvas({
       }
     }
 
-    return { polygon, xMm: projected.x, yMm: projected.y, rotationDeg: ghostRotation, reason, part };
+    return { polygon, xMm: refinedX, yMm: refinedY, rotationDeg: ghostRotation, reason, part };
   }, [placing, cursor, selectedPartId, ghostRotation, partsById, bounds, committedPolygons, committedBoxes, activeSheetConfig.partGapMm, replacingInstanceId, requiredQtyByPart, placedQtyByPart]);
 
   // ---- pattern detection ---------------------------------------------------
