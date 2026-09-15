@@ -229,6 +229,103 @@ interface PlacementAttempt {
   polygon: Point[];
 }
 
+// ---------------------------------------------------------------------------
+// Phase: FIRST VALID -> BEST VALID
+// ---------------------------------------------------------------------------
+// A lightweight, LOCAL placement-quality heuristic — deliberately NOT the
+// full `scoreSheets()` global objective (that would mean rebuilding/scoring
+// an entire multi-sheet layout per candidate, i.e. O(n^4)-ish blowup for no
+// benefit). This only needs to rank candidates for ONE part on ONE sheet
+// against each other, so it looks at exactly the things that differ between
+// candidates: how much new sheet area the candidate pulls into use, and how
+// snugly it sits against what's already there.
+//
+// Bounding boxes are used here deliberately (Phase 7 allows bbox-based
+// SCORING heuristics — only final collision/gap validation must stay exact
+// polygon geometry, which happens before this function is ever called).
+interface ScoredCandidate extends PlacementAttempt {
+  score: number;
+  candidateIndex: number;
+}
+
+function unionBBox(a: BoundingBox | null, b: BoundingBox): BoundingBox {
+  if (!a) return b;
+  const minX = Math.min(a.minX, b.minX);
+  const minY = Math.min(a.minY, b.minY);
+  const maxX = Math.max(a.maxX, b.maxX);
+  const maxY = Math.max(a.maxY, b.maxY);
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function occupiedBBoxArea(b: BoundingBox | null): number {
+  if (!b) return 0;
+  return Math.max(0, b.width) * Math.max(0, b.height);
+}
+
+/**
+ * How much of the candidate's edges "hug" something already fixed — the
+ * sheet boundary or another placed part's bounding box — within the
+ * required gap. A candidate that snugs up against existing material
+ * leaves the remaining free area more contiguous (better future-fit,
+ * less fragmentation); a candidate floating in open space with the same
+ * bounding-box growth doesn't.
+ */
+function contactLength(candidate: BoundingBox, sheet: WorkingSheet, obstacleBoxes: BoundingBox[], gapMm: number): number {
+  const eps = 1e-6;
+  const tol = gapMm + eps;
+  const near = (a: number, b: number) => Math.abs(a - b) <= tol;
+  let total = 0;
+
+  if (near(candidate.minX, sheet.minX)) total += candidate.height;
+  if (near(candidate.maxX, sheet.maxX)) total += candidate.height;
+  if (near(candidate.minY, sheet.minY)) total += candidate.width;
+  if (near(candidate.maxY, sheet.maxY)) total += candidate.width;
+
+  for (const ob of obstacleBoxes) {
+    const yOverlap = Math.min(candidate.maxY, ob.maxY) - Math.max(candidate.minY, ob.minY);
+    if (yOverlap > 0 && (near(candidate.minX, ob.maxX) || near(candidate.maxX, ob.minX))) {
+      total += yOverlap;
+    }
+    const xOverlap = Math.min(candidate.maxX, ob.maxX) - Math.max(candidate.minX, ob.minX);
+    if (xOverlap > 0 && (near(candidate.minY, ob.maxY) || near(candidate.maxY, ob.minY))) {
+      total += xOverlap;
+    }
+  }
+  return total;
+}
+
+/**
+ * Lower is better. `growth` (mm^2, how much bigger the sheet's overall
+ * occupied bounding box becomes) is the dominant term — it's what
+ * "compactness" / "incremental bounding-box growth" (Phase 4 A/B)
+ * actually means. `contactLength` (mm) is converted to a comparable
+ * area-ish unit via `contactScale`, then subtracted — snugger placements
+ * score better for the same growth.
+ *
+ * `contactScale` MUST be a fixed value shared across every candidate
+ * being compared in one `findBestPlacement` call (including every
+ * rotation) — NOT derived from the candidate's own bounding box. Using a
+ * candidate-dependent scale (e.g. that candidate's own avgDim) creates a
+ * perverse bias: a WORSE rotation with a genuinely larger bounding box
+ * would earn a proportionally larger "contact credit" simply for being
+ * bigger, even though corner-touching happens for basically any
+ * rotation. Using the part's true (rotation-invariant) area instead
+ * keeps the comparison fair across rotations of the same part.
+ */
+function computePlacementScore(
+  candidateBBox: BoundingBox,
+  occupiedBefore: BoundingBox | null,
+  sheet: WorkingSheet,
+  obstacleBoxes: BoundingBox[],
+  gapMm: number,
+  contactScale: number,
+): number {
+  const occupiedAfter = unionBBox(occupiedBefore, candidateBBox);
+  const growth = occupiedBBoxArea(occupiedAfter) - occupiedBBoxArea(occupiedBefore);
+  const contact = contactLength(candidateBBox, sheet, obstacleBoxes, gapMm);
+  return growth - contact * contactScale;
+}
+
 function findBestPlacement(
   instance: OptimizerPartInstance,
   sheet: WorkingSheet,
@@ -238,7 +335,37 @@ function findBestPlacement(
 ): PlacementAttempt | null {
   if (usableWidth(sheet) <= 0 || usableHeight(sheet) <= 0) return null;
 
-  let best: PlacementAttempt | null = null;
+  // Occupied bounding box BEFORE this part is placed — the baseline every
+  // candidate's incremental growth is measured against. Cheap: bounded by
+  // the (already capped) number of placements on this sheet.
+  let occupiedBefore: BoundingBox | null = null;
+  const obstacleBoxes: BoundingBox[] = new Array(sheet.placements.length);
+  for (let i = 0; i < sheet.placements.length; i++) {
+    const p = sheet.placements[i];
+    const box: BoundingBox = {
+      minX: p.xMm,
+      minY: p.yMm,
+      maxX: p.xMm + p.widthMm,
+      maxY: p.yMm + p.heightMm,
+      width: p.widthMm,
+      height: p.heightMm,
+    };
+    obstacleBoxes[i] = box;
+    occupiedBefore = unionBBox(occupiedBefore, box);
+  }
+
+  // Fixed once per part (true polygon area is rotation-invariant), so
+  // every rotation candidate is scored on a level playing field — see
+  // the contract note on computePlacementScore above.
+  const contactScale = Math.sqrt(Math.max(1, instance.areaSqm * 1_000_000));
+
+  // Phase: FIRST VALID -> BEST VALID. Every valid candidate, across every
+  // rotation, is scored; we no longer stop at the first one that passes
+  // geometry validation. `candidateIndex` gives a stable, deterministic
+  // tie-break (Phase 4-F) that doesn't depend on floating-point score
+  // comparisons when two candidates are effectively equal.
+  let candidateIndex = 0;
+  let best: ScoredCandidate | null = null;
 
   for (const rotation of rotations.get(instance)) {
     const shape = computeOrientedShape(instance.outer, rotation);
@@ -247,11 +374,10 @@ function findBestPlacement(
     const candidates = generateCandidateOrigins(shape.width, shape.height, sheet, config.partGapMm, maxCandidates);
 
     for (const c of candidates) {
-      if (best && (c.y > best.y + 1e-9 || (Math.abs(c.y - best.y) < 1e-9 && c.x >= best.x))) break;
-
       rotations.recordEvaluation();
       const polygon = translatePoints(shape.points, c.x, c.y);
 
+      // ---- exact geometry validation (unchanged from before) ----------
       if (!boundsContain(polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)) continue;
 
       const candidateBBox: BoundingBox = {
@@ -265,15 +391,7 @@ function findBestPlacement(
 
       let polygonCollision = false;
       for (let i = 0; i < sheet.placements.length; i++) {
-        const p = sheet.placements[i];
-        const existingBBox: BoundingBox = {
-          minX: p.xMm,
-          minY: p.yMm,
-          maxX: p.xMm + p.widthMm,
-          maxY: p.yMm + p.heightMm,
-          width: p.widthMm,
-          height: p.heightMm,
-        };
+        const existingBBox = obstacleBoxes[i];
         // Broad-phase: bbox expanded by the required gap. A candidate
         // whose bbox doesn't even come within `gap` of this part's bbox
         // can't possibly violate the gap either, so skip the expensive
@@ -293,15 +411,10 @@ function findBestPlacement(
           polygonCollision = true;
           break;
         }
-        // BUGFIX: the required gap was previously never actually
-        // verified here — `gap` was only ever used as an offset when
-        // GENERATING candidate origins near existing vertices, so a
-        // candidate reached via a different code path (e.g. the sheet's
-        // own corner, or a vertex-relative candidate for a DIFFERENT
-        // neighbor) could land closer than `partGapMm` to this part with
-        // nothing rejecting it. Exact (non-bbox) distance, so a
-        // non-rectangular outline's real clearance is measured, not its
-        // bounding box's.
+        // The required gap is verified with EXACT polygon-to-polygon
+        // distance (not the bbox above, which is only a broad-phase
+        // pre-filter) — a non-rectangular outline's real clearance is
+        // what gets measured, not its bounding box's.
         if (config.partGapMm > 0 && polygonsMinDistance(polygon, sheet.polygons[i]) < config.partGapMm - 1e-6) {
           polygonCollision = true;
           break;
@@ -309,12 +422,45 @@ function findBestPlacement(
       }
       if (polygonCollision) continue;
 
-      best = { x: c.x, y: c.y, rotationDeg: rotation, width: shape.width, height: shape.height, polygon };
+      // ---- candidate is valid: score it, don't return early -----------
+      const score = computePlacementScore(candidateBBox, occupiedBefore, sheet, obstacleBoxes, config.partGapMm, contactScale);
+      const scored: ScoredCandidate = {
+        x: c.x,
+        y: c.y,
+        rotationDeg: rotation,
+        width: shape.width,
+        height: shape.height,
+        polygon,
+        score,
+        candidateIndex: candidateIndex++,
+      };
+
+      if (!best || isBetterCandidate(scored, best)) {
+        best = scored;
+      }
     }
   }
 
   return best;
 }
+
+/**
+ * Deterministic comparison used to pick the winning candidate. Ties within
+ * a small epsilon fall through to the fixed rule order from Phase 4-F:
+ * lower Y, then lower X, then lower rotation, then stable candidate index.
+ * No randomness anywhere in this comparison.
+ */
+function isBetterCandidate(a: ScoredCandidate, b: ScoredCandidate): boolean {
+  const SCORE_EPS = 1e-6;
+  if (a.score < b.score - SCORE_EPS) return true;
+  if (a.score > b.score + SCORE_EPS) return false;
+
+  if (Math.abs(a.y - b.y) > 1e-9) return a.y < b.y;
+  if (Math.abs(a.x - b.x) > 1e-9) return a.x < b.x;
+  if (a.rotationDeg !== b.rotationDeg) return a.rotationDeg < b.rotationDeg;
+  return a.candidateIndex < b.candidateIndex;
+}
+
 
 function commitPlacement(sheet: WorkingSheet, instance: OptimizerPartInstance, attempt: PlacementAttempt): void {
   sheet.placements.push({

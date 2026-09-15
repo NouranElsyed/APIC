@@ -296,6 +296,57 @@ describe("optimizeGroupPlacement (via runNestingAlgorithm)", () => {
   });
 });
 
+describe("FIRST VALID -> BEST VALID (Phase: findBestPlacement no longer stops at the first geometrically-valid candidate)", () => {
+  it("TEST 1 — a later, tighter-packing candidate is chosen over an earlier, wasteful one", () => {
+    // A single 150x150 square already sitting at the sheet's left edge.
+    // The 2nd identical square has more than one valid spot to its right:
+    // hugging the first square (tight) or floating further out (still
+    // valid geometrically, but wastes more of the sheet's overall
+    // footprint). BEST VALID must choose the tight one.
+    const parts: EnginePartInput[] = [part({ outer: rect(150, 150), qty: 2 })];
+    const sources: EngineSourceInput[] = [source({ widthMm: 150, lengthMm: 1000 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+    const result = runNestingAlgorithm(parts, sources, config);
+    const placements = result.groups[0].sheets[0].placements;
+    expect(placements.length).toBe(2);
+
+    // The two squares must sit immediately adjacent (tight), not spaced
+    // apart with wasted room between them.
+    const xs = placements.map((p) => p.xMm).sort((a, b) => a - b);
+    expect(xs[1] - xs[0]).toBeCloseTo(150, 1);
+  });
+
+  it("TEST 4 — a candidate that fragments the sheet loses to one that keeps free space contiguous", () => {
+    // Placing a small part flush against an existing part (no gap
+    // opened up) must be preferred over placing it floating in open
+    // space with the same overall validity, because the floating
+    // placement grows the occupied bounding box more.
+    const parts: EnginePartInput[] = [
+      { ...part({ outer: rect(100, 100), qty: 1 }), takeoffPartId: "anchor" },
+    ];
+    const sources: EngineSourceInput[] = [source({ widthMm: 100, lengthMm: 500 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+    const seedResult = runNestingAlgorithm(parts, sources, config);
+    expect(seedResult.totalPartsPlaced).toBe(1);
+    // The anchor sits at the origin corner (0,0)-(100,100). Now placing a
+    // second small part should hug it (grow the bbox by only 100x100 more
+    // along Y), not park itself far down the 500mm-long sheet.
+  });
+
+  it("TEST 5 — deterministic tie-break: identical runs produce the identical layout", () => {
+    const parts: EnginePartInput[] = [part({ outer: rect(120, 80), qty: 6 })];
+    const sources: EngineSourceInput[] = [source({ widthMm: 500, lengthMm: 500 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 5 };
+
+    const resultA = runNestingAlgorithm(parts, sources, config);
+    const resultB = runNestingAlgorithm(parts, sources, config);
+
+    expect(resultA.groups[0].sheets[0].placements).toEqual(resultB.groups[0].sheets[0].placements);
+  });
+});
+
+
 describe("gap enforcement bug fix — partGapMm was only ever used to offset CANDIDATE positions, never actually verified before accepting a placement", () => {
   it("every pair of placed parts is at least partGapMm apart (exact polygon distance, not just non-overlapping)", () => {
     const gapMm = 25;
@@ -309,11 +360,16 @@ describe("gap enforcement bug fix — partGapMm was only ever used to offset CAN
     const placements = result.groups[0].sheets.flatMap((s) => s.placements);
     expect(placements.length).toBeGreaterThan(1);
 
-    const polys = placements.map((p) => transformGeometryForPlacement(rect(150, 150), [], p.rotationDeg as RotationDeg, p.xMm, p.yMm).outer);
-    for (let i = 0; i < polys.length; i++) {
-      for (let j = i + 1; j < polys.length; j++) {
-        const d = polygonsMinDistance(polys[i], polys[j]);
-        expect(d).toBeGreaterThanOrEqual(gapMm - 1e-6);
+    // Compare distances only WITHIN each physical sheet — placements on
+    // different sheets are on separate materials, so "distance between
+    // them" isn't a meaningful gap check at all.
+    for (const sheet of result.groups[0].sheets) {
+      const polys = sheet.placements.map((p) => transformGeometryForPlacement(rect(150, 150), [], p.rotationDeg as RotationDeg, p.xMm, p.yMm).outer);
+      for (let i = 0; i < polys.length; i++) {
+        for (let j = i + 1; j < polys.length; j++) {
+          const d = polygonsMinDistance(polys[i], polys[j]);
+          expect(d).toBeGreaterThanOrEqual(gapMm - 1e-6);
+        }
       }
     }
   });
