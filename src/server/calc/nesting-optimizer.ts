@@ -35,6 +35,16 @@ export interface OptimizerOptions {
   randomSeed?: number;
   rotationStepDeg?: number;
   maxRotationCandidatesPerPart?: number;
+  /**
+   * Phase 2 — MULTI-START + TIME-BUDGETED GLOBAL SEARCH.
+   *
+   * Number of additional, seeded, randomized/perturbed construction starts
+   * generated on top of the 8 fixed strategies from buildStrategies(). Each
+   * one is a genuinely different complete part ordering (not a duplicate of
+   * the fixed 8), explored subject to the construction time budget below.
+   * Bounded and deterministic: same seed => same set of extra starts.
+   */
+  maxExtraRandomStarts?: number;
 }
 
 const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
@@ -45,7 +55,15 @@ const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
   randomSeed: 20260825,
   rotationStepDeg: 5,
   maxRotationCandidatesPerPart: 48,
+  maxExtraRandomStarts: 16,
 };
+
+// Fraction of the total time budget reserved for generating/evaluating
+// complete candidate layouts (multi-start construction) before local
+// improvement / ruin-and-recreate get the remainder. Keeps a handful of
+// early, expensive strategies from starving every later start, and keeps
+// later starts from starving improvement of the winner entirely.
+const CONSTRUCTION_BUDGET_FRACTION = 0.6;
 
 export interface OptimizedSheet {
   sourceSheetId: string;
@@ -77,6 +95,12 @@ export interface OptimizationMetrics {
   sheetsUsed: number;
   utilizationPercent: number;
   scrapAreaSqm: number;
+  /** Phase 2 — total complete candidate layouts constructed (fixed strategies + extra seeded/perturbed starts). */
+  startsEvaluated: number;
+  /** Phase 2 — name of the construction strategy/start that produced the winning candidate layout. */
+  bestStart: string;
+  /** Phase 2 — total placement candidates evaluated across every rotation/origin of every start (alias of candidatesEvaluated, kept explicit per multi-start reporting). */
+  totalCandidateLayouts: number;
 }
 
 export const SCORE_WEIGHTS = {
@@ -182,6 +206,47 @@ function couldEverFit(instance: OptimizerPartInstance, source: EngineSourceInput
   return false;
 }
 
+/**
+ * Fix 2 — bounded candidate ORIGIN sampling (deliberately not exhaustive:
+ * generateCandidateOrigins can produce far more raw origins than
+ * `maxCandidatesPerPart`, and evaluating every one of them per part per
+ * rotation per sheet would be the real performance cost this cap exists to
+ * avoid). This is explicitly a BOUNDED SAMPLE of the candidate space, not
+ * "all candidates" — findBestPlacement() picks the BEST VALID candidate
+ * among exactly the origins this function returns, no more.
+ *
+ * Selection strategy (deterministic, no randomness):
+ *  - keep the best/lowest-Y-then-X origins first — these are typically the
+ *    strongest compactness picks and a cheap, reasonable prior to keep;
+ *  - fill the rest of the budget with an evenly-spaced deterministic STRIDE
+ *    sample across the remaining sorted origins, so later spatial regions
+ *    (later Y bands, later X columns) aren't systematically excluded just
+ *    because the cap was reached before the sort got to them.
+ * Both parts are pure functions of the (already deterministic) sorted
+ * input list, so the same geometry always yields the same bounded set.
+ */
+function selectBoundedCandidateOrigins(sorted: Point[], cap: number): Point[] {
+  if (sorted.length <= cap) return sorted;
+
+  const PRESERVE_FRACTION = 0.5;
+  const preserveCount = Math.min(sorted.length, Math.max(1, Math.round(cap * PRESERVE_FRACTION)));
+  const selected: Point[] = sorted.slice(0, preserveCount);
+
+  const remaining = sorted.slice(preserveCount);
+  const strideBudget = cap - selected.length;
+  if (strideBudget > 0 && remaining.length > 0) {
+    const stride = remaining.length / strideBudget;
+    const seenIdx = new Set<number>();
+    for (let i = 0; i < strideBudget; i++) {
+      const idx = Math.min(remaining.length - 1, Math.floor(i * stride));
+      if (seenIdx.has(idx)) continue;
+      seenIdx.add(idx);
+      selected.push(remaining[idx]);
+    }
+  }
+  return selected;
+}
+
 function generateCandidateOrigins(
   shapeWidth: number,
   shapeHeight: number,
@@ -217,7 +282,11 @@ function generateCandidateOrigins(
   }
 
   filtered.sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
-  return filtered.slice(0, cap);
+  // Bounded candidate sampling (Fix 2) — see selectBoundedCandidateOrigins.
+  // This is intentionally BEST VALID among a bounded, spatially-diverse
+  // SAMPLE of generated origins, not BEST VALID among literally every
+  // origin generateCandidateOrigins() could produce.
+  return selectBoundedCandidateOrigins(filtered, cap);
 }
 
 interface PlacementAttempt {
@@ -227,6 +296,17 @@ interface PlacementAttempt {
   width: number;
   height: number;
   polygon: Point[];
+  /**
+   * The local placement-quality score (see computePlacementScore below;
+   * lower is better) that findBestPlacement() used to pick this candidate
+   * among every valid candidate/rotation it evaluated. Exposed here (Fix 1)
+   * so callers that compare PlacementAttempts gathered from MULTIPLE
+   * separate findBestPlacement() calls — e.g. localImprovement() picking
+   * the best relocation sheet — can rank them with the exact same
+   * comparison rule findBestPlacement() itself uses internally, instead of
+   * a second, weaker ad hoc comparison.
+   */
+  score: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +324,6 @@ interface PlacementAttempt {
 // SCORING heuristics — only final collision/gap validation must stay exact
 // polygon geometry, which happens before this function is ever called).
 interface ScoredCandidate extends PlacementAttempt {
-  score: number;
   candidateIndex: number;
 }
 
@@ -445,19 +524,50 @@ function findBestPlacement(
 }
 
 /**
- * Deterministic comparison used to pick the winning candidate. Ties within
- * a small epsilon fall through to the fixed rule order from Phase 4-F:
- * lower Y, then lower X, then lower rotation, then stable candidate index.
- * No randomness anywhere in this comparison.
+ * Fix 1 — the SINGLE shared placement-quality ranking rule (Phase 4-F,
+ * unified across findBestPlacement's own within-call comparison AND
+ * localImprovement's cross-sheet relocation comparison — see below): lower
+ * score wins; ties fall through to lower Y, then lower X, then lower
+ * rotation. Returns <0 if `a` is strictly better, >0 if `b` is strictly
+ * better, 0 if the two are equal on every one of these fields.
+ *
+ * Deliberately does NOT include a final index/id tie-break — that part of
+ * "stable, deterministic tie-break" is left to each caller, because what a
+ * stable final tie-break should be depends on the caller's search space:
+ * within one findBestPlacement() call it's the candidate's generation
+ * order (candidateIndex); across several separate findBestPlacement()
+ * calls (one per sheet) it's simply "first sheet evaluated wins a tie",
+ * which naturally falls out of iterating sheets in order and only
+ * replacing the running best on a STRICT improvement (cmp < 0) — no
+ * separate tie-break value needs to be threaded through at all.
+ */
+function comparePlacementQuality(a: PlacementQuality, b: PlacementQuality): number {
+  const SCORE_EPS = 1e-6;
+  if (a.score < b.score - SCORE_EPS) return -1;
+  if (a.score > b.score + SCORE_EPS) return 1;
+  if (Math.abs(a.y - b.y) > 1e-9) return a.y - b.y;
+  if (Math.abs(a.x - b.x) > 1e-9) return a.x - b.x;
+  if (a.rotationDeg !== b.rotationDeg) return a.rotationDeg - b.rotationDeg;
+  return 0;
+}
+
+interface PlacementQuality {
+  score: number;
+  x: number;
+  y: number;
+  rotationDeg: RotationDeg;
+}
+
+/**
+ * Deterministic comparison used to pick the winning candidate WITHIN one
+ * findBestPlacement() call. Ties within comparePlacementQuality's epsilon
+ * fall through to the stable candidateIndex (Phase 4-F) — the one piece of
+ * tie-break that's specific to comparing candidates generated in the same
+ * call. No randomness anywhere in this comparison.
  */
 function isBetterCandidate(a: ScoredCandidate, b: ScoredCandidate): boolean {
-  const SCORE_EPS = 1e-6;
-  if (a.score < b.score - SCORE_EPS) return true;
-  if (a.score > b.score + SCORE_EPS) return false;
-
-  if (Math.abs(a.y - b.y) > 1e-9) return a.y < b.y;
-  if (Math.abs(a.x - b.x) > 1e-9) return a.x < b.x;
-  if (a.rotationDeg !== b.rotationDeg) return a.rotationDeg < b.rotationDeg;
+  const cmp = comparePlacementQuality(a, b);
+  if (cmp !== 0) return cmp < 0;
   return a.candidateIndex < b.candidateIndex;
 }
 
@@ -676,6 +786,89 @@ function buildStrategies(instances: OptimizerPartInstance[], seed: number): { na
   ];
 }
 
+/**
+ * Phase 2 — bounded, seeded perturbation of an existing part order: a fixed
+ * number of random pairwise swaps applied on top of one of the 8 heuristic
+ * orders. This is what makes the extra multi-start layouts "meaningfully
+ * different, not merely the same deterministic strategy repeated" (they
+ * start from a real heuristic but explore nearby orderings), while staying
+ * bounded (fixed swap count, no unbounded loop) and fully deterministic
+ * given the same rng.
+ */
+function perturbOrder<T>(order: T[], rng: () => number, swapCount: number): T[] {
+  const arr = order.slice();
+  if (arr.length < 2) return arr;
+  for (let i = 0; i < swapCount; i++) {
+    const a = Math.floor(rng() * arr.length);
+    const b = Math.floor(rng() * arr.length);
+    [arr[a], arr[b]] = [arr[b], arr[a]];
+  }
+  return arr;
+}
+
+/**
+ * Phase 2 — additional seeded/randomized/perturbed construction starts on
+ * top of the 8 fixed strategies from buildStrategies(). Each extra start
+ * takes one of the fixed heuristic orders as a base and applies a bounded,
+ * seeded perturbation, so it explores a genuinely different complete
+ * ordering rather than duplicating a fixed strategy outright. `count` is a
+ * hard cap (bounded, no unbounded loop); the caller-side construction time
+ * budget is what actually decides how many of these get evaluated.
+ */
+function buildExtraStartStrategies(
+  instances: OptimizerPartInstance[],
+  baseStrategies: { name: string; order: OptimizerPartInstance[] }[],
+  seed: number,
+  count: number,
+): { name: string; order: OptimizerPartInstance[] }[] {
+  if (count <= 0 || instances.length < 2 || baseStrategies.length === 0) return [];
+  const swapBase = Math.max(1, Math.floor(instances.length * 0.15));
+  const extra: { name: string; order: OptimizerPartInstance[] }[] = [];
+  for (let i = 0; i < count; i++) {
+    // Distinct, deterministic seed per extra start — "different construction
+    // seeds" from the spec — offset well clear of the seeds buildStrategies()
+    // already uses (seed+1, seed+2) so the two never collide/correlate.
+    const rng = mulberry32(seed + 9001 + i * 97);
+    const base = baseStrategies[i % baseStrategies.length];
+    const swaps = Math.max(1, Math.min(instances.length, swapBase + (i % 3)));
+    extra.push({
+      name: `multistart-${i}-perturbed-${base.name}`,
+      order: perturbOrder(base.order, rng, swaps),
+    });
+  }
+  return extra;
+}
+
+export interface LayoutQuality {
+  placedTotal: number;
+  score: number;
+}
+
+/**
+ * Phase 2 — global candidate-layout comparison (spec item 5).
+ *
+ * A layout placing fewer required instances must NEVER beat one placing
+ * more, no matter how much better its raw scoreLayout() value is — this is
+ * what stops an empty/partial candidate from looking artificially good
+ * because of the sheet-count penalty term inside scoreLayout(). Only once
+ * placed counts are equal does the (lower-is-better) global score decide;
+ * ties beyond that fall through to whatever deterministic order the caller
+ * iterates candidates in (fixed strategy list order, so "first found" is a
+ * stable, reproducible tie-break).
+ *
+ * Exported (in addition to being used internally) so it can be unit-tested
+ * directly against hand-built placed-count/score pairs.
+ */
+export function isBetterLayout(candidate: LayoutQuality, current: LayoutQuality | null): boolean {
+  if (!current) return true;
+  if (candidate.placedTotal !== current.placedTotal) return candidate.placedTotal > current.placedTotal;
+  return candidate.score < current.score - 1e-6;
+}
+
+function totalPlaced(sheets: WorkingSheet[]): number {
+  return sheets.reduce((sum, s) => sum + s.placements.length, 0);
+}
+
 function localImprovement(
   sheets: WorkingSheet[],
   areaByPartId: Map<string, number>,
@@ -685,10 +878,11 @@ function localImprovement(
   deadline: number,
   rng: () => number,
   rotations: RotationCandidateCache,
-): { sheets: WorkingSheet[]; moves: number } {
+): { sheets: WorkingSheet[]; moves: number; trialsEvaluated: number } {
   let working = cloneLayout(sheets);
   let bestScore = scoreLayout(working, areaByPartId);
   let moves = 0;
+  let trialsEvaluated = 0;
 
   let targets: { sheetIdx: number; placementIdx: number }[] = [];
   working.forEach((sheet, sheetIdx) => {
@@ -698,6 +892,7 @@ function localImprovement(
 
   for (const t of targets) {
     if (Date.now() > deadline) break;
+    trialsEvaluated++;
 
     const trial = cloneLayout(working);
     const originSheet = trial[t.sheetIdx];
@@ -717,11 +912,21 @@ function localImprovement(
       outer: originalOuter,
     };
 
+    // Fix 1 — compare relocation candidates gathered from MULTIPLE separate
+    // findBestPlacement() calls (one per candidate sheet) using the exact
+    // same placement-quality ranking rule findBestPlacement() itself uses
+    // internally (comparePlacementQuality: score, then Y, then X, then
+    // rotation), instead of the old "lower Y, then lower X" shortcut that
+    // could discard a genuinely better-scored placement just because it
+    // sat slightly higher on a different sheet. Only replacing `relocated`
+    // on a STRICT improvement (cmp < 0) — combined with iterating sheets in
+    // their fixed order — makes "first sheet evaluated wins a tie" the
+    // deterministic tie-break, with no extra bookkeeping required.
     let relocated: { sheetIdx: number; attempt: PlacementAttempt } | null = null;
     trial.forEach((candidateSheet, sIdx) => {
       const attempt = findBestPlacement(asInstance, candidateSheet, config, maxCandidates, rotations);
       if (!attempt) return;
-      if (!relocated || attempt.y < relocated.attempt.y - 1e-9 || (Math.abs(attempt.y - relocated.attempt.y) < 1e-9 && attempt.x < relocated.attempt.x)) {
+      if (!relocated || comparePlacementQuality(attempt, relocated.attempt) < 0) {
         relocated = { sheetIdx: sIdx, attempt };
       }
     });
@@ -743,7 +948,7 @@ function localImprovement(
     }
   }
 
-  return { sheets: working, moves };
+  return { sheets: working, moves, trialsEvaluated };
 }
 
 function ruinAndRecreate(
@@ -945,6 +1150,9 @@ export function packRemainingOntoSeededSheet(
         sheetsUsed: 0,
         utilizationPercent: 0,
         scrapAreaSqm: 0,
+        startsEvaluated: 0,
+        bestStart: "none",
+        totalCandidateLayouts: 0,
       },
     };
   }
@@ -966,6 +1174,9 @@ export function packRemainingOntoSeededSheet(
       candidatesEvaluated: rotations.evaluationCount,
       usedBaseline: false,
       rotationStepDeg: opts.rotationStepDeg,
+      startsEvaluated: 1,
+      bestStart: "seeded-sheet-pack",
+      totalCandidateLayouts: 1,
       ...summary,
     },
   };
@@ -1016,28 +1227,62 @@ export function optimizeGroupPlacement(
         candidatesEvaluated: rotations.evaluationCount,
         usedBaseline: false,
         rotationStepDeg: opts.rotationStepDeg,
+        startsEvaluated: 0,
+        bestStart: "none",
+        totalCandidateLayouts: 0,
         ...emptyMetrics,
       },
     };
   }
 
-  const strategies = buildStrategies(instances, opts.randomSeed);
+  // Phase 2 — MULTI-START + TIME-BUDGETED GLOBAL SEARCH.
+  //
+  // The 8 fixed strategies plus a bounded number of extra seeded/perturbed
+  // starts are all genuinely different complete part orderings. Each is
+  // constructed into a full layout and scored with the same GLOBAL
+  // scoreLayout() objective (never the local placement heuristic), and
+  // compared with isBetterLayout() so a layout that places MORE required
+  // instances always wins regardless of raw score (spec item 5).
+  const baseStrategies = buildStrategies(instances, opts.randomSeed);
+  const extraStrategies = buildExtraStartStrategies(instances, baseStrategies, opts.randomSeed, opts.maxExtraRandomStarts);
+  const strategies = [...baseStrategies, ...extraStrategies];
+
+  // Reserve a portion of the total time budget for construction (multi-start
+  // search); the remainder is left for local improvement + ruin/recreate on
+  // the winning candidate. Continuously re-checked (Date.now() per start),
+  // never a fixed/unbounded loop — a very small timeLimitMs simply means
+  // fewer starts run before this deadline is already in the past.
+  const constructionDeadline = Math.min(deadline, startedAt + Math.max(1, Math.floor(opts.timeLimitMs * CONSTRUCTION_BUDGET_FRACTION)));
 
   let best: ConstructResult | null = null;
-  let bestScore = Infinity;
+  let bestQuality: LayoutQuality | null = null;
+  let bestStartName = strategies[0]?.name ?? "none";
   let strategiesEvaluated = 0;
-  for (const strat of strategies) {
-    if (Date.now() > deadline) break;
+
+  for (let i = 0; i < strategies.length; i++) {
+    if (Date.now() > constructionDeadline) break;
+    const strat = strategies[i];
     const result = constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations);
     strategiesEvaluated++;
-    const score = scoreLayout(result.sheets, areaByPartId);
-    if (score < bestScore) {
-      bestScore = score;
+    const quality: LayoutQuality = {
+      placedTotal: totalPlaced(result.sheets),
+      score: scoreLayout(result.sheets, areaByPartId),
+    };
+    if (isBetterLayout(quality, bestQuality)) {
+      bestQuality = quality;
       best = result;
+      bestStartName = strat.name;
     }
   }
   if (!best) {
+    // Deadline was already exhausted before even the first start — fall
+    // back to a single guaranteed construction so a valid result is always
+    // returned (spec item 3 / TEST D: very small timeLimitMs must still
+    // terminate safely).
     best = constructLayout(strategies[0].order, rankedSources, config, opts.maxCandidatesPerPart, rotations);
+    bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId) };
+    bestStartName = strategies[0].name;
+    strategiesEvaluated++;
   }
 
   const rng = mulberry32(opts.randomSeed + 1000);
@@ -1070,6 +1315,9 @@ export function optimizeGroupPlacement(
       candidatesEvaluated: rotations.evaluationCount,
       usedBaseline: false,
       rotationStepDeg: opts.rotationStepDeg,
+      startsEvaluated: strategiesEvaluated,
+      bestStart: bestStartName,
+      totalCandidateLayouts: strategiesEvaluated + improved.trialsEvaluated + recreated.iterations,
       ...finalSummary,
     },
   };
