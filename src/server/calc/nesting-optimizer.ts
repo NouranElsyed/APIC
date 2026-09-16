@@ -108,6 +108,15 @@ export const SCORE_WEIGHTS = {
   scrapAreaWeight: 1_000,
   cavityAreaWeight: 50,
   utilizationBonusWeight: 10,
+  /**
+   * Phase 2A — conservative weight for the fragmentation/usable-space
+   * component (see computeFragmentationScore below). Deliberately smaller
+   * than BOTH scrapAreaWeight and cavityAreaWeight so this term can only
+   * ever act as a tie-breaker between layouts that are already close on
+   * sheet count/scrap/utilization — it must never be able to make a
+   * layout with meaningfully worse scrap or utilization look better.
+   */
+  fragmentationWeight: 20,
 };
 
 function mulberry32(seed: number): () => number {
@@ -674,6 +683,191 @@ function constructLayout(
   return { sheets, placedCountByPart, failureReasonByPart };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2A — GLOBAL LAYOUT QUALITY: fragmentation / usable-remaining-space.
+// ---------------------------------------------------------------------------
+// A small, bounded, deterministic addition to scoreSheets()'s global
+// objective (see SCORE_WEIGHTS.fragmentationWeight). scoreSheets() already
+// distinguishes layouts by sheet count / scrap area / cavity area /
+// utilization, but two layouts can tie on all of those while leaving very
+// differently-shaped leftover space: one contiguous open region is far more
+// useful for future parts than the same total area scattered across many
+// tiny slivers. This section adds that distinction WITHOUT touching exact
+// geometry validation (boundsContain/polygonsOverlap/polygonsMinDistance
+// remain completely untouched and authoritative) and WITHOUT any new
+// per-candidate recursive optimizer calls.
+//
+// Approach: rasterize each used sheet onto a FIXED-resolution occupancy
+// grid (bounded independent of part count or sheet size -- see
+// FRAGMENTATION_GRID_CELLS below), using placement BOUNDING BOXES only
+// (scoreSheets() only ever receives bbox placement data anyway, never exact
+// polygons -- this is consistent with the rest of this global heuristic).
+// Free cells are grouped into 4-connected regions with a simple bounded
+// flood fill (at most FRAGMENTATION_GRID_CELLS^2 cells, a small fixed
+// constant, regardless of how many parts are on the sheet). Two properties
+// of the free space are penalized:
+//   - SCATTERED area: free area that is NOT part of the single largest
+//     contiguous free region (many small disconnected leftovers instead of
+//     one usable pocket).
+//   - NARROW area: free area that sits in a region only one grid cell thick
+//     in either axis (thin unusable slivers/strips), even if that sliver
+//     happens to be the largest region.
+// Both are folded into one number, "fragmentationAreaSqm" -- physically
+// meaningful (an area, comparable in scale to scrapAreaSqm/cavityAreaSqm)
+// and always finite/non-NaN, including for an empty or fully-packed sheet.
+//
+// Future-fit note: this phase intentionally stops at geometry-only
+// fragmentation/usable-space scoring, exactly as the "if using future parts
+// is too invasive for this phase" fallback allows. Explicitly checking
+// whether representative REMAINING part instances could plausibly fit into
+// the surviving free regions (rather than just rewarding contiguity/width)
+// is a natural Phase 2B-style refinement on top of this same grid, deferred
+// for now.
+
+/** Bounded per-axis grid resolution -- fixed, independent of part/placement count or sheet size. */
+const FRAGMENTATION_GRID_CELLS = 20;
+
+interface FragmentationCellSpace {
+  cols: number;
+  rows: number;
+  cellWidthMm: number;
+  cellHeightMm: number;
+  occupied: Uint8Array; // length cols*rows, row-major
+}
+
+function buildOccupancyGrid(sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }): FragmentationCellSpace | null {
+  const lengthMm = sheet.lengthMm; // X axis, matches makeWorkingSheet's convention
+  const widthMm = sheet.widthMm; // Y axis
+  if (!(lengthMm > 0) || !(widthMm > 0)) return null;
+
+  const cols = FRAGMENTATION_GRID_CELLS;
+  const rows = FRAGMENTATION_GRID_CELLS;
+  const cellWidthMm = lengthMm / cols;
+  const cellHeightMm = widthMm / rows;
+  const occupied = new Uint8Array(cols * rows);
+
+  // Mark a cell occupied if its CENTER point falls inside any placement's
+  // bounding box -- a cheap, bounded (O(cells * placements)) heuristic
+  // pre-filter consistent with the rest of this scoring layer; this never
+  // substitutes for exact collision validation, which happens elsewhere.
+  for (let r = 0; r < rows; r++) {
+    const cy = (r + 0.5) * cellHeightMm;
+    for (let c = 0; c < cols; c++) {
+      const cx = (c + 0.5) * cellWidthMm;
+      for (const p of sheet.placements) {
+        if (cx >= p.xMm && cx <= p.xMm + p.widthMm && cy >= p.yMm && cy <= p.yMm + p.heightMm) {
+          occupied[r * cols + c] = 1;
+          break;
+        }
+      }
+    }
+  }
+
+  return { cols, rows, cellWidthMm, cellHeightMm, occupied };
+}
+
+/**
+ * Bounded 4-connected flood fill over the (fixed-size) free-cell grid.
+ * Returns one entry per connected free region: its cell count and its
+ * bounding extent in cells (used to detect narrow, one-cell-thick slivers).
+ * Cost is O(cols*rows), a small fixed constant (FRAGMENTATION_GRID_CELLS^2),
+ * never dependent on part/placement count.
+ */
+function findFreeRegions(grid: FragmentationCellSpace): { cells: number[]; extentCols: number; extentRows: number }[] {
+  const { cols, rows, occupied } = grid;
+  const visited = new Uint8Array(cols * rows);
+  const regions: { cells: number[]; extentCols: number; extentRows: number }[] = [];
+
+  for (let start = 0; start < cols * rows; start++) {
+    if (occupied[start] || visited[start]) continue;
+
+    const cells: number[] = [];
+    let minC = cols, maxC = -1, minR = rows, maxR = -1;
+    const stack = [start];
+    visited[start] = 1;
+
+    while (stack.length > 0) {
+      const idx = stack.pop()!;
+      cells.push(idx);
+      const r = Math.floor(idx / cols);
+      const c = idx % cols;
+      if (c < minC) minC = c;
+      if (c > maxC) maxC = c;
+      if (r < minR) minR = r;
+      if (r > maxR) maxR = r;
+
+      const neighbors = [
+        r > 0 ? idx - cols : -1,
+        r < rows - 1 ? idx + cols : -1,
+        c > 0 ? idx - 1 : -1,
+        c < cols - 1 ? idx + 1 : -1,
+      ];
+      for (const n of neighbors) {
+        if (n >= 0 && !occupied[n] && !visited[n]) {
+          visited[n] = 1;
+          stack.push(n);
+        }
+      }
+    }
+
+    regions.push({ cells, extentCols: maxC - minC + 1, extentRows: maxR - minR + 1 });
+  }
+
+  return regions;
+}
+
+/**
+ * Deterministic, bounded fragmentation/usable-space penalty for ONE sheet,
+ * in mm^2 (area units, directly comparable to scrapAreaSqm/cavityAreaSqm
+ * before weighting). 0 for an empty sheet, a fully-packed sheet, or any
+ * sheet whose free space forms a single non-narrow contiguous region.
+ * Always finite and never NaN.
+ */
+function computeFragmentationAreaSqm(sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }): number {
+  const grid = buildOccupancyGrid(sheet);
+  if (!grid) return 0;
+
+  const regions = findFreeRegions(grid);
+  if (regions.length === 0) return 0; // fully packed (or nothing free)
+
+  let largestCells = 0;
+  for (const region of regions) {
+    if (region.cells.length > largestCells) largestCells = region.cells.length;
+  }
+
+  // A cell belongs to "problematic" free area if its region either (a) is
+  // not the single largest free region (SCATTERED), or (b) is only one
+  // cell thick in either axis (NARROW) -- a thin strip is unusable for a
+  // future part regardless of its total area. Each free cell is counted at
+  // most once even if both conditions apply.
+  let problematicCells = 0;
+  for (const region of regions) {
+    const isNarrow = region.extentCols <= 1 || region.extentRows <= 1;
+    const isScattered = region.cells.length < largestCells;
+    if (isNarrow || isScattered) problematicCells += region.cells.length;
+  }
+
+  const cellAreaMm2 = grid.cellWidthMm * grid.cellHeightMm;
+  return problematicCells * cellAreaMm2;
+}
+
+/**
+ * Exported (Phase 2A) so it can be unit-tested directly against hand-built
+ * sheets, and reused by scoreSheets() below. Sums the per-sheet
+ * fragmentation area (mm^2) across every USED sheet in the layout and
+ * returns it in sqm, matching scrapAreaSqm/cavityAreaSqm's units.
+ */
+export function computeFragmentationScore(
+  sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
+): number {
+  const usedSheets = sheets.filter((s) => s.placements.length > 0);
+  let totalMm2 = 0;
+  for (const sheet of usedSheets) {
+    totalMm2 += computeFragmentationAreaSqm(sheet);
+  }
+  return totalMm2 / 1_000_000;
+}
+
 export function scoreSheets(
   sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
   areaByPartId: Map<string, number>,
@@ -695,12 +889,14 @@ export function scoreSheets(
 
   const scrapAreaSqm = Math.max(0, totalSheetAreaSqm - totalUsedAreaSqm);
   const utilizationPercent = totalSheetAreaSqm > 0 ? (totalUsedAreaSqm / totalSheetAreaSqm) * 100 : 0;
+  const fragmentationAreaSqm = computeFragmentationScore(sheets);
 
   return (
     usedSheets.length * SCORE_WEIGHTS.sheetCountPenalty +
     scrapAreaSqm * SCORE_WEIGHTS.scrapAreaWeight +
     cavityAreaSqm * SCORE_WEIGHTS.cavityAreaWeight -
-    utilizationPercent * SCORE_WEIGHTS.utilizationBonusWeight
+    utilizationPercent * SCORE_WEIGHTS.utilizationBonusWeight +
+    fragmentationAreaSqm * SCORE_WEIGHTS.fragmentationWeight
   );
 }
 

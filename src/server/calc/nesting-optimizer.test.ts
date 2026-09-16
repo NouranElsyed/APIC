@@ -9,8 +9,12 @@ import {
   makeWorkingSheet,
   RotationCandidateCache,
   selectBoundedCandidateOrigins,
+  computeFragmentationScore,
+  scoreSheets,
+  isBetterLayout,
   type OptimizerPartInstance,
 } from "./nesting-optimizer";
+import type { EnginePlacementResult } from "./nesting-engine";
 
 // ----------------------------------------------------------------------------
 // Shared helpers
@@ -603,6 +607,129 @@ describe("FIX 2 — bounded candidate origin sampling preserves spatial diversit
     const repeat = findBestPlacement(instance, sheet, config, smallCap, rotations);
     expect(repeat).toEqual(attempt);
   });
+});
+
+// ----------------------------------------------------------------------------
+// PHASE 2A — GLOBAL LAYOUT QUALITY: fragmentation / usable-remaining-space.
+// ----------------------------------------------------------------------------
+describe("PHASE 2A — computeFragmentationScore / scoreSheets fragmentation component", () => {
+  function p(id: string, x: number, y: number, w: number, h: number): EnginePlacementResult {
+    return { takeoffPartId: id, instanceNumber: 1, xMm: x, yMm: y, rotationDeg: 0, widthMm: w, heightMm: h };
+  }
+
+  // TEST A — same basic utilization, different fragmentation.
+  it("TEST A — distinguishes a contiguous leftover from a fragmented one, at the SAME occupied area/utilization", () => {
+    // Layout A: a single contiguous block in one corner (occupied area =
+    // 39*100 = 3900 mm^2). The remaining free space is one big contiguous
+    // region.
+    const layoutA = [
+      {
+        widthMm: 200,
+        lengthMm: 200,
+        placements: [p("a", 0, 0, 39, 100)],
+      },
+    ];
+
+    // Layout B: the SAME total occupied area (3900 mm^2 = 2000 + 1900), but
+    // arranged as a thin cross of full-span walls that chops the remaining
+    // free space into several disconnected/narrow pockets instead of one
+    // usable region.
+    const layoutB = [
+      {
+        widthMm: 200,
+        lengthMm: 200,
+        placements: [p("v", 95, 0, 10, 200), p("h", 0, 95, 190, 10)],
+      },
+    ];
+
+    const occupiedA = layoutA[0].placements.reduce((s, pp) => s + pp.widthMm * pp.heightMm, 0);
+    const occupiedB = layoutB[0].placements.reduce((s, pp) => s + pp.widthMm * pp.heightMm, 0);
+    // Same occupied area => same scrap area, same utilization -- the ONLY
+    // thing that can differ between these two layouts is fragmentation.
+    expect(occupiedA).toBe(occupiedB);
+
+    const fragA = computeFragmentationScore(layoutA);
+    const fragB = computeFragmentationScore(layoutB);
+
+    expect(fragA).toBe(0); // one contiguous, non-narrow leftover region
+    expect(fragB).toBeGreaterThan(0); // scattered/narrow leftover pockets
+
+    // With identical scrap/utilization/cavity (areaByPartId all zero, so
+    // cavity is also 0 for both), scoreSheets()'s only remaining source of
+    // difference is the fragmentation term, and it must move in the
+    // expected direction: the fragmented layout scores worse (higher).
+    const areaByPartId = new Map<string, number>([
+      ["a", 0],
+      ["v", 0],
+      ["h", 0],
+    ]);
+    const scoreA = scoreSheets(layoutA, areaByPartId);
+    const scoreB = scoreSheets(layoutB, areaByPartId);
+    expect(scoreB).toBeGreaterThan(scoreA);
+  });
+
+  // TEST B — deterministic.
+  it("TEST B — deterministic: the same layout always produces exactly the same fragmentation score", () => {
+    const layout = [
+      {
+        widthMm: 300,
+        lengthMm: 250,
+        placements: [p("a", 0, 0, 60, 250), p("b", 120, 40, 50, 50), p("c", 220, 180, 30, 30)],
+      },
+    ];
+
+    const first = computeFragmentationScore(layout);
+    const second = computeFragmentationScore(layout);
+    const third = computeFragmentationScore(layout);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+  });
+
+  // TEST C — empty/simple layout.
+  it("TEST C — an empty sheet, an unused sheet, and a fully-packed sheet all return finite, non-NaN values", () => {
+    const emptySheet = [{ widthMm: 500, lengthMm: 500, placements: [] as EnginePlacementResult[] }];
+    expect(Number.isFinite(computeFragmentationScore(emptySheet))).toBe(true);
+    expect(computeFragmentationScore(emptySheet)).toBe(0); // unused sheet contributes nothing
+
+    const singlePlacementSheet = [{ widthMm: 100, lengthMm: 100, placements: [p("a", 0, 0, 50, 50)] }];
+    const single = computeFragmentationScore(singlePlacementSheet);
+    expect(Number.isFinite(single)).toBe(true);
+    expect(Number.isNaN(single)).toBe(false);
+
+    const fullyPackedSheet = [{ widthMm: 100, lengthMm: 100, placements: [p("a", 0, 0, 100, 100)] }];
+    const packed = computeFragmentationScore(fullyPackedSheet);
+    expect(Number.isFinite(packed)).toBe(true);
+    expect(packed).toBe(0); // no free space at all => nothing to fragment
+
+    // scoreSheets() itself must also stay finite/non-NaN across these.
+    const areaByPartId = new Map<string, number>([["a", 0]]);
+    expect(Number.isFinite(scoreSheets(emptySheet, areaByPartId))).toBe(true);
+    expect(Number.isFinite(scoreSheets(singlePlacementSheet, areaByPartId))).toBe(true);
+    expect(Number.isFinite(scoreSheets(fullyPackedSheet, areaByPartId))).toBe(true);
+  });
+
+  // TEST F — no quantity regression: fragmentation must never let a layout
+  // placing FEWER required instances beat one placing MORE, regardless of
+  // how much more fragmented the higher-count layout's leftover space is.
+  it("TEST F — isBetterLayout still prioritizes placed count over fragmentation/score", () => {
+    // Fewer placed parts, but a perfectly tidy (zero-fragmentation) layout.
+    const fewerButTidy = { placedTotal: 3, score: 10 };
+    // More placed parts, but with a heavily fragmented leftover (a much
+    // higher, worse score that fragmentation alone contributed to).
+    const moreButFragmented = { placedTotal: 4, score: 100_000 };
+
+    expect(isBetterLayout(moreButFragmented, fewerButTidy)).toBe(true);
+    expect(isBetterLayout(fewerButTidy, moreButFragmented)).toBe(false);
+  });
+
+  // TEST D / E — regression: existing exact-geometry and optimizer
+  // behavior tests (BEST VALID, deterministic tie-break, gap enforcement,
+  // multi-sheet, source quantity, rotation, multi-start, local improvement,
+  // ruin-and-recreate, candidate cap) all live in the describe blocks
+  // above/below this one and continue to run and pass unchanged -- Phase 2A
+  // adds a new scoring term but does not touch geometry validation,
+  // candidate generation, or localImprovement/findBestPlacement's own
+  // comparison logic.
 });
 
 function DEFAULT_CONFIG(): EngineConfig {
