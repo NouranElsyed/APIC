@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { runNestingAlgorithm, type EnginePartInput, type EngineSourceInput, type EngineConfig } from "./nesting-engine";
 import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, type RotationDeg } from "./nesting-geometry";
 import type { Point } from "./dxf";
+import {
+  findBestPlacement,
+  generateCandidateOrigins,
+  localImprovement,
+  makeWorkingSheet,
+  RotationCandidateCache,
+  selectBoundedCandidateOrigins,
+  type OptimizerPartInstance,
+} from "./nesting-optimizer";
 
 // ----------------------------------------------------------------------------
 // Shared helpers
@@ -375,6 +384,226 @@ describe("gap enforcement bug fix — partGapMm was only ever used to offset CAN
   });
 });
 
+
+// ----------------------------------------------------------------------------
+// FIX 1 — localImprovement must use the SAME placement-quality comparison as
+// findBestPlacement (score, then Y, then X, then rotation) when picking
+// between relocation candidates gathered from DIFFERENT sheets, instead of
+// the old "lower Y, then lower X" shortcut.
+// ----------------------------------------------------------------------------
+describe("FIX 1 — localImprovement unifies cross-sheet relocation comparison with findBestPlacement's placement-quality rule", () => {
+  const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+  function buildScenario() {
+    const rotations = new RotationCandidateCache(90, 4);
+    const movingOuter = rect(50, 50);
+    const movingInstance: OptimizerPartInstance = {
+      takeoffPartId: "moving",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (50 * 50) / 1_000_000,
+      outer: movingOuter,
+    };
+
+    // Sheet A: narrow (lengthMm == part width) with an anchor that exactly
+    // fills the bottom. The ONLY valid spot for the moving part is snug on
+    // top of the anchor -- a HIGHER Y (100) but, thanks to 3-sided contact
+    // and a small incremental bounding-box growth, a much BETTER (lower)
+    // placement-quality score.
+    const sourceA: EngineSourceInput = { sourceSheetId: "A", material: "Steel", thicknessMm: 6, widthMm: 200, lengthMm: 50 };
+    const sheetA = makeWorkingSheet(sourceA, config);
+    const anchorAOuter = rect(50, 100);
+    sheetA.placements.push({ takeoffPartId: "anchorA", instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 50, heightMm: 100 });
+    sheetA.polygons.push(anchorAOuter);
+
+    // Sheet B: a large, otherwise-empty sheet. The best available spot is
+    // the sheet corner: a LOWER Y (0), but with only 2-sided contact and a
+    // WORSE (higher) placement-quality score than sheet A's snug spot.
+    const sourceB: EngineSourceInput = { sourceSheetId: "B", material: "Steel", thicknessMm: 6, widthMm: 300, lengthMm: 300 };
+    const sheetB = makeWorkingSheet(sourceB, config);
+
+    return { rotations, movingOuter, movingInstance, anchorAOuter, sheetA, sheetB };
+  }
+
+  it("proves the lower-Y candidate is NOT the better-scored one (setup sanity check)", () => {
+    const { rotations, movingInstance, sheetA, sheetB } = buildScenario();
+
+    const attemptA = findBestPlacement(movingInstance, sheetA, config, 60, rotations);
+    const attemptB = findBestPlacement(movingInstance, sheetB, config, 60, rotations);
+    expect(attemptA).not.toBeNull();
+    expect(attemptB).not.toBeNull();
+
+    // Sheet B's candidate has the LOWER Y...
+    expect(attemptB!.y).toBeLessThan(attemptA!.y);
+    // ...but sheet A's candidate is the genuinely BETTER placement (lower
+    // score). A pure "lower Y wins" comparison would therefore pick the
+    // wrong (worse) candidate here.
+    expect(attemptA!.score).toBeLessThan(attemptB!.score);
+  });
+
+  it("localImprovement relocates the part onto the better-scored sheet, not the lower-Y one", () => {
+    const { rotations, movingOuter, anchorAOuter, sheetA, sheetB } = buildScenario();
+
+    // The moving part currently sits on sheet B, at the very spot the old
+    // "lower Y, then lower X" comparison would have (wrongly) preferred.
+    sheetB.placements.push({ takeoffPartId: "moving", instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 50, heightMm: 50 });
+    sheetB.polygons.push(movingOuter);
+
+    const areaByPartId = new Map<string, number>([
+      ["anchorA", (50 * 100) / 1_000_000],
+      ["moving", (50 * 50) / 1_000_000],
+    ]);
+    const outerByPartId = new Map<string, Point[]>([
+      ["anchorA", anchorAOuter],
+      ["moving", movingOuter],
+    ]);
+
+    const result = localImprovement(
+      [sheetA, sheetB],
+      areaByPartId,
+      outerByPartId,
+      config,
+      60,
+      Date.now() + 5000,
+      () => 0, // deterministic rng; only one relocatable candidate part exists anyway
+      rotations,
+    );
+
+    const finalA = result.sheets.find((s) => s.sourceSheetId === "A")!;
+    const finalB = result.sheets.find((s) => s.sourceSheetId === "B")!;
+
+    // The moving part must end up on sheet A (the better-scored relocation),
+    // not stay on sheet B (the lower-Y one). Sheet B, having lost its only
+    // placement, is left empty -- a strong, unambiguous signal that a real
+    // cross-sheet relocation happened and picked the correct sheet.
+    expect(finalA.placements.some((p) => p.takeoffPartId === "moving")).toBe(true);
+    expect(finalB.placements.some((p) => p.takeoffPartId === "moving")).toBe(false);
+    expect(result.moves).toBeGreaterThan(0);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// FIX 2 — the candidate cap is a deterministic, spatially-diverse BOUNDED
+// SAMPLE of the generated candidate origins, not just "the first N after
+// sorting by Y then X" (which systematically starves later spatial
+// regions).
+// ----------------------------------------------------------------------------
+describe("FIX 2 — bounded candidate origin sampling preserves spatial diversity", () => {
+  it("returns at most `cap` origins, unchanged, when there are fewer origins than the cap", () => {
+    const sorted: Point[] = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 0, y: 10 },
+    ];
+    const result = selectBoundedCandidateOrigins(sorted, 10);
+    expect(result).toEqual(sorted);
+  });
+
+  it("bounds the selection to exactly `cap` origins when there are more origins than the cap", () => {
+    const sorted: Point[] = Array.from({ length: 100 }, (_, i) => ({ x: 0, y: i }));
+    const cap = 10;
+    const result = selectBoundedCandidateOrigins(sorted, cap);
+    expect(result.length).toBe(cap);
+  });
+
+  it("is deterministic: the same input and cap always produce the identical selection", () => {
+    const sorted: Point[] = Array.from({ length: 137 }, (_, i) => ({ x: i % 7, y: i }));
+    const cap = 23;
+    const first = selectBoundedCandidateOrigins(sorted, cap);
+    const second = selectBoundedCandidateOrigins(sorted, cap);
+    expect(second).toEqual(first);
+  });
+
+  it("does NOT simply take the first `cap` lowest-Y/X origins — a later spatial region survives the cap", () => {
+    // 100 origins sorted ascending by Y (0..99), as generateCandidateOrigins
+    // would hand in. The naive `slice(0, cap)` behavior this fix replaces
+    // would return exactly Y = 0..9 and nothing from later Y bands.
+    const sorted: Point[] = Array.from({ length: 100 }, (_, i) => ({ x: 0, y: i }));
+    const cap = 10;
+    const result = selectBoundedCandidateOrigins(sorted, cap);
+
+    expect(result.length).toBe(cap);
+    const ys = result.map((p) => p.y);
+
+    // The naive "first N" set is NOT what was returned.
+    expect(ys).not.toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    // At least one surviving candidate comes from a later spatial region
+    // (well past where a `slice(0, cap)` cutoff would have reached).
+    expect(ys.some((y) => y >= 50)).toBe(true);
+
+    // The strongest/lowest-Y candidates are still preserved (a reasonable,
+    // cheap prior), so the cap doesn't throw away good compactness options.
+    expect(ys).toContain(0);
+  });
+
+  it("end-to-end: findBestPlacement still evaluates only a bounded number of candidates, and the bounded sample reaches a useful, far-away spatial region", () => {
+    // A sheet with a dense cluster of tiny obstacles along the very bottom
+    // (generating MANY low-Y candidate origins, all clustered near y = 0/2)
+    // plus one small anchor far up the sheet (y = 300). A naive
+    // `slice(0, cap)` on the Y-then-X sorted raw list would be entirely
+    // consumed by the bottom cluster and never reach the high anchor at
+    // all; the bounded, spatially-diverse sample must still reach it.
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+    const rotations = new RotationCandidateCache(90, 4);
+
+    const source: EngineSourceInput = { sourceSheetId: "S", material: "Steel", thicknessMm: 6, widthMm: 400, lengthMm: 200 };
+    const sheet = makeWorkingSheet(source, config);
+    for (let x = 0; x < 40; x += 4) {
+      const obstacle = [
+        { x, y: 0 },
+        { x: x + 2, y: 0 },
+        { x: x + 2, y: 2 },
+        { x, y: 2 },
+      ];
+      sheet.placements.push({ takeoffPartId: `obst-${x}`, instanceNumber: 1, xMm: x, yMm: 0, rotationDeg: 0, widthMm: 2, heightMm: 2 });
+      sheet.polygons.push(obstacle);
+    }
+    const highAnchorOuter = rect(10, 10).map((p) => ({ x: p.x, y: p.y + 300 }));
+    sheet.placements.push({ takeoffPartId: "high-anchor", instanceNumber: 1, xMm: 0, yMm: 300, rotationDeg: 0, widthMm: 10, heightMm: 10 });
+    sheet.polygons.push(highAnchorOuter);
+
+    const shapeWidth = 5;
+    const shapeHeight = 5;
+    const smallCap = 20;
+
+    // The raw (unbounded) candidate list is dominated by the low-Y cluster,
+    // but does contain a handful of origins from up near the high anchor.
+    const rawUnbounded = generateCandidateOrigins(shapeWidth, shapeHeight, sheet, 0, 10_000);
+    const rawFarRegionCount = rawUnbounded.filter((p) => p.y >= 250).length;
+    expect(rawFarRegionCount).toBeGreaterThan(0);
+    expect(rawUnbounded.length).toBeGreaterThan(smallCap);
+
+    // The bounded sample (what findBestPlacement actually searches) must
+    // still include at least one origin from that far-away region -- proof
+    // the cap doesn't just take the first `smallCap` lowest-Y/X origins.
+    const bounded = generateCandidateOrigins(shapeWidth, shapeHeight, sheet, 0, smallCap);
+    expect(bounded.length).toBeLessThanOrEqual(smallCap);
+    expect(bounded.some((p) => p.y >= 250)).toBe(true);
+
+    const instance: OptimizerPartInstance = {
+      takeoffPartId: "target",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (shapeWidth * shapeHeight) / 1_000_000,
+      outer: rect(shapeWidth, shapeHeight),
+    };
+
+    const before = rotations.evaluationCount;
+    const attempt = findBestPlacement(instance, sheet, config, smallCap, rotations);
+    const evaluated = rotations.evaluationCount - before;
+
+    expect(attempt).not.toBeNull();
+    // Bounded: at most `smallCap` origins evaluated per rotation candidate
+    // (4 rotations available at a 90-degree step here).
+    expect(evaluated).toBeLessThanOrEqual(smallCap * 4);
+
+    // Deterministic: repeating the exact same search reproduces the exact
+    // same winning placement.
+    const repeat = findBestPlacement(instance, sheet, config, smallCap, rotations);
+    expect(repeat).toEqual(attempt);
+  });
+});
 
 function DEFAULT_CONFIG(): EngineConfig {
   return {

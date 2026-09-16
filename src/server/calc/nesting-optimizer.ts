@@ -121,7 +121,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-interface WorkingSheet {
+export interface WorkingSheet {
   sourceSheetId: string;
   material: string;
   thicknessMm: number;
@@ -135,7 +135,7 @@ interface WorkingSheet {
   polygons: Point[][];
 }
 
-function makeWorkingSheet(source: EngineSourceInput, config: EngineConfig): WorkingSheet {
+export function makeWorkingSheet(source: EngineSourceInput, config: EngineConfig): WorkingSheet {
   return {
     sourceSheetId: source.sourceSheetId,
     material: source.material,
@@ -170,7 +170,7 @@ function usableHeight(sheet: WorkingSheet): number {
   return Math.max(0, sheet.maxY - sheet.minY);
 }
 
-class RotationCandidateCache {
+export class RotationCandidateCache {
   private readonly cache = new Map<string, RotationDeg[]>();
   private evaluations = 0;
 
@@ -225,7 +225,7 @@ function couldEverFit(instance: OptimizerPartInstance, source: EngineSourceInput
  * Both parts are pure functions of the (already deterministic) sorted
  * input list, so the same geometry always yields the same bounded set.
  */
-function selectBoundedCandidateOrigins(sorted: Point[], cap: number): Point[] {
+export function selectBoundedCandidateOrigins(sorted: Point[], cap: number): Point[] {
   if (sorted.length <= cap) return sorted;
 
   const PRESERVE_FRACTION = 0.5;
@@ -247,7 +247,7 @@ function selectBoundedCandidateOrigins(sorted: Point[], cap: number): Point[] {
   return selected;
 }
 
-function generateCandidateOrigins(
+export function generateCandidateOrigins(
   shapeWidth: number,
   shapeHeight: number,
   sheet: WorkingSheet,
@@ -405,7 +405,7 @@ function computePlacementScore(
   return growth - contact * contactScale;
 }
 
-function findBestPlacement(
+export function findBestPlacement(
   instance: OptimizerPartInstance,
   sheet: WorkingSheet,
   config: EngineConfig,
@@ -541,7 +541,7 @@ function findBestPlacement(
  * replacing the running best on a STRICT improvement (cmp < 0) — no
  * separate tie-break value needs to be threaded through at all.
  */
-function comparePlacementQuality(a: PlacementQuality, b: PlacementQuality): number {
+export function comparePlacementQuality(a: PlacementQuality, b: PlacementQuality): number {
   const SCORE_EPS = 1e-6;
   if (a.score < b.score - SCORE_EPS) return -1;
   if (a.score > b.score + SCORE_EPS) return 1;
@@ -869,7 +869,7 @@ function totalPlaced(sheets: WorkingSheet[]): number {
   return sheets.reduce((sum, s) => sum + s.placements.length, 0);
 }
 
-function localImprovement(
+export function localImprovement(
   sheets: WorkingSheet[],
   areaByPartId: Map<string, number>,
   outerByPartId: Map<string, Point[]>,
