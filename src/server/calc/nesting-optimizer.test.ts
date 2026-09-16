@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runNestingAlgorithm, type EnginePartInput, type EngineSourceInput, type EngineConfig } from "./nesting-engine";
-import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, type RotationDeg } from "./nesting-geometry";
+import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, computeOrientedShape, translatePoints, type RotationDeg } from "./nesting-geometry";
 import type { Point } from "./dxf";
 import {
   findBestPlacement,
@@ -10,9 +10,28 @@ import {
   RotationCandidateCache,
   selectBoundedCandidateOrigins,
   computeFragmentationScore,
+  computeCompactnessScore,
+  computeFutureFitScore,
   scoreSheets,
   isBetterLayout,
+  computeRuinSize,
+  selectRuinTargets,
+  selectRuinOperator,
+  orderForReconstruction,
+  buildSolutionSignature,
+  updateSolutionPool,
+  shouldAcceptCandidate,
+  adaptiveRuinAndRecreate,
+  mulberry32,
+  RUIN_OPERATOR_NAMES,
+  RUIN_SIZE_TIERS,
+  RECONSTRUCTION_STRATEGY_NAMES,
   type OptimizerPartInstance,
+  type RuinOperatorName,
+  type RuinOperatorStats,
+  type PoolSolution,
+  type WorkingSheet,
+  type LayoutQuality,
 } from "./nesting-optimizer";
 import type { EnginePlacementResult } from "./nesting-engine";
 
@@ -730,6 +749,606 @@ describe("PHASE 2A — computeFragmentationScore / scoreSheets fragmentation com
   // adds a new scoring term but does not touch geometry validation,
   // candidate generation, or localImprovement/findBestPlacement's own
   // comparison logic.
+});
+
+// ----------------------------------------------------------------------------
+// PHASE 2B — GLOBAL LAYOUT QUALITY + FUTURE-FIT.
+// ----------------------------------------------------------------------------
+describe("PHASE 2B — computeCompactnessScore / computeFutureFitScore / scoreSheets integration / iterative local improvement", () => {
+  function p(id: string, x: number, y: number, w: number, h: number): EnginePlacementResult {
+    return { takeoffPartId: id, instanceNumber: 1, xMm: x, yMm: y, rotationDeg: 0, widthMm: w, heightMm: h };
+  }
+
+  // 1 — compactness: same sheet count/placed quantity, compact beats spread.
+  it("TEST 1 — a compactly-grouped layout scores better (lower) than the same parts unnecessarily spread out", () => {
+    const compactLayout = [
+      {
+        widthMm: 400,
+        lengthMm: 400,
+        placements: [p("a", 0, 0, 50, 50), p("b", 50, 0, 50, 50), p("c", 0, 50, 50, 50), p("d", 50, 50, 50, 50)],
+      },
+    ];
+    const spreadLayout = [
+      {
+        widthMm: 400,
+        lengthMm: 400,
+        // Same 4 parts, same total occupied area, same sheet count/placed
+        // quantity -- just pushed out to the four corners of the sheet.
+        placements: [p("a", 0, 0, 50, 50), p("b", 350, 0, 50, 50), p("c", 0, 350, 50, 50), p("d", 350, 350, 50, 50)],
+      },
+    ];
+
+    const compact = computeCompactnessScore(compactLayout);
+    const spread = computeCompactnessScore(spreadLayout);
+    expect(compact).toBeLessThan(spread);
+
+    // With identical scrap/utilization/cavity (same occupied area, same
+    // part count), scoreSheets() must reflect that compactness difference
+    // in the expected direction.
+    const areaByPartId = new Map<string, number>([
+      ["a", 0],
+      ["b", 0],
+      ["c", 0],
+      ["d", 0],
+    ]);
+    expect(scoreSheets(spreadLayout, areaByPartId)).toBeGreaterThan(scoreSheets(compactLayout, areaByPartId));
+  });
+
+  // 2 — compactness determinism.
+  it("TEST 2 — compactness is deterministic: the same layout always scores identically", () => {
+    const layout = [
+      {
+        widthMm: 300,
+        lengthMm: 300,
+        placements: [p("a", 10, 10, 40, 40), p("b", 200, 250, 30, 30)],
+      },
+    ];
+    const first = computeCompactnessScore(layout);
+    expect(computeCompactnessScore(layout)).toBe(first);
+    expect(computeCompactnessScore(layout)).toBe(first);
+  });
+
+  // 3 — future-fit: a region that can plausibly fit a remaining part beats
+  // one that can't.
+  it("TEST 3 — free space that can plausibly fit a remaining part scores better than free space that can't", () => {
+    const remainingPart: OptimizerPartInstance = {
+      takeoffPartId: "future",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (30 * 30) / 1_000_000,
+      outer: rect(30, 30),
+    };
+
+    // One small obstacle in a corner -> the rest of the sheet is one huge
+    // contiguous free region, easily big enough for a 30x30 part.
+    const bigFreeSheet = [{ widthMm: 300, lengthMm: 300, placements: [p("obs", 0, 0, 20, 20)] }];
+
+    // A dense series of full-height 10mm walls spaced 30mm apart chops the
+    // ENTIRE sheet into strips only 20mm wide -- too narrow for a 30x30
+    // part in either orientation.
+    const wallsSheet = [
+      {
+        widthMm: 300,
+        lengthMm: 300,
+        placements: Array.from({ length: 10 }, (_, i) => p(`w${i + 1}`, i * 30, 0, 10, 300)),
+      },
+    ];
+
+    const bigFreeScore = computeFutureFitScore(bigFreeSheet, [remainingPart]);
+    const wallsScore = computeFutureFitScore(wallsSheet, [remainingPart]);
+
+    expect(bigFreeScore).toBe(0); // ample room -- nothing "unusable"
+    expect(wallsScore).toBeGreaterThan(0); // narrow strips -- unusable by this part
+    expect(wallsScore).toBeGreaterThan(bigFreeScore);
+  });
+
+  // 4 — future-fit determinism.
+  it("TEST 4 — future-fit is deterministic: the same layout and remaining parts always score identically", () => {
+    const remainingPart: OptimizerPartInstance = {
+      takeoffPartId: "future",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (30 * 30) / 1_000_000,
+      outer: rect(30, 30),
+    };
+    const layout = [
+      {
+        widthMm: 300,
+        lengthMm: 300,
+        placements: Array.from({ length: 10 }, (_, i) => p(`w${i + 1}`, i * 30, 0, 10, 300)),
+      },
+    ];
+    const first = computeFutureFitScore(layout, [remainingPart]);
+    expect(computeFutureFitScore(layout, [remainingPart])).toBe(first);
+    expect(computeFutureFitScore(layout, [remainingPart])).toBe(first);
+  });
+
+  // 5 — empty sheets: no NaN / Infinity, for both new metrics.
+  it("TEST 5 — empty sheets never produce NaN or Infinity for either new metric", () => {
+    const emptySheet = [{ widthMm: 300, lengthMm: 300, placements: [] as EnginePlacementResult[] }];
+    const remainingPart: OptimizerPartInstance = {
+      takeoffPartId: "future",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (30 * 30) / 1_000_000,
+      outer: rect(30, 30),
+    };
+
+    const compact = computeCompactnessScore(emptySheet);
+    const futureFitWithParts = computeFutureFitScore(emptySheet, [remainingPart]);
+    const futureFitNoParts = computeFutureFitScore(emptySheet, []);
+
+    for (const v of [compact, futureFitWithParts, futureFitNoParts]) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(Number.isNaN(v)).toBe(false);
+    }
+    expect(compact).toBe(0);
+    expect(futureFitWithParts).toBe(0);
+    expect(futureFitNoParts).toBe(0);
+
+    expect(Number.isFinite(scoreSheets(emptySheet, new Map(), [remainingPart]))).toBe(true);
+  });
+
+  // 6 — scoreSheets integration: both new terms actually move the final score.
+  it("TEST 6 — compactness and future-fit both affect scoreSheets()'s final score", () => {
+    const compactLayout = [
+      {
+        widthMm: 400,
+        lengthMm: 400,
+        placements: [p("a", 0, 0, 50, 50), p("b", 50, 0, 50, 50)],
+      },
+    ];
+    const spreadLayout = [
+      {
+        widthMm: 400,
+        lengthMm: 400,
+        placements: [p("a", 0, 0, 50, 50), p("b", 350, 350, 50, 50)],
+      },
+    ];
+    const areaByPartId = new Map<string, number>([
+      ["a", 0],
+      ["b", 0],
+    ]);
+    expect(scoreSheets(spreadLayout, areaByPartId)).toBeGreaterThan(scoreSheets(compactLayout, areaByPartId));
+
+    const remainingPart: OptimizerPartInstance = {
+      takeoffPartId: "future",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: (30 * 30) / 1_000_000,
+      outer: rect(30, 30),
+    };
+    const wallsSheet = [
+      {
+        widthMm: 300,
+        lengthMm: 300,
+        placements: Array.from({ length: 10 }, (_, i) => p(`w${i + 1}`, i * 30, 0, 10, 300)),
+      },
+    ];
+    const wallsArea = new Map<string, number>(Array.from({ length: 10 }, (_, i) => [`w${i + 1}`, 0]));
+    const withoutFutureFit = scoreSheets(wallsSheet, wallsArea); // remainingParts defaults to []
+    const withFutureFit = scoreSheets(wallsSheet, wallsArea, [remainingPart]);
+    expect(withFutureFit).toBeGreaterThan(withoutFutureFit);
+  });
+
+  // 7 — placed-count priority still wins over raw score, even including the
+  // two new Phase 2B terms.
+  it("TEST 7 — isBetterLayout still prioritizes placed count over compactness/future-fit score", () => {
+    const fewerButPretty = { placedTotal: 5, score: 50 };
+    const moreButUgly = { placedTotal: 6, score: 500_000 }; // as if badly fragmented/spread/unusable-free-space
+    expect(isBetterLayout(moreButUgly, fewerButPretty)).toBe(true);
+    expect(isBetterLayout(fewerButPretty, moreButUgly)).toBe(false);
+  });
+
+  // 8 — exact geometry regression: covered by the existing "FIRST VALID ->
+  // BEST VALID" / gap-enforcement / arbitrary-rotation describe blocks
+  // elsewhere in this file, which are unmodified by Phase 2B and continue
+  // to pass (asserted by the overall test run, not duplicated here).
+
+  // 9 — Phase 2A fragmentation regression: covered by the existing "PHASE
+  // 2A" describe block elsewhere in this file, unmodified by Phase 2B.
+
+  // 10 — determinism across runs, now that localImprovement is iterative.
+  it("TEST 10 — running the optimizer twice with the same seed produces an equivalent layout", () => {
+    const parts: EnginePartInput[] = Array.from({ length: 10 }, (_, i) =>
+      part({
+        takeoffPartId: `p${i}`,
+        itemNo: i + 1,
+        outer: rect(20 + (i % 3) * 10, 20 + ((i + 1) % 4) * 5),
+        qty: 1,
+      }),
+    );
+    const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 400, lengthMm: 400, availableQty: 3 })];
+    const config = DEFAULT_CONFIG();
+
+    // A generous timeLimitMs (relative to this small job) keeps the run
+    // bound by the deterministic maxIterations cap rather than by wall-clock
+    // jitter, so repeated runs with the same seed take the exact same
+    // number of search iterations and land on the exact same layout.
+    const runOnce = () => runNestingAlgorithm(parts, sources, config, { randomSeed: 42, timeLimitMs: 15000, maxIterations: 80 });
+    const resultA = runOnce();
+    const resultB = runOnce();
+
+    // Compare everything except the wall-clock-dependent `timeMs` metric,
+    // which is expected to vary run-to-run even with identical output.
+    const stripTiming = (groups: typeof resultA.groups) => groups.map((g) => ({ ...g, optimization: { ...g.optimization, timeMs: 0 } }));
+    expect(stripTiming(resultB.groups)).toEqual(stripTiming(resultA.groups));
+    expect(resultB.totalScrapAreaSqm).toBe(resultA.totalScrapAreaSqm);
+    expect(resultB.totalPartsPlaced).toBe(resultA.totalPartsPlaced);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// PHASE 3 — ALNS-STYLE ADAPTIVE SEARCH.
+// ----------------------------------------------------------------------------
+describe("PHASE 3 — ruin operators / reconstruction / acceptance / solution pool / adaptive search", () => {
+  const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+  function buildSheetWithGridOfParts(cols: number, rows: number, cellSize: number): WorkingSheet {
+    const source: EngineSourceInput = {
+      sourceSheetId: "S",
+      material: "Steel",
+      thicknessMm: 6,
+      widthMm: rows * cellSize + 10,
+      lengthMm: cols * cellSize + 10,
+    };
+    const sheet = makeWorkingSheet(source, config);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cellSize;
+        const y = r * cellSize;
+        const w = cellSize - 2;
+        const h = cellSize - 2;
+        sheet.placements.push({
+          takeoffPartId: `p-${r}-${c}`,
+          instanceNumber: 1,
+          xMm: x,
+          yMm: y,
+          rotationDeg: 0,
+          widthMm: w,
+          heightMm: h,
+        });
+        sheet.polygons.push(rect(w, h).map((pt) => ({ x: pt.x + x, y: pt.y + y })));
+      }
+    }
+    return sheet;
+  }
+
+  // 1/2/3/4 — solution pool (PART A / PART J).
+  describe("solution pool (PART A / PART J)", () => {
+    function fakeSheets(id: string): WorkingSheet[] {
+      const source: EngineSourceInput = { sourceSheetId: "S", material: "Steel", thicknessMm: 6, widthMm: 100, lengthMm: 100 };
+      const sheet = makeWorkingSheet(source, config);
+      sheet.placements.push({ takeoffPartId: id, instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 10, heightMm: 10 });
+      sheet.polygons.push(rect(10, 10));
+      return [sheet];
+    }
+
+    it("TEST 1 — the pool never exceeds maxSolutions", () => {
+      let pool: PoolSolution[] = [];
+      for (let i = 0; i < 10; i++) {
+        pool = updateSolutionPool(pool, fakeSheets(`part-${i}`), { placedTotal: 1, score: 1000 - i }, 3);
+      }
+      expect(pool.length).toBeLessThanOrEqual(3);
+    });
+
+    it("TEST 2 — a duplicate (same signature) solution is not stored twice", () => {
+      const sheets = fakeSheets("dup");
+      let pool: PoolSolution[] = [];
+      pool = updateSolutionPool(pool, sheets, { placedTotal: 1, score: 5 }, 5);
+      const sizeAfterFirst = pool.length;
+      pool = updateSolutionPool(pool, sheets, { placedTotal: 1, score: 5 }, 5);
+      expect(pool.length).toBe(sizeAfterFirst);
+    });
+
+    it("TEST 3 — a strictly better solution always ends up ahead of a worse one in the pool", () => {
+      let pool: PoolSolution[] = [];
+      pool = updateSolutionPool(pool, fakeSheets("worse"), { placedTotal: 3, score: 500 }, 5);
+      pool = updateSolutionPool(pool, fakeSheets("better"), { placedTotal: 3, score: 10 }, 5);
+      expect(pool[0].quality.score).toBe(10);
+    });
+
+    it("TEST 4 — a solution placing MORE required parts always beats one placing fewer, regardless of score", () => {
+      let pool: PoolSolution[] = [];
+      pool = updateSolutionPool(pool, fakeSheets("more-placed-ugly-score"), { placedTotal: 5, score: 999_999 }, 5);
+      pool = updateSolutionPool(pool, fakeSheets("fewer-placed-pretty-score"), { placedTotal: 4, score: 1 }, 5);
+      expect(pool[0].quality.placedTotal).toBe(5);
+    });
+  });
+
+  // 7/8/9/10/11 — ruin operators (PART C).
+  describe("ruin operators (PART C)", () => {
+    it("TEST 7 — RANDOM_RUIN selects a bounded, deterministic seeded subset", () => {
+      const sheet = buildSheetWithGridOfParts(4, 4, 20);
+      const rngA = mulberry32(7);
+      const rngB = mulberry32(7);
+      const a = selectRuinTargets("RANDOM_RUIN", [sheet], new Map(), 5, rngA);
+      const b = selectRuinTargets("RANDOM_RUIN", [sheet], new Map(), 5, rngB);
+      expect(a.length).toBe(5);
+      expect(a).toEqual(b); // same seed -> same selection
+    });
+
+    it("TEST 8 — WORST_PLACEMENT_RUIN prefers placements with the most cavity (bbox area minus true part area)", () => {
+      const source: EngineSourceInput = { sourceSheetId: "S", material: "Steel", thicknessMm: 6, widthMm: 200, lengthMm: 200 };
+      const sheet = makeWorkingSheet(source, config);
+      // "good" — bbox exactly matches true area (no cavity)
+      sheet.placements.push({ takeoffPartId: "good", instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 20, heightMm: 20 });
+      sheet.polygons.push(rect(20, 20));
+      // "wasteful" — same bbox, but true area is tiny -> huge cavity
+      sheet.placements.push({ takeoffPartId: "wasteful", instanceNumber: 1, xMm: 50, yMm: 0, rotationDeg: 0, widthMm: 20, heightMm: 20 });
+      sheet.polygons.push(rect(20, 20));
+      const areaByPartId = new Map([
+        ["good", (20 * 20) / 1_000_000],
+        ["wasteful", (2 * 2) / 1_000_000],
+      ]);
+      const selected = selectRuinTargets("WORST_PLACEMENT_RUIN", [sheet], areaByPartId, 1, mulberry32(1));
+      expect(selected.length).toBe(1);
+      expect(sheet.placements[selected[0].placementIdx].takeoffPartId).toBe("wasteful");
+    });
+
+    it("TEST 9 — CLUSTER_RUIN selects a spatially concentrated group, not a scattered one", () => {
+      const source: EngineSourceInput = { sourceSheetId: "S", material: "Steel", thicknessMm: 6, widthMm: 500, lengthMm: 500 };
+      const sheet = makeWorkingSheet(source, config);
+      // A tight cluster near the origin...
+      const clusterCoords = [
+        [0, 0],
+        [15, 0],
+        [0, 15],
+        [15, 15],
+      ];
+      for (const [x, y] of clusterCoords) {
+        sheet.placements.push({ takeoffPartId: `cluster-${x}-${y}`, instanceNumber: 1, xMm: x, yMm: y, rotationDeg: 0, widthMm: 10, heightMm: 10 });
+        sheet.polygons.push(rect(10, 10).map((p) => ({ x: p.x + x, y: p.y + y })));
+      }
+      // ...and one far-away outlier.
+      sheet.placements.push({ takeoffPartId: "outlier", instanceNumber: 1, xMm: 400, yMm: 400, rotationDeg: 0, widthMm: 10, heightMm: 10 });
+      sheet.polygons.push(rect(10, 10).map((p) => ({ x: p.x + 400, y: p.y + 400 })));
+
+      // Force the anchor draw (first rng() call) to land on a cluster
+      // member (index 0..3 out of 5 total placements => any rng() < 0.8).
+      const rng = mulberry32(1);
+      const selected = selectRuinTargets("CLUSTER_RUIN", [sheet], new Map(), 4, rng);
+      const ids = selected.map((r) => sheet.placements[r.placementIdx].takeoffPartId);
+      expect(ids).not.toContain("outlier");
+    });
+
+    it("TEST 10 — SHEET_RUIN selects placements from exactly ONE sheet", () => {
+      const sheetA = buildSheetWithGridOfParts(3, 3, 20);
+      const sheetB = buildSheetWithGridOfParts(3, 3, 20);
+      const selected = selectRuinTargets("SHEET_RUIN", [sheetA, sheetB], new Map(), 4, mulberry32(3));
+      const distinctSheets = new Set(selected.map((r) => r.sheetIdx));
+      expect(distinctSheets.size).toBe(1);
+    });
+
+    it("TEST 11 — LARGE_PART_RUIN prefers the largest bounding-box placements", () => {
+      const source: EngineSourceInput = { sourceSheetId: "S", material: "Steel", thicknessMm: 6, widthMm: 300, lengthMm: 300 };
+      const sheet = makeWorkingSheet(source, config);
+      sheet.placements.push({ takeoffPartId: "small", instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 10, heightMm: 10 });
+      sheet.polygons.push(rect(10, 10));
+      sheet.placements.push({ takeoffPartId: "large", instanceNumber: 1, xMm: 50, yMm: 0, rotationDeg: 0, widthMm: 100, heightMm: 100 });
+      sheet.polygons.push(rect(100, 100).map((p) => ({ x: p.x + 50, y: p.y })));
+      const selected = selectRuinTargets("LARGE_PART_RUIN", [sheet], new Map(), 1, mulberry32(1));
+      expect(sheet.placements[selected[0].placementIdx].takeoffPartId).toBe("large");
+    });
+
+    it("all 5 documented operator names are covered", () => {
+      expect(RUIN_OPERATOR_NAMES.sort()).toEqual(
+        ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN"].sort(),
+      );
+    });
+  });
+
+  // 12 — ruin size bounds (PART D).
+  it("TEST 12 — computeRuinSize always stays within its tier's fractional bounds (clamped) and the total placement count", () => {
+    const total = 40;
+    for (const tier of Object.keys(RUIN_SIZE_TIERS) as (keyof typeof RUIN_SIZE_TIERS)[]) {
+      const [minFrac, maxFrac] = RUIN_SIZE_TIERS[tier];
+      for (let trial = 0; trial < 20; trial++) {
+        const size = computeRuinSize(tier, total, mulberry32(trial * 13 + 1));
+        expect(size).toBeGreaterThanOrEqual(1);
+        expect(size).toBeLessThanOrEqual(total);
+        // allow +/-1 for rounding at the boundary
+        expect(size).toBeLessThanOrEqual(Math.ceil(total * maxFrac) + 1);
+        expect(size).toBeGreaterThanOrEqual(Math.max(1, Math.floor(total * minFrac) - 1));
+      }
+    }
+    // Clamped to the actual number of placed instances when that's smaller.
+    expect(computeRuinSize("large", 2, mulberry32(1))).toBeLessThanOrEqual(2);
+    expect(computeRuinSize("large", 0, mulberry32(1))).toBe(0);
+  });
+
+  // 13/14 — reconstruction never creates overlap or violates sheet bounds;
+  // covered end-to-end via a full run of the adaptive search.
+  describe("reconstruction safety (PART E) — end to end", () => {
+    it("TEST 13/14 — after a full optimizer run, every reinserted placement is collision-free and within sheet bounds", () => {
+      const parts: EnginePartInput[] = [
+        part({ takeoffPartId: "a", itemNo: 1, outer: rect(80, 60), qty: 10 }),
+        part({ takeoffPartId: "b", itemNo: 2, outer: rect(50, 50), qty: 8 }),
+        part({ takeoffPartId: "c", itemNo: 3, outer: rightTriangle(60, 60), qty: 6 }),
+      ];
+      const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 500, lengthMm: 500, availableQty: 4 })];
+      const result = runNestingAlgorithm(parts, sources, DEFAULT_CONFIG(), { randomSeed: 5, timeLimitMs: 4000 });
+
+      for (const group of result.groups) {
+        for (const sheet of group.sheets) {
+          const polys = sheet.placements.map((p) => {
+            const src = parts.find((pp) => pp.takeoffPartId === p.takeoffPartId)!;
+            const shape = computeOrientedShape(src.outer, p.rotationDeg as RotationDeg);
+            return translatePoints(shape.points, p.xMm, p.yMm);
+          });
+          for (const poly of polys) {
+            expect(boundsContain(poly, 0, 0, sheet.lengthMm, sheet.widthMm)).toBe(true);
+          }
+          for (let i = 0; i < polys.length; i++) {
+            for (let j = i + 1; j < polys.length; j++) {
+              expect(polygonsOverlap(polys[i], polys[j])).toBe(false);
+            }
+          }
+        }
+      }
+    });
+  });
+
+  // 15/21 — required quantity is never silently reduced by the adaptive search.
+  it("TEST 15/21 — the adaptive search never reduces placed quantity relative to its input, and always returns a placedTotal >= the starting layout", () => {
+    const sheet = buildSheetWithGridOfParts(4, 4, 30);
+    const areaByPartId = new Map<string, number>();
+    const outerByPartId = new Map<string, Point[]>();
+    for (const p of sheet.placements) {
+      areaByPartId.set(p.takeoffPartId, (p.widthMm * p.heightMm) / 1_000_000);
+      outerByPartId.set(p.takeoffPartId, rect(p.widthMm, p.heightMm));
+    }
+    const rotations = new RotationCandidateCache(90, 4);
+    const startingPlaced = sheet.placements.length;
+
+    const result = adaptiveRuinAndRecreate(
+      [sheet],
+      areaByPartId,
+      outerByPartId,
+      config,
+      30,
+      50,
+      4,
+      Date.now() + 3000,
+      Date.now(),
+      mulberry32(11),
+      rotations,
+    );
+
+    const finalPlaced = result.sheets.reduce((sum, s) => sum + s.placements.length, 0);
+    expect(finalPlaced).toBeGreaterThanOrEqual(startingPlaced);
+  });
+
+  // 16/17 — bounded threshold acceptance (PART F).
+  describe("acceptance strategy (PART F)", () => {
+    it("TEST 16 — a slightly-worse candidate CAN be accepted early in the search (progressFraction near 0)", () => {
+      const current: LayoutQuality = { placedTotal: 5, score: 1000 };
+      const slightlyWorse: LayoutQuality = { placedTotal: 5, score: 1005 }; // 0.5% worse
+      const luckyRng = () => 0; // always "wins" any probability check
+      expect(shouldAcceptCandidate(slightlyWorse, current, 0, luckyRng)).toBe(true);
+    });
+
+    it("TEST 17 — acceptance becomes strictly stricter later in the search (progressFraction near 1)", () => {
+      const current: LayoutQuality = { placedTotal: 5, score: 1000 };
+      const slightlyWorse: LayoutQuality = { placedTotal: 5, score: 1005 };
+      const luckyRng = () => 0; // would accept if any probability were left
+      expect(shouldAcceptCandidate(slightlyWorse, current, 1, luckyRng)).toBe(false);
+    });
+
+    it("a strictly better candidate is ALWAYS accepted, at any point in the search", () => {
+      const current: LayoutQuality = { placedTotal: 5, score: 1000 };
+      const better: LayoutQuality = { placedTotal: 5, score: 1 };
+      const unluckyRng = () => 0.999999; // would fail any probability check
+      expect(shouldAcceptCandidate(better, current, 0, unluckyRng)).toBe(true);
+      expect(shouldAcceptCandidate(better, current, 1, unluckyRng)).toBe(true);
+    });
+
+    it("a candidate placing FEWER required parts is NEVER accepted, no matter how good its score or how lucky the rng", () => {
+      const current: LayoutQuality = { placedTotal: 5, score: 1000 };
+      const fewerButGreatScore: LayoutQuality = { placedTotal: 4, score: 0 };
+      const luckyRng = () => 0;
+      expect(shouldAcceptCandidate(fewerButGreatScore, current, 0, luckyRng)).toBe(false);
+      expect(shouldAcceptCandidate(fewerButGreatScore, current, 1, luckyRng)).toBe(false);
+    });
+  });
+
+  // 18/19 — operator statistics + adaptive, deterministic selection (PART G).
+  describe("operator adaptation (PART G)", () => {
+    it("TEST 18/19 — selectRuinOperator is deterministic given the same stats and rng position, and reacts to accumulated stats", () => {
+      const baseline = RUIN_OPERATOR_NAMES.reduce(
+        (acc, name) => {
+          acc[name] = { attempts: 0, accepted: 0, improvements: 0, bestImprovements: 0 };
+          return acc;
+        },
+        {} as Record<RuinOperatorName, RuinOperatorStats>,
+      );
+
+      const seqA = [mulberry32(99), mulberry32(99)].map((rng) => selectRuinOperator(baseline, rng));
+      expect(seqA[0]).toBe(seqA[1]); // same stats + same rng draw -> same operator
+
+      // Now make one operator overwhelmingly successful; it should dominate
+      // selection under an rng draw that used to pick something else.
+      const boosted: Record<RuinOperatorName, RuinOperatorStats> = JSON.parse(JSON.stringify(baseline));
+      boosted.CLUSTER_RUIN = { attempts: 10, accepted: 10, improvements: 10, bestImprovements: 10 };
+      const rngHigh = () => 0.5; // squarely inside the heavily-weighted operator's cumulative band
+      expect(selectRuinOperator(boosted, rngHigh)).toBe("CLUSTER_RUIN");
+    });
+  });
+
+  // 20 — time budget respected (PART H).
+  it("TEST 20 — the adaptive search performs zero iterations once the deadline has already passed", () => {
+    const sheet = buildSheetWithGridOfParts(4, 4, 20);
+    const areaByPartId = new Map<string, number>();
+    const outerByPartId = new Map<string, Point[]>();
+    for (const p of sheet.placements) {
+      areaByPartId.set(p.takeoffPartId, (p.widthMm * p.heightMm) / 1_000_000);
+      outerByPartId.set(p.takeoffPartId, rect(p.widthMm, p.heightMm));
+    }
+    const rotations = new RotationCandidateCache(90, 4);
+    const alreadyPastDeadline = Date.now() - 1000;
+    const result = adaptiveRuinAndRecreate(
+      [sheet],
+      areaByPartId,
+      outerByPartId,
+      config,
+      30,
+      50,
+      4,
+      alreadyPastDeadline,
+      alreadyPastDeadline - 1000,
+      mulberry32(1),
+      rotations,
+    );
+    expect(result.iterations).toBe(0);
+  });
+
+  // 6 — different seeds can steer the search differently (unit-level, deterministic).
+  it("TEST 6 — different seeded rng streams can select different operators/orderings", () => {
+    const stats = RUIN_OPERATOR_NAMES.reduce(
+      (acc, name) => {
+        acc[name] = { attempts: 0, accepted: 0, improvements: 0, bestImprovements: 0 };
+        return acc;
+      },
+      {} as Record<RuinOperatorName, RuinOperatorStats>,
+    );
+    const picks = new Set<string>();
+    for (let seed = 1; seed <= 30; seed++) {
+      picks.add(selectRuinOperator(stats, mulberry32(seed)));
+    }
+    // With equal starting weights and many different seeds, more than one
+    // distinct operator should get picked -- the search isn't stuck always
+    // choosing the same one regardless of seed.
+    expect(picks.size).toBeGreaterThan(1);
+  });
+
+  // 5 — determinism (full pipeline, extending Phase 2B's TEST 10 with Phase-3-specific metrics).
+  it("TEST 5 — same seed produces deterministic operator statistics and solution-pool size, not just deterministic geometry", () => {
+    const parts: EnginePartInput[] = Array.from({ length: 12 }, (_, i) =>
+      part({ takeoffPartId: `p${i}`, itemNo: i + 1, outer: rect(20 + (i % 3) * 10, 20 + ((i + 1) % 4) * 5), qty: 1 }),
+    );
+    const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 400, lengthMm: 400, availableQty: 3 })];
+    const cfg = DEFAULT_CONFIG();
+
+    // Same rationale as Phase 2B's TEST 10 above: a generous time budget
+    // relative to this job keeps the deterministic iteration cap (not
+    // wall-clock timing) as the binding constraint.
+    const runOnce = () => runNestingAlgorithm(parts, sources, cfg, { randomSeed: 77, timeLimitMs: 15000, maxIterations: 80 });
+    const a = runOnce();
+    const b = runOnce();
+
+    const metricsA = a.groups.map((g) => ({ ...g.optimization, timeMs: 0 }));
+    const metricsB = b.groups.map((g) => ({ ...g.optimization, timeMs: 0 }));
+    expect(metricsB).toEqual(metricsA);
+  });
+
+  // 22 — final solution passes exact revalidation (proven via TEST 13/14's
+  // independent collision/bounds check on the full pipeline's OUTPUT, which
+  // is exactly what internal revalidate() checks).
+
+  // 23/24/25 — existing Phase 2A / Phase 2B / assisted-nesting regression
+  // suites are unmodified by Phase 3 and continue to run and pass (asserted
+  // by the overall test run: the "PHASE 2A" and "PHASE 2B" describe blocks
+  // above, and nesting-assisted-session.test.ts, all still pass unchanged).
 });
 
 function DEFAULT_CONFIG(): EngineConfig {

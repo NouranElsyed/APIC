@@ -17,7 +17,7 @@ import {
 import type { EngineConfig, EngineSourceInput, EnginePlacementResult, UnplacedReason } from "./nesting-engine";
 
 export const OPTIMIZER_ALGORITHM_NAME = "candidate-search-multi-strategy-local-improvement";
-export const OPTIMIZER_ALGORITHM_VERSION = "1.0.0";
+export const OPTIMIZER_ALGORITHM_VERSION = "1.2.0";
 
 export interface OptimizerPartInstance {
   takeoffPartId: string;
@@ -101,6 +101,13 @@ export interface OptimizationMetrics {
   bestStart: string;
   /** Phase 2 — total placement candidates evaluated across every rotation/origin of every start (alias of candidatesEvaluated, kept explicit per multi-start reporting). */
   totalCandidateLayouts: number;
+  /** Phase 3 — number of distinct solutions retained in the bounded solution pool at the end of the adaptive search (see PART A). Optional/additive — existing consumers of this interface are unaffected. */
+  solutionPoolSize?: number;
+  /** Phase 3 — per-ruin-operator lightweight statistics from the adaptive search (see PART G). Optional/additive. */
+  ruinOperatorStats?: Record<string, RuinOperatorStats>;
+  /** Phase 3 — how many adaptive ruin-and-recreate iterations were accepted (score/threshold-accepted, not necessarily improving) vs strictly improved the running best. Optional/additive. */
+  ruinAndRecreateAccepted?: number;
+  ruinAndRecreateImprovements?: number;
 }
 
 export const SCORE_WEIGHTS = {
@@ -117,9 +124,51 @@ export const SCORE_WEIGHTS = {
    * layout with meaningfully worse scrap or utilization look better.
    */
   fragmentationWeight: 20,
+  /**
+   * Phase 2B — conservative weight for computeCompactnessScore. The metric
+   * itself is a dimensionless ratio in [0, 1] (occupied-footprint-bbox
+   * area / sheet area, see computeCompactnessScore), so a weight of 200
+   * contributes at most ~200 to the total score for a maximally-spread
+   * single-sheet layout — smaller than scrapAreaWeight's contribution for
+   * even a modest (0.2 sqm) scrap difference (0.2*1000=200), and utterly
+   * dwarfed by sheetCountPenalty. Like fragmentationWeight, this can only
+   * ever break ties between layouts that are already close on the primary
+   * objectives.
+   */
+  compactnessWeight: 200,
+  /**
+   * Phase 2B — conservative weight for computeFutureFitScore. The metric is
+   * an area (sqm) of free space judged too small/oddly-shaped for ANY
+   * remaining part type, exactly analogous in units to fragmentationAreaSqm
+   * (Phase 2A). Using the SAME weight scale as fragmentationWeight keeps
+   * the two "usable remaining space" signals comparably influential,
+   * without either one being able to overpower scrap/utilization.
+   */
+  futureFitWeight: 20,
 };
 
-function mulberry32(seed: number): () => number {
+/**
+ * Phase 2B — bounded cap on how many DISTINCT remaining part types are
+ * considered by computeFutureFitScore per call. Keeps the metric's cost
+ * fixed regardless of how many instances/types remain, and deliberately
+ * avoids ever scaling with instance QUANTITY (only distinct outer shapes
+ * matter for a "could a part like this fit here" check).
+ */
+const MAX_FUTURE_FIT_REPRESENTATIVE_PARTS = 12;
+
+/**
+ * Phase 2B — bounded cap on iterative localImprovement() passes (see PART
+ * E). A single relocation pass can leave further, now-newly-available
+ * improving moves on the table (e.g. relocating part A can open up a
+ * better spot for part B that was already tried earlier in the same
+ * pass); repeating the pass a small, fixed number of times lets those
+ * follow-on improvements be found while keeping the total work bounded and
+ * independent of part count or wall-clock time (the existing deadline
+ * check still applies within and across passes).
+ */
+const MAX_LOCAL_IMPROVEMENT_PASSES = 3;
+
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return function () {
     a |= 0;
@@ -868,9 +917,160 @@ export function computeFragmentationScore(
   return totalMm2 / 1_000_000;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2B — PART A: COMPACTNESS.
+// ---------------------------------------------------------------------------
+// How tightly the placed parts on a sheet are grouped together, independent
+// of scrap/utilization (which only look at total AREA, not where it sits).
+// Two layouts can have identical scrap/utilization/fragmentation while one
+// keeps its parts huddled in one corner and the other spreads the exact
+// same parts out across the full sheet footprint (e.g. leaving a border of
+// dead space on every side instead of one usable edge) -- compactness is
+// what tells those apart.
+//
+// Deliberately bbox-only (no exact polygon collision logic), deterministic,
+// and normalized to a dimensionless [0, 1]-ish ratio (occupied FOOTPRINT
+// bounding box area / sheet area) so raw sheet size can never dominate the
+// score -- a 200x200 sheet and a 2000x2000 sheet with parts occupying the
+// same FRACTION of their footprint score identically.
+function computeSheetCompactnessRatio(sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }): number {
+  if (sheet.placements.length === 0) return 0;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of sheet.placements) {
+    if (p.xMm < minX) minX = p.xMm;
+    if (p.yMm < minY) minY = p.yMm;
+    if (p.xMm + p.widthMm > maxX) maxX = p.xMm + p.widthMm;
+    if (p.yMm + p.heightMm > maxY) maxY = p.yMm + p.heightMm;
+  }
+
+  const footprintAreaMm2 = Math.max(0, maxX - minX) * Math.max(0, maxY - minY);
+  const sheetAreaMm2 = sheet.widthMm * sheet.lengthMm;
+  if (!(sheetAreaMm2 > 0)) return 0;
+
+  return footprintAreaMm2 / sheetAreaMm2;
+}
+
+/**
+ * Exported (Phase 2B PART A) for direct unit testing and reuse in
+ * scoreSheets(). Averages the per-sheet compactness ratio across every USED
+ * sheet (so adding more used sheets can't mechanically inflate or deflate
+ * the metric). Lower is better (tighter grouping). 0 for an all-empty
+ * layout -- always finite, never NaN/Infinity.
+ */
+export function computeCompactnessScore(
+  sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
+): number {
+  const usedSheets = sheets.filter((s) => s.placements.length > 0);
+  if (usedSheets.length === 0) return 0;
+
+  let total = 0;
+  for (const sheet of usedSheets) {
+    total += computeSheetCompactnessRatio(sheet);
+  }
+  return total / usedSheets.length;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2B — PART B: FUTURE-FIT.
+// ---------------------------------------------------------------------------
+// Reuses the SAME bounded occupancy grid / free-region flood fill Phase 2A
+// already built for fragmentation (buildOccupancyGrid / findFreeRegions --
+// no new geometry algorithm, no NFP/Minkowski, no exact-geometry
+// involvement whatsoever). For each free region, this asks a cheap,
+// bounded question: could ANY remaining (distinct) part's bounding box
+// plausibly fit here, in either axis-aligned orientation (unrotated or
+// swapped 90 degrees -- a coarse stand-in for "some rotation might work",
+// consistent with this being a heuristic score, not a placement attempt)?
+// A free region that no remaining part could plausibly fit into is
+// penalized as wasted/unusable space, in the same area units (sqm) as
+// fragmentationAreaSqm, so the two terms combine on a comparable scale.
+//
+// Bounded: at most MAX_FUTURE_FIT_REPRESENTATIVE_PARTS distinct part
+// shapes are checked against at most FRAGMENTATION_GRID_CELLS^2 regions per
+// sheet -- fixed, small constants, independent of instance QUANTITY or how
+// many parts remain. Never places anything, never mutates `sheets`, never
+// touches wall-clock time, and is fully deterministic (same geometry +
+// same remaining-part list => same score, every time).
+interface RepresentativeDims {
+  width: number;
+  height: number;
+}
+
+function representativePartDims(remainingParts: OptimizerPartInstance[], cap: number): RepresentativeDims[] {
+  const seen = new Set<string>();
+  const dims: RepresentativeDims[] = [];
+  for (const part of remainingParts) {
+    if (seen.has(part.takeoffPartId)) continue;
+    seen.add(part.takeoffPartId);
+    const bbox = computeBoundingBox(part.outer);
+    if (bbox.width > 0 && bbox.height > 0) dims.push({ width: bbox.width, height: bbox.height });
+    if (dims.length >= cap) break;
+  }
+  return dims;
+}
+
+function regionCouldFitAnyPart(regionWidthMm: number, regionHeightMm: number, partDims: RepresentativeDims[]): boolean {
+  for (const d of partDims) {
+    if (d.width <= regionWidthMm + 1e-6 && d.height <= regionHeightMm + 1e-6) return true;
+    if (d.height <= regionWidthMm + 1e-6 && d.width <= regionHeightMm + 1e-6) return true; // 90-degree swap
+  }
+  return false;
+}
+
+function computeSheetFutureFitPenaltyMm2(
+  sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] },
+  partDims: RepresentativeDims[],
+): number {
+  if (partDims.length === 0) return 0; // nothing to check against -- no penalty, not a NaN/undefined result
+
+  const grid = buildOccupancyGrid(sheet);
+  if (!grid) return 0;
+
+  const regions = findFreeRegions(grid);
+  if (regions.length === 0) return 0;
+
+  const cellAreaMm2 = grid.cellWidthMm * grid.cellHeightMm;
+  let penaltyCells = 0;
+  for (const region of regions) {
+    const regionWidthMm = region.extentCols * grid.cellWidthMm;
+    const regionHeightMm = region.extentRows * grid.cellHeightMm;
+    if (!regionCouldFitAnyPart(regionWidthMm, regionHeightMm, partDims)) {
+      penaltyCells += region.cells.length;
+    }
+  }
+  return penaltyCells * cellAreaMm2;
+}
+
+/**
+ * Exported (Phase 2B PART B) for direct unit testing and reuse in
+ * scoreSheets(). `remainingParts` supplies the actual remaining part
+ * geometry (bounding-box dimensions only -- works for rectangles AND
+ * irregular/concave outlines alike, since it's driven by computeBoundingBox
+ * rather than any shape assumption). Returns the total "unusable-by-any-
+ * remaining-part" free area (sqm) across every used sheet. Lower is better.
+ * An empty `remainingParts` list (or an all-empty layout) returns 0, never
+ * NaN/Infinity.
+ */
+export function computeFutureFitScore(
+  sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
+  remainingParts: OptimizerPartInstance[],
+): number {
+  const partDims = representativePartDims(remainingParts, MAX_FUTURE_FIT_REPRESENTATIVE_PARTS);
+  if (partDims.length === 0) return 0;
+
+  const usedSheets = sheets.filter((s) => s.placements.length > 0);
+  let totalMm2 = 0;
+  for (const sheet of usedSheets) {
+    totalMm2 += computeSheetFutureFitPenaltyMm2(sheet, partDims);
+  }
+  return totalMm2 / 1_000_000;
+}
+
 export function scoreSheets(
   sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
   areaByPartId: Map<string, number>,
+  remainingParts: OptimizerPartInstance[] = [],
 ): number {
   const usedSheets = sheets.filter((s) => s.placements.length > 0);
   let totalSheetAreaSqm = 0;
@@ -890,18 +1090,56 @@ export function scoreSheets(
   const scrapAreaSqm = Math.max(0, totalSheetAreaSqm - totalUsedAreaSqm);
   const utilizationPercent = totalSheetAreaSqm > 0 ? (totalUsedAreaSqm / totalSheetAreaSqm) * 100 : 0;
   const fragmentationAreaSqm = computeFragmentationScore(sheets);
+  const compactnessRatio = computeCompactnessScore(sheets);
+  const futureFitAreaSqm = computeFutureFitScore(sheets, remainingParts);
 
   return (
     usedSheets.length * SCORE_WEIGHTS.sheetCountPenalty +
     scrapAreaSqm * SCORE_WEIGHTS.scrapAreaWeight +
     cavityAreaSqm * SCORE_WEIGHTS.cavityAreaWeight -
     utilizationPercent * SCORE_WEIGHTS.utilizationBonusWeight +
-    fragmentationAreaSqm * SCORE_WEIGHTS.fragmentationWeight
+    fragmentationAreaSqm * SCORE_WEIGHTS.fragmentationWeight +
+    compactnessRatio * SCORE_WEIGHTS.compactnessWeight +
+    futureFitAreaSqm * SCORE_WEIGHTS.futureFitWeight
   );
 }
 
-function scoreLayout(sheets: WorkingSheet[], areaByPartId: Map<string, number>): number {
-  return scoreSheets(sheets, areaByPartId);
+/**
+ * `remainingParts` (Phase 2B) is the set of distinct part shapes used to
+ * derive computeFutureFitScore's signal -- see buildRepresentativeInstances
+ * below for how callers within this file source it from the maps they
+ * already have on hand (outerByPartId/areaByPartId), so no new plumbing of
+ * the full per-instance list is required through localImprovement /
+ * ruinAndRecreate. Defaults to [] (future-fit contributes 0) so every
+ * existing external caller of scoreLayout-shaped scoring (there are none
+ * outside this file; external callers use scoreSheets directly, which has
+ * its own default) keeps working unchanged.
+ */
+function scoreLayout(sheets: WorkingSheet[], areaByPartId: Map<string, number>, remainingParts: OptimizerPartInstance[] = []): number {
+  return scoreSheets(sheets, areaByPartId, remainingParts);
+}
+
+/**
+ * Phase 2B — builds a small, deterministic, deduped set of "remaining part"
+ * stand-ins directly from the maps every scoreLayout() caller in this file
+ * already has (outerByPartId/areaByPartId), for computeFutureFitScore. One
+ * representative instance per distinct takeoffPartId (instanceNumber is
+ * irrelevant here -- only the outer shape/bbox matters), capped so this
+ * stays cheap regardless of how many types or instances exist.
+ */
+function buildRepresentativeInstances(outerByPartId: Map<string, Point[]>, areaByPartId: Map<string, number>): OptimizerPartInstance[] {
+  const result: OptimizerPartInstance[] = [];
+  for (const [takeoffPartId, outer] of outerByPartId) {
+    result.push({
+      takeoffPartId,
+      itemNo: 0,
+      instanceNumber: 0,
+      areaSqm: areaByPartId.get(takeoffPartId) ?? 0,
+      outer,
+    });
+    if (result.length >= MAX_FUTURE_FIT_REPRESENTATIVE_PARTS) break;
+  }
+  return result;
 }
 
 function summarizeSheets(
@@ -1065,7 +1303,13 @@ function totalPlaced(sheets: WorkingSheet[]): number {
   return sheets.reduce((sum, s) => sum + s.placements.length, 0);
 }
 
-export function localImprovement(
+/**
+ * Phase 2B PART E — a single relocate-one-part improvement pass (the
+ * original, unchanged single-pass logic from Fix 1 / Phase 1). Exported
+ * name `localImprovement` is preserved as the bounded, iterative wrapper
+ * below; this is the pass it repeats.
+ */
+function localImprovementPass(
   sheets: WorkingSheet[],
   areaByPartId: Map<string, number>,
   outerByPartId: Map<string, Point[]>,
@@ -1074,9 +1318,10 @@ export function localImprovement(
   deadline: number,
   rng: () => number,
   rotations: RotationCandidateCache,
+  remainingParts: OptimizerPartInstance[],
 ): { sheets: WorkingSheet[]; moves: number; trialsEvaluated: number } {
   let working = cloneLayout(sheets);
-  let bestScore = scoreLayout(working, areaByPartId);
+  let bestScore = scoreLayout(working, areaByPartId, remainingParts);
   let moves = 0;
   let trialsEvaluated = 0;
 
@@ -1136,7 +1381,12 @@ export function localImprovement(
     const r: { sheetIdx: number; attempt: PlacementAttempt } = relocated;
     commitPlacement(trial[r.sheetIdx], asInstance, r.attempt);
 
-    const trialScore = scoreLayout(trial, areaByPartId);
+    // PART E requirement: a relocation only ever moves an ALREADY-placed
+    // part to another valid spot (exact-geometry validated inside
+    // findBestPlacement) — it can never drop a part, so placed required
+    // quantity is structurally preserved across every pass, with no extra
+    // bookkeeping needed here.
+    const trialScore = scoreLayout(trial, areaByPartId, remainingParts);
     if (trialScore < bestScore - 1e-6) {
       working = trial;
       bestScore = trialScore;
@@ -1147,35 +1397,494 @@ export function localImprovement(
   return { sheets: working, moves, trialsEvaluated };
 }
 
-function ruinAndRecreate(
+/**
+ * Phase 2B PART E — bounded ITERATIVE local improvement: repeats
+ * localImprovementPass() up to MAX_LOCAL_IMPROVEMENT_PASSES times,
+ * stopping as soon as a pass makes zero moves (no further improvement
+ * found) or the shared deadline is reached — whichever comes first. Each
+ * pass starts from the previous pass's result, so a relocation in pass 1
+ * can open up a genuinely better spot for a different part in pass 2 that
+ * wasn't available before. Deterministic: the same seed/rng sequence drives
+ * every pass in the same fixed order, with no randomness beyond the
+ * existing seeded shuffle already used per pass.
+ */
+export function localImprovement(
+  sheets: WorkingSheet[],
+  areaByPartId: Map<string, number>,
+  outerByPartId: Map<string, Point[]>,
+  config: EngineConfig,
+  maxCandidates: number,
+  deadline: number,
+  rng: () => number,
+  rotations: RotationCandidateCache,
+): { sheets: WorkingSheet[]; moves: number; trialsEvaluated: number } {
+  const remainingParts = buildRepresentativeInstances(outerByPartId, areaByPartId);
+
+  let working = sheets;
+  let totalMoves = 0;
+  let totalTrials = 0;
+
+  for (let pass = 0; pass < MAX_LOCAL_IMPROVEMENT_PASSES; pass++) {
+    if (Date.now() > deadline) break;
+
+    const result = localImprovementPass(working, areaByPartId, outerByPartId, config, maxCandidates, deadline, rng, rotations, remainingParts);
+    working = result.sheets;
+    totalMoves += result.moves;
+    totalTrials += result.trialsEvaluated;
+
+    if (result.moves === 0) break; // converged — no further passes needed
+  }
+
+  return { sheets: working, moves: totalMoves, trialsEvaluated: totalTrials };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — ADVANCED SEARCH / ALNS-STYLE OPTIMIZATION.
+// ---------------------------------------------------------------------------
+// This section replaces the old fixed/simple ruin-and-recreate loop with a
+// small, bounded, deterministic Adaptive Large Neighborhood Search style
+// layer on top of the SAME building blocks Phase 1/2 already validated:
+// findBestPlacement() (exact geometry, unchanged), scoreLayout()/scoreSheets()
+// (Phase 2A/2B score, unchanged), and commitPlacement(). Nothing in this
+// section performs its own geometry validation -- every reconstructed
+// placement still goes through findBestPlacement()'s existing exact bounds/
+// overlap/gap checks. This is a genuinely improved SEARCH STRATEGY, not a
+// geometry engine change, and it is NOT a full academic ALNS implementation
+// (no learned operator selection, no destroy-degree annealing schedules from
+// the literature) -- it is a simple, bounded, weighted-adaptive version of
+// the same idea, sized to fit this codebase.
+
+/** PART C — the ruin operators this phase implements. */
+export type RuinOperatorName = "RANDOM_RUIN" | "WORST_PLACEMENT_RUIN" | "CLUSTER_RUIN" | "SHEET_RUIN" | "LARGE_PART_RUIN";
+
+export const RUIN_OPERATOR_NAMES: RuinOperatorName[] = ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN"];
+
+/** PART D — bounded ruin-size tiers, expressed as a fraction of total placed instances (not magic numbers inline in the algorithm). */
+export const RUIN_SIZE_TIERS: Record<"small" | "medium" | "large", [number, number]> = {
+  small: [0.05, 0.1],
+  medium: [0.1, 0.2],
+  large: [0.2, 0.35],
+};
+export const RUIN_SIZE_TIER_NAMES: (keyof typeof RUIN_SIZE_TIERS)[] = ["small", "medium", "large"];
+/** Hard absolute cap on ruin size regardless of the fractional tier -- keeps a single iteration's remove+reconstruct work bounded even for very large jobs. */
+const RUIN_SIZE_ABSOLUTE_CAP = 24;
+
+/**
+ * PART D — turns a ruin-size TIER into a concrete, bounded, clamped instance
+ * count for this call. Deterministic given `rng` (draws exactly one value).
+ */
+export function computeRuinSize(tier: keyof typeof RUIN_SIZE_TIERS, totalPlacements: number, rng: () => number): number {
+  if (totalPlacements <= 0) return 0;
+  const [minFrac, maxFrac] = RUIN_SIZE_TIERS[tier];
+  const frac = minFrac + rng() * (maxFrac - minFrac);
+  const raw = Math.round(totalPlacements * frac);
+  return Math.max(1, Math.min(totalPlacements, RUIN_SIZE_ABSOLUTE_CAP, raw));
+}
+
+interface FlatPlacementRef {
+  sheetIdx: number;
+  placementIdx: number;
+}
+
+function flattenPlacements(sheets: WorkingSheet[]): FlatPlacementRef[] {
+  const flat: FlatPlacementRef[] = [];
+  sheets.forEach((s, sIdx) => s.placements.forEach((_, pIdx) => flat.push({ sheetIdx: sIdx, placementIdx: pIdx })));
+  return flat;
+}
+
+function refBBoxArea(sheets: WorkingSheet[], ref: FlatPlacementRef): number {
+  const p = sheets[ref.sheetIdx].placements[ref.placementIdx];
+  return p.widthMm * p.heightMm;
+}
+
+function refCenter(sheets: WorkingSheet[], ref: FlatPlacementRef): { x: number; y: number } {
+  const p = sheets[ref.sheetIdx].placements[ref.placementIdx];
+  return { x: p.xMm + p.widthMm / 2, y: p.yMm + p.heightMm / 2 };
+}
+
+/**
+ * PART C — selects WHICH placements a given ruin operator would remove, as a
+ * flat, bounded, deterministic list of refs. Does NOT mutate `sheets` and
+ * does NOT itself remove anything -- the caller (adaptiveRuinAndRecreate)
+ * performs the actual removal, exactly as the pre-Phase-3 code did, so
+ * "never mutate the original solution unexpectedly" holds by construction.
+ * Exported for direct, focused unit testing of each operator in isolation.
+ */
+export function selectRuinTargets(
+  operator: RuinOperatorName,
+  sheets: WorkingSheet[],
+  areaByPartId: Map<string, number>,
+  ruinSize: number,
+  rng: () => number,
+): FlatPlacementRef[] {
+  const flat = flattenPlacements(sheets);
+  if (flat.length === 0 || ruinSize <= 0) return [];
+  const size = Math.min(ruinSize, flat.length);
+
+  switch (operator) {
+    case "RANDOM_RUIN": {
+      // A deterministic seeded random subset -- the general-purpose
+      // "diversify anywhere" operator.
+      return seededShuffle(flat, rng).slice(0, size);
+    }
+
+    case "WORST_PLACEMENT_RUIN": {
+      // Ranks by CAVITY (bbox area minus true part area) descending --
+      // placements contributing the most wasted bounding-box space to the
+      // layout's cavityArea score term are the "worst contributors" and are
+      // removed first, deterministic tie-break by (sheetIdx, placementIdx).
+      const ranked = [...flat].sort((a, b) => {
+        const pa = sheets[a.sheetIdx].placements[a.placementIdx];
+        const pb = sheets[b.sheetIdx].placements[b.placementIdx];
+        const cavityA = pa.widthMm * pa.heightMm - (areaByPartId.get(pa.takeoffPartId) ?? 0) * 1_000_000;
+        const cavityB = pb.widthMm * pb.heightMm - (areaByPartId.get(pb.takeoffPartId) ?? 0) * 1_000_000;
+        if (cavityB !== cavityA) return cavityB - cavityA;
+        return a.sheetIdx !== b.sheetIdx ? a.sheetIdx - b.sheetIdx : a.placementIdx - b.placementIdx;
+      });
+      return ranked.slice(0, size);
+    }
+
+    case "CLUSTER_RUIN": {
+      // Pick a deterministic seeded anchor placement, then take the `size`
+      // placements whose centers are spatially closest to it (Euclidean
+      // distance between bbox centers) -- a spatially CONCENTRATED region,
+      // not a scattered random subset.
+      const anchorIdx = Math.floor(rng() * flat.length) % flat.length;
+      const anchor = refCenter(sheets, flat[anchorIdx]);
+      const ranked = [...flat].sort((a, b) => {
+        const ca = refCenter(sheets, a);
+        const cb = refCenter(sheets, b);
+        const da = (ca.x - anchor.x) ** 2 + (ca.y - anchor.y) ** 2;
+        const db = (cb.x - anchor.x) ** 2 + (cb.y - anchor.y) ** 2;
+        if (da !== db) return da - db;
+        return a.sheetIdx !== b.sheetIdx ? a.sheetIdx - b.sheetIdx : a.placementIdx - b.placementIdx;
+      });
+      return ranked.slice(0, size);
+    }
+
+    case "SHEET_RUIN": {
+      // Pick ONE used sheet (deterministic seeded choice among used sheets)
+      // and take up to `size` of ITS placements -- "attempt to rebuild one
+      // sheet". If that sheet has fewer than `size` placements, the whole
+      // sheet is selected (its own natural bound).
+      const usedSheetIdxs = sheets.map((s, i) => i).filter((i) => sheets[i].placements.length > 0);
+      if (usedSheetIdxs.length === 0) return [];
+      const chosen = usedSheetIdxs[Math.floor(rng() * usedSheetIdxs.length) % usedSheetIdxs.length];
+      const onSheet = flat.filter((r) => r.sheetIdx === chosen);
+      // Deterministic seeded subset of that one sheet when it has more
+      // placements than the ruin size budget allows.
+      return seededShuffle(onSheet, rng).slice(0, Math.min(size, onSheet.length));
+    }
+
+    case "LARGE_PART_RUIN": {
+      // Ranks by bounding-box area descending -- the largest/most awkward
+      // placements (hardest to re-place well) are removed first.
+      const ranked = [...flat].sort((a, b) => {
+        const diff = refBBoxArea(sheets, b) - refBBoxArea(sheets, a);
+        if (diff !== 0) return diff;
+        return a.sheetIdx !== b.sheetIdx ? a.sheetIdx - b.sheetIdx : a.placementIdx - b.placementIdx;
+      });
+      return ranked.slice(0, size);
+    }
+
+    default: {
+      const _exhaustive: never = operator;
+      return _exhaustive;
+    }
+  }
+}
+
+/** PART G — lightweight per-operator statistics used to adapt operator selection. */
+export interface RuinOperatorStats {
+  attempts: number;
+  accepted: number;
+  improvements: number;
+  bestImprovements: number;
+}
+
+function initRuinOperatorStats(): Record<RuinOperatorName, RuinOperatorStats> {
+  const stats = {} as Record<RuinOperatorName, RuinOperatorStats>;
+  for (const name of RUIN_OPERATOR_NAMES) stats[name] = { attempts: 0, accepted: 0, improvements: 0, bestImprovements: 0 };
+  return stats;
+}
+
+/**
+ * PART G — a simple, bounded, DETERMINISTIC weighted selection: every
+ * operator starts with an equal base weight of 1 (so an untried operator
+ * always has a real chance), and gains weight for every accepted move and
+ * more for every move that struck a new global-best solution. No learning
+ * system, just roulette-wheel selection over a bounded weight formula.
+ * Deterministic given the position in the `rng` sequence -- same stats +
+ * same next rng draw => same operator, every time (PART L test 19).
+ */
+export function selectRuinOperator(stats: Record<RuinOperatorName, RuinOperatorStats>, rng: () => number): RuinOperatorName {
+  const weights = RUIN_OPERATOR_NAMES.map((name) => {
+    const s = stats[name];
+    return 1 + s.accepted * 1 + s.improvements * 2 + s.bestImprovements * 3;
+  });
+  const total = weights.reduce((a, b) => a + b, 0);
+  let roll = rng() * total;
+  for (let i = 0; i < RUIN_OPERATOR_NAMES.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return RUIN_OPERATOR_NAMES[i];
+  }
+  return RUIN_OPERATOR_NAMES[RUIN_OPERATOR_NAMES.length - 1];
+}
+
+/** PART E — the reconstruction (reinsertion order) strategies this phase implements. */
+export type ReconstructionStrategyName = "BEST_QUALITY_FIRST" | "LARGEST_FIRST" | "MOST_CONSTRAINED_FIRST" | "ROTATION_DIVERSIFIED" | "RANDOMIZED_DETERMINISTIC";
+
+export const RECONSTRUCTION_STRATEGY_NAMES: ReconstructionStrategyName[] = [
+  "BEST_QUALITY_FIRST",
+  "LARGEST_FIRST",
+  "MOST_CONSTRAINED_FIRST",
+  "ROTATION_DIVERSIFIED",
+  "RANDOMIZED_DETERMINISTIC",
+];
+
+/**
+ * PART E — orders a batch of just-removed instances for reinsertion. This
+ * only decides ORDER; the actual placement search/validation for every
+ * single instance still goes exclusively through findBestPlacement() in
+ * adaptiveRuinAndRecreate() below (PART E: "do not bypass findBestPlacement
+ * or duplicate geometry logic").
+ */
+export function orderForReconstruction(
+  strategy: ReconstructionStrategyName,
+  removed: { instance: OptimizerPartInstance; polygon: Point[] }[],
+  rng: () => number,
+): { instance: OptimizerPartInstance; polygon: Point[] }[] {
+  switch (strategy) {
+    case "LARGEST_FIRST":
+      // Largest bounding-box area first -- the original Phase 1/2 default:
+      // biggest/hardest-to-place parts get first pick of the free space.
+      return [...removed].sort((a, b) => bboxArea(b.instance.outer) - bboxArea(a.instance.outer));
+
+    case "MOST_CONSTRAINED_FIRST":
+      // Most irregular (worst bbox-fill ratio) shapes first -- these are
+      // typically the hardest to place well once space gets tight.
+      return [...removed].sort((a, b) => irregularity(b.instance) - irregularity(a.instance));
+
+    case "BEST_QUALITY_FIRST":
+      // Longest single edge first -- a different "hard parts first" proxy
+      // (long thin parts are awkward to tuck in late), giving reconstruction
+      // a genuinely different ordering heuristic from LARGEST_FIRST.
+      return [...removed].sort((a, b) => edgeLengthMax(b.instance.outer) - edgeLengthMax(a.instance.outer));
+
+    case "ROTATION_DIVERSIFIED":
+      // Interleaves large and small parts (alternating from both ends of
+      // the bbox-area-sorted list) instead of strictly largest-to-smallest,
+      // so reconstruction doesn't always greedily burn the best spots on
+      // the very largest parts first -- a lightweight diversification of
+      // the placement ORDER, complementing findBestPlacement's own
+      // already-exhaustive per-instance rotation search.
+      {
+        const byArea = [...removed].sort((a, b) => bboxArea(b.instance.outer) - bboxArea(a.instance.outer));
+        const interleaved: typeof removed = [];
+        let lo = 0, hi = byArea.length - 1;
+        let takeFromStart = true;
+        while (lo <= hi) {
+          if (takeFromStart) interleaved.push(byArea[lo++]);
+          else interleaved.push(byArea[hi--]);
+          takeFromStart = !takeFromStart;
+        }
+        return interleaved;
+      }
+
+    case "RANDOMIZED_DETERMINISTIC":
+      // A deterministic seeded shuffle -- the "just try a different order"
+      // fallback strategy.
+      return seededShuffle(removed, rng);
+
+    default: {
+      const _exhaustive: never = strategy;
+      return _exhaustive;
+    }
+  }
+}
+
+/** PART A/J — one retained solution in the bounded pool. */
+export interface PoolSolution {
+  sheets: WorkingSheet[];
+  quality: LayoutQuality;
+  signature: string;
+}
+
+/**
+ * PART J — a lightweight, deterministic signature for duplicate detection
+ * ONLY (never used for scoring or geometry). Coordinates are rounded to
+ * 0.01mm purely for this string -- the actual placement coordinates stored
+ * on the solution are completely untouched.
+ */
+export function buildSolutionSignature(sheets: WorkingSheet[]): string {
+  const parts: string[] = [];
+  sheets.forEach((sheet, sheetIdx) => {
+    for (const p of sheet.placements) {
+      const rx = Math.round(p.xMm * 100) / 100;
+      const ry = Math.round(p.yMm * 100) / 100;
+      parts.push(`${sheetIdx}|${p.takeoffPartId}|${p.instanceNumber}|${rx}|${ry}|${p.rotationDeg}`);
+    }
+  });
+  parts.sort();
+  return parts.join(";");
+}
+
+function compareLayoutQuality(a: LayoutQuality, b: LayoutQuality): number {
+  if (a.placedTotal !== b.placedTotal) return b.placedTotal - a.placedTotal; // more placed first
+  return a.score - b.score; // lower score first
+}
+
+/**
+ * PART A — inserts `candidateSheets` into the bounded solution pool if (and
+ * only if) it is not a duplicate of an already-retained solution (PART J),
+ * then re-sorts (placed-count-first, PART A requirement) and caps at
+ * `maxSolutions`. Because the pool is always kept sorted best-first and then
+ * truncated from the back, the single best-ever solution (pool[0]) can never
+ * be evicted by this operation -- "preserve the global best solution".
+ * Returns a NEW array; never mutates `pool` in place.
+ */
+export function updateSolutionPool(pool: PoolSolution[], candidateSheets: WorkingSheet[], quality: LayoutQuality, maxSolutions: number): PoolSolution[] {
+  const signature = buildSolutionSignature(candidateSheets);
+  if (pool.some((p) => p.signature === signature)) return pool;
+
+  const next = [...pool, { sheets: cloneLayout(candidateSheets), quality, signature }];
+  next.sort((a, b) => compareLayoutQuality(a.quality, b.quality));
+  return next.slice(0, Math.max(1, maxSolutions));
+}
+
+// PART F — bounded threshold-acceptance constants (simple, not a full
+// simulated-annealing cooling schedule). `progressFraction` is 0 at the
+// start of the ruin-and-recreate budget and approaches 1 near its end, so
+// both the acceptable-worse-score threshold and the acceptance probability
+// shrink toward 0 over the course of the search.
+const ACCEPTANCE_INITIAL_RELATIVE_THRESHOLD = 0.02; // up to ~2% relatively worse, early on
+const ACCEPTANCE_PROBABILITY_NEAR_THRESHOLD = 0.3;
+const ACCEPTANCE_EQUAL_SCORE_PROBABILITY = 0.15; // occasional lateral move, for diversification only
+
+/**
+ * PART F — bounded acceptance decision for one ruin-and-recreate trial.
+ * Hard, non-negotiable rule first (PART F "IMPORTANT"): a candidate with
+ * FEWER placed required parts than `current` is NEVER accepted, regardless
+ * of how much better its geometric score is. Otherwise: strictly more
+ * placed always wins; among equal placed counts, a strictly better score is
+ * always accepted, an equal score is occasionally accepted (bounded,
+ * shrinking probability) purely for diversification, and a slightly worse
+ * score may be accepted early in the search with a bounded, shrinking
+ * probability -- exactly the "occasionally escape a local optimum" ask.
+ * Deterministic given `rng`'s next draw.
+ */
+export function shouldAcceptCandidate(candidate: LayoutQuality, current: LayoutQuality, progressFraction: number, rng: () => number): boolean {
+  if (candidate.placedTotal < current.placedTotal) return false;
+  if (candidate.placedTotal > current.placedTotal) return true;
+
+  const clampedProgress = Math.max(0, Math.min(1, progressFraction));
+  const cooling = 1 - clampedProgress; // 1 at the start, 0 at the end
+
+  if (candidate.score < current.score - 1e-6) return true;
+
+  if (Math.abs(candidate.score - current.score) <= 1e-6) {
+    return rng() < ACCEPTANCE_EQUAL_SCORE_PROBABILITY * cooling;
+  }
+
+  // candidate.score is worse (higher) than current.score.
+  const relativeGap = (candidate.score - current.score) / Math.max(1, Math.abs(current.score));
+  const threshold = ACCEPTANCE_INITIAL_RELATIVE_THRESHOLD * cooling;
+  if (relativeGap <= threshold) {
+    return rng() < ACCEPTANCE_PROBABILITY_NEAR_THRESHOLD * cooling;
+  }
+  return false;
+}
+
+/**
+ * Phase 3 — the ALNS-style adaptive search loop. Replaces the old fixed
+ * single-operator ruin-and-recreate with:
+ *   pick operator (PART G, adaptive+deterministic)
+ *     -> pick ruin size tier + size (PART D, bounded)
+ *       -> select targets with that operator (PART C)
+ *         -> remove them (never mutates the input `sheets`)
+ *           -> pick a reconstruction order (PART E)
+ *             -> reinsert every removed instance via findBestPlacement
+ *                (PART E: exact geometry, unchanged; if ANY instance can't
+ *                be reinserted the whole trial is discarded, so required
+ *                quantity can never silently drop -- PART C/PART F)
+ *               -> score the trial (Phase 2A/2B score, unchanged, PART K)
+ *                 -> accept/reject (PART F, bounded threshold acceptance)
+ *                   -> update operator stats (PART G) + solution pool (PART A)
+ *                     -> track bestSolution independently (PART I)
+ * Bounded by BOTH `maxIterations` and `deadline` (PART H); every operator,
+ * ruin size, and pool size is itself bounded (PART D/A), so total work per
+ * call is bounded regardless of job size.
+ */
+export function adaptiveRuinAndRecreate(
   sheets: WorkingSheet[],
   areaByPartId: Map<string, number>,
   outerByPartId: Map<string, Point[]>,
   config: EngineConfig,
   maxCandidates: number,
   maxIterations: number,
+  maxSolutions: number,
   deadline: number,
+  searchStartedAt: number,
   rng: () => number,
   rotations: RotationCandidateCache,
-): { sheets: WorkingSheet[]; iterations: number } {
-  let working = cloneLayout(sheets);
-  let bestScore = scoreLayout(working, areaByPartId);
-  let iterations = 0;
+): {
+  sheets: WorkingSheet[];
+  iterations: number;
+  accepted: number;
+  improvements: number;
+  operatorStats: Record<RuinOperatorName, RuinOperatorStats>;
+  poolSize: number;
+} {
+  const remainingParts = buildRepresentativeInstances(outerByPartId, areaByPartId);
+  const operatorStats = initRuinOperatorStats();
+
+  let working = cloneLayout(sheets); // PART F — the current search position (may occasionally be a slightly-worse accepted trial).
+  let workingQuality: LayoutQuality = { placedTotal: totalPlaced(working), score: scoreLayout(working, areaByPartId, remainingParts) };
+
+  // PART I — bestSolution is tracked completely independently of `working`
+  // and is ONLY ever replaced by a STRICTLY better (never merely accepted)
+  // candidate, so a lateral/worse accepted move can never lose the best
+  // solution found so far.
+  let bestSolution: { sheets: WorkingSheet[]; quality: LayoutQuality } = { sheets: cloneLayout(working), quality: workingQuality };
+
+  // PART A — bounded pool of distinct best solutions, seeded with the
+  // starting layout.
+  let pool = updateSolutionPool([], working, workingQuality, maxSolutions);
 
   const totalPlacements = working.reduce((sum, s) => sum + s.placements.length, 0);
-  if (totalPlacements < 2) return { sheets: working, iterations: 0 };
+  let iterations = 0;
+  let accepted = 0;
+  let improvements = 0;
+
+  if (totalPlacements < 2) {
+    return { sheets: working, iterations: 0, accepted: 0, improvements: 0, operatorStats, poolSize: pool.length };
+  }
+
+  const totalBudgetMs = Math.max(1, deadline - searchStartedAt);
 
   for (let iter = 0; iter < maxIterations; iter++) {
-    if (Date.now() > deadline) break;
+    const now = Date.now();
+    if (now > deadline) break;
     iterations++;
 
-    const trial = cloneLayout(working);
-    const ruinSize = Math.max(1, Math.min(4, Math.floor(totalPlacements * 0.08) + 1));
+    const progressFraction = Math.min(1, (now - searchStartedAt) / totalBudgetMs);
 
-    const flat: { sheetIdx: number; placementIdx: number }[] = [];
-    trial.forEach((s, sIdx) => s.placements.forEach((_, pIdx) => flat.push({ sheetIdx: sIdx, placementIdx: pIdx })));
-    const toRemove = seededShuffle(flat, rng).slice(0, Math.min(ruinSize, flat.length));
-    toRemove.sort((a, b) => (a.sheetIdx !== b.sheetIdx ? b.sheetIdx - a.sheetIdx : b.placementIdx - a.placementIdx));
+    // PART G — adaptive, deterministic operator choice.
+    const operator = selectRuinOperator(operatorStats, rng);
+    operatorStats[operator].attempts++;
+
+    // PART D — bounded, adaptive ruin size.
+    const tier = RUIN_SIZE_TIER_NAMES[Math.floor(rng() * RUIN_SIZE_TIER_NAMES.length) % RUIN_SIZE_TIER_NAMES.length];
+    const currentTotalPlacements = working.reduce((sum, s) => sum + s.placements.length, 0);
+    const ruinSize = computeRuinSize(tier, currentTotalPlacements, rng);
+
+    // PART C — select targets (read-only), then remove them from a fresh
+    // clone (never mutates `working`/`sheets`).
+    const targets = selectRuinTargets(operator, working, areaByPartId, ruinSize, rng);
+    if (targets.length === 0) continue;
+
+    const trial = cloneLayout(working);
+    const toRemove = [...targets].sort((a, b) => (a.sheetIdx !== b.sheetIdx ? b.sheetIdx - a.sheetIdx : b.placementIdx - a.placementIdx));
 
     const removed: { instance: OptimizerPartInstance; polygon: Point[] }[] = [];
     for (const r of toRemove) {
@@ -1196,10 +1905,16 @@ function ruinAndRecreate(
       });
     }
 
-    removed.sort((a, b) => bboxArea(b.instance.outer) - bboxArea(a.instance.outer));
+    // PART E — pick a reconstruction order strategy for this iteration.
+    const reconStrategy = RECONSTRUCTION_STRATEGY_NAMES[Math.floor(rng() * RECONSTRUCTION_STRATEGY_NAMES.length) % RECONSTRUCTION_STRATEGY_NAMES.length];
+    const ordered = orderForReconstruction(reconStrategy, removed, rng);
 
+    // PART E — every single reinsertion goes through findBestPlacement(),
+    // the SAME exact bounds/overlap/gap-validated search used everywhere
+    // else in this file. If any removed instance can't be placed anywhere,
+    // the ENTIRE trial is discarded (required quantity can never drop).
     let allReinserted = true;
-    for (const r of removed) {
+    for (const r of ordered) {
       let placedSomewhere = false;
       for (const sheet of trial) {
         const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations);
@@ -1214,17 +1929,37 @@ function ruinAndRecreate(
         break;
       }
     }
-
     if (!allReinserted) continue;
 
-    const trialScore = scoreLayout(trial, areaByPartId);
-    if (trialScore <= bestScore + 1e-6) {
+    const trialQuality: LayoutQuality = { placedTotal: totalPlaced(trial), score: scoreLayout(trial, areaByPartId, remainingParts) };
+
+    // PART I — independent best-solution tracking: only a STRICT improvement
+    // ever replaces bestSolution, regardless of what gets "accepted" below.
+    if (isBetterLayout(trialQuality, bestSolution.quality)) {
+      bestSolution = { sheets: cloneLayout(trial), quality: trialQuality };
+      operatorStats[operator].bestImprovements++;
+      improvements++;
+    }
+
+    // PART F — bounded threshold acceptance decides the NEXT search
+    // position (`working`), independent of the bestSolution bookkeeping
+    // above.
+    if (shouldAcceptCandidate(trialQuality, workingQuality, progressFraction, rng)) {
       working = trial;
-      bestScore = trialScore;
+      workingQuality = trialQuality;
+      accepted++;
+      operatorStats[operator].accepted++;
+      // PART A/J — bounded, deduplicated pool of distinct good solutions.
+      pool = updateSolutionPool(pool, working, workingQuality, maxSolutions);
     }
   }
 
-  return { sheets: working, iterations };
+  // PART A — the pool must contain the best solution found, even if the
+  // very last accepted `working` position was a lateral/worse move kept
+  // only for diversification.
+  pool = updateSolutionPool(pool, bestSolution.sheets, bestSolution.quality, maxSolutions);
+
+  return { sheets: bestSolution.sheets, iterations, accepted, improvements, operatorStats, poolSize: pool.length };
 }
 
 function revalidate(sheets: WorkingSheet[], partGapMm = 0): boolean {
@@ -1366,7 +2101,7 @@ export function packRemainingOntoSeededSheet(
       localImprovementMoves: 0,
       ruinAndRecreateIterations: 0,
       timeMs: Date.now() - startedAt,
-      finalScore: scoreLayout([sheet], areaByPartId),
+      finalScore: scoreLayout([sheet], areaByPartId, buildRepresentativeInstances(outerByPartId, areaByPartId)),
       candidatesEvaluated: rotations.evaluationCount,
       usedBaseline: false,
       rotationStepDeg: opts.rotationStepDeg,
@@ -1398,6 +2133,12 @@ export function optimizeGroupPlacement(
     areaByPartId.set(inst.takeoffPartId, inst.areaSqm);
     outerByPartId.set(inst.takeoffPartId, inst.outer);
   }
+  // Phase 2B — the job's own distinct part shapes double as the
+  // "remaining parts" reference set for computeFutureFitScore at every
+  // scoring call in this function: while under construction, a candidate
+  // layout's leftover space is judged against the same part TYPES this
+  // job needs to nest, not a separately-tracked per-step unplaced list.
+  const remainingParts = buildRepresentativeInstances(outerByPartId, areaByPartId);
 
   if (instances.length === 0 || rankedSources.length === 0) {
     const { sheets, placedCountByPart, failureReasonByPart } = constructLayout(
@@ -1419,7 +2160,7 @@ export function optimizeGroupPlacement(
         localImprovementMoves: 0,
         ruinAndRecreateIterations: 0,
         timeMs: Date.now() - startedAt,
-        finalScore: scoreLayout(sheets, areaByPartId),
+        finalScore: scoreLayout(sheets, areaByPartId, remainingParts),
         candidatesEvaluated: rotations.evaluationCount,
         usedBaseline: false,
         rotationStepDeg: opts.rotationStepDeg,
@@ -1462,7 +2203,7 @@ export function optimizeGroupPlacement(
     strategiesEvaluated++;
     const quality: LayoutQuality = {
       placedTotal: totalPlaced(result.sheets),
-      score: scoreLayout(result.sheets, areaByPartId),
+      score: scoreLayout(result.sheets, areaByPartId, remainingParts),
     };
     if (isBetterLayout(quality, bestQuality)) {
       bestQuality = quality;
@@ -1476,7 +2217,7 @@ export function optimizeGroupPlacement(
     // returned (spec item 3 / TEST D: very small timeLimitMs must still
     // terminate safely).
     best = constructLayout(strategies[0].order, rankedSources, config, opts.maxCandidatesPerPart, rotations);
-    bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId) };
+    bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId, remainingParts) };
     bestStartName = strategies[0].name;
     strategiesEvaluated++;
   }
@@ -1486,14 +2227,27 @@ export function optimizeGroupPlacement(
   const improved = localImprovement(best.sheets, areaByPartId, outerByPartId, config, opts.maxCandidatesPerPart, deadline, rng, rotations);
 
   const ruinBudget = Math.max(0, opts.maxIterations - strategiesEvaluated);
-  const recreated = ruinAndRecreate(improved.sheets, areaByPartId, outerByPartId, config, opts.maxCandidatesPerPart, ruinBudget, deadline, rng, rotations);
+  const ruinSearchStartedAt = Date.now();
+  const recreated = adaptiveRuinAndRecreate(
+    improved.sheets,
+    areaByPartId,
+    outerByPartId,
+    config,
+    opts.maxCandidatesPerPart,
+    ruinBudget,
+    opts.maxSolutions,
+    deadline,
+    ruinSearchStartedAt,
+    rng,
+    rotations,
+  );
 
   let finalSheets = recreated.sheets;
   if (!revalidate(finalSheets, config.partGapMm)) {
     finalSheets = revalidate(improved.sheets, config.partGapMm) ? improved.sheets : best.sheets;
   }
 
-  const finalScore = scoreLayout(finalSheets, areaByPartId);
+  const finalScore = scoreLayout(finalSheets, areaByPartId, remainingParts);
   const finalSummary = summarizeSheets(finalSheets, areaByPartId);
 
   return {
@@ -1514,6 +2268,10 @@ export function optimizeGroupPlacement(
       startsEvaluated: strategiesEvaluated,
       bestStart: bestStartName,
       totalCandidateLayouts: strategiesEvaluated + improved.trialsEvaluated + recreated.iterations,
+      solutionPoolSize: recreated.poolSize,
+      ruinOperatorStats: recreated.operatorStats,
+      ruinAndRecreateAccepted: recreated.accepted,
+      ruinAndRecreateImprovements: recreated.improvements,
       ...finalSummary,
     },
   };
