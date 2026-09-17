@@ -16,7 +16,8 @@ function TakeoffTopBar() {
   const pathname = usePathname();
   const isNesting = pathname?.startsWith("/takeoff/nesting") ?? false;
   const isScrap = pathname?.startsWith("/takeoff/scrap-material") ?? false;
-  const isStandard = !isNesting && !isScrap;
+  const isSteelPricing = pathname?.startsWith("/takeoff/steel-pricing") ?? false;
+  const isStandard = !isNesting && !isScrap && !isSteelPricing;
   const { projects, projectId, setProjectId } = useTakeoffProject();
 
   return (
@@ -30,6 +31,9 @@ function TakeoffTopBar() {
         </Link>
         <Link href="/takeoff/scrap-material" className={activeTabClass(isScrap)}>
           Scrap & Material
+        </Link>
+        <Link href="/takeoff/steel-pricing" className={activeTabClass(isSteelPricing)}>
+          Steel Pricing
         </Link>
       </div>
 

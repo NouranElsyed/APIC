@@ -42,6 +42,11 @@ export const PERMISSIONS = {
   "scrapPricing.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
   "scrapPricing.export": ["ADMIN", "MANAGER", "ENGINEER"],
 
+  // Steel Structures Pricing Engine — rebuilds the original pricing sheet as
+  // one editable page (rate card, single-item calculator, full BOQ).
+  "steelPricing.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
+  "steelPricing.export": ["ADMIN", "MANAGER", "ENGINEER"],
+
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
 } as const;
