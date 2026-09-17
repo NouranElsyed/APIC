@@ -151,7 +151,7 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
             ))}
           </div>
 
-          <div className="overflow-x-auto rounded-lg border border-border">
+          <div className="overflow-x-auto rounded-lg border border-border bg-muted/40">
             <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow>
@@ -326,23 +326,23 @@ function CalcFlow({
 
   const installLinesBase: [string, number][] = isSupply
     ? [
-        ["Transport", wQty * settings.transportRate],
-        ["Site handling", wQty * settings.handlingPerTon],
-        ["Packing & unpacking", wQty * settings.packingPerTon],
-      ]
+      ["Transport", wQty * settings.transportRate],
+      ["Site handling", wQty * settings.handlingPerTon],
+      ["Packing & unpacking", wQty * settings.packingPerTon],
+    ]
     : [
-        ["Transport", wQty * settings.transportRate],
-        ["Site handling", wQty * settings.handlingPerTon],
-        ["Packing & unpacking", wQty * settings.packingPerTon],
-        ["Crane", wQty * settings.cranePerTon],
-        ["Scaffolding", wQty * settings.scaffoldPerTon],
-        ["Labor hours", wQty * settings.manHourPerTon],
-        ["Occupational safety", wQty * settings.safetyPerTon],
-        ["Tools & consumables", wQty * settings.toolsPerTon],
-        ["Protective equipment", wQty * settings.ppePerTon],
-        ["Touch-up paint", wQty * settings.touchUpPerTon],
-        ["Welding supervision", wQty * settings.weldSurveyorPerTon],
-      ];
+      ["Transport", wQty * settings.transportRate],
+      ["Site handling", wQty * settings.handlingPerTon],
+      ["Packing & unpacking", wQty * settings.packingPerTon],
+      ["Crane", wQty * settings.cranePerTon],
+      ["Scaffolding", wQty * settings.scaffoldPerTon],
+      ["Labor hours", wQty * settings.manHourPerTon],
+      ["Occupational safety", wQty * settings.safetyPerTon],
+      ["Tools & consumables", wQty * settings.toolsPerTon],
+      ["Protective equipment", wQty * settings.ppePerTon],
+      ["Touch-up paint", wQty * settings.touchUpPerTon],
+      ["Welding supervision", wQty * settings.weldSurveyorPerTon],
+    ];
   const installLines = fam.weightFactor
     ? ([[`Equivalent weight for calculation (${qty} × ${fam.weightFactor} MT/unit)`, wQty], ...installLinesBase] as [string, number][])
     : installLinesBase;
@@ -350,10 +350,10 @@ function CalcFlow({
   const overheadLines: [string, number][] = isSupply
     ? [["None — applies to installation items only", 0]]
     : [
-        [`Mobilization / demobilization (${settings.mobDemobPct}%)`, r.mobDemob],
-        [`Third-party certificate (${settings.thirdPartyCertPct}%)`, r.thirdParty],
-        [`Height factor (${settings.heightFactorPct}%)`, r.heightFactor],
-      ];
+      [`Mobilization / demobilization (${settings.mobDemobPct}%)`, r.mobDemob],
+      [`Third-party certificate (${settings.thirdPartyCertPct}%)`, r.thirdParty],
+      [`Height factor (${settings.heightFactorPct}%)`, r.heightFactor],
+    ];
 
   const steps: { title: string; value: number; lines: [string, number | null][] }[] = [
     {
@@ -361,10 +361,10 @@ function CalcFlow({
       value: r.materialCost,
       lines: isSupply
         ? [
-            ["Material price", r.materialPrice],
-            [`+ Handling (${settings.handlingPct}%)`, r.handling],
-            [`+ Scrap (${fam.scrapPct}%)`, r.scrap],
-          ]
+          ["Material price", r.materialPrice],
+          [`+ Handling (${settings.handlingPct}%)`, r.handling],
+          [`+ Scrap (${fam.scrapPct}%)`, r.scrap],
+        ]
         : [["None — installation item only, no material supply", 0]],
     },
     {
@@ -372,11 +372,11 @@ function CalcFlow({
       value: r.totalFabricationCost,
       lines: isSupply
         ? [
-            ["Material cost (from above)", r.materialCost],
-            ["+ Welding & forming", r.welding],
-            [`+ NDT inspection (${settings.ndtPct}%)`, r.ndt],
-            ["+ Painting", r.painting],
-          ]
+          ["Material cost (from above)", r.materialCost],
+          ["+ Welding & forming", r.welding],
+          [`+ NDT inspection (${settings.ndtPct}%)`, r.ndt],
+          ["+ Painting", r.painting],
+        ]
         : [["None — installation item only", 0]],
     },
     {
