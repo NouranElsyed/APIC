@@ -6,6 +6,7 @@ import {
   type RotationDeg,
   generateRotationCandidates,
   type BoundingBox,
+  type OrientedShape,
   computeBoundingBox,
   computeOrientedShape,
   translatePoints,
@@ -17,7 +18,32 @@ import {
 import type { EngineConfig, EngineSourceInput, EnginePlacementResult, UnplacedReason } from "./nesting-engine";
 
 export const OPTIMIZER_ALGORITHM_NAME = "candidate-search-multi-strategy-local-improvement";
-export const OPTIMIZER_ALGORITHM_VERSION = "1.2.0";
+export const OPTIMIZER_ALGORITHM_VERSION = "1.4.0";
+
+/**
+ * Width-first / length-first packing preference (follow-up to Phase 3).
+ *
+ * Coordinate mapping, confirmed in makeWorkingSheet() below and in
+ * buildOccupancyGrid()'s comment ("lengthMm // X axis ... widthMm // Y
+ * axis"): the WorkingSheet's X axis spans the sheet's PHYSICAL LENGTH
+ * (source.lengthMm) and its Y axis spans the sheet's PHYSICAL WIDTH
+ * (source.widthMm). So "fill across the width before extending along the
+ * length" means preferring placements whose growth is along Y (width)
+ * before growth along X (length).
+ *
+ * - AUTO: no directional bias — preserves pre-existing candidate ranking.
+ * - WIDTH_FIRST: prefer placements that grow the occupied footprint's Y
+ *   (width) extent over its X (length) extent.
+ * - LENGTH_FIRST: the opposite — prefer growth along X (length) over Y
+ *   (width). Approximates the previous default directional behavior.
+ *
+ * This is ONLY consulted as a small secondary term inside
+ * computePlacementScore (see PACKING_PREFERENCE_WEIGHT below) — it never
+ * participates in validity/collision/bounds checks and never influences
+ * placed-count priority or the global scoreLayout()/scoreSheets()
+ * objective.
+ */
+export type PackingPreference = "AUTO" | "WIDTH_FIRST" | "LENGTH_FIRST";
 
 export interface OptimizerPartInstance {
   takeoffPartId: string;
@@ -45,6 +71,13 @@ export interface OptimizerOptions {
    * Bounded and deterministic: same seed => same set of extra starts.
    */
   maxExtraRandomStarts?: number;
+  /**
+   * Width-first / length-first packing preference — see PackingPreference
+   * above. Purely a secondary local-placement preference; does not change
+   * validity, placed-count priority, or the global layout objective.
+   * Default "AUTO" preserves existing behavior exactly (no new bias term).
+   */
+  packingPreference?: PackingPreference;
 }
 
 const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
@@ -56,7 +89,18 @@ const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
   rotationStepDeg: 5,
   maxRotationCandidatesPerPart: 48,
   maxExtraRandomStarts: 16,
+  packingPreference: "AUTO",
 };
+
+/**
+ * Small, fixed weight applied to the directional preference term inside
+ * computePlacementScore (see below). Deliberately tiny relative to the
+ * existing growth/contact terms (which operate on raw mm^2 / mm*mm-scale
+ * quantities, typically in the thousands) so the directional preference
+ * can only meaningfully act when candidates are otherwise close, and can
+ * never override a genuinely better growth/contact score.
+ */
+const PACKING_PREFERENCE_WEIGHT = 0.01;
 
 // Fraction of the total time budget reserved for generating/evaluating
 // complete candidate layouts (multi-start construction) before local
@@ -235,7 +279,7 @@ export class RotationCandidateCache {
   constructor(
     private readonly rotationStepDeg: number,
     private readonly maxCandidates: number,
-  ) {}
+  ) { }
 
   get(instance: OptimizerPartInstance): RotationDeg[] {
     const cached = this.cache.get(instance.takeoffPartId);
@@ -347,6 +391,290 @@ export function generateCandidateOrigins(
   return selectBoundedCandidateOrigins(filtered, cap);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4A — bounded NFP-style / Minkowski-style true-shape candidate
+// generation.
+// ---------------------------------------------------------------------------
+// NOTE ON TERMINOLOGY: this is a bounded, conservative APPROXIMATION
+// inspired by no-fit-polygon (NFP) / Minkowski-sum concepts — it is NOT a
+// complete, exact industrial NFP implementation (no full Minkowski-sum
+// convex decomposition, no exact polygon sliding/trimming). It proposes a
+// bounded set of candidate translations derived from the MOVING shape's
+// and each OBSTACLE's actual contour vertices/edges (rather than only
+// sheet corners, existing vertices, bbox corners and gap offsets, as
+// generateCandidateOrigins does), so the optimizer can discover tighter
+// valid placements for non-rectangular parts. It NEVER decides validity —
+// every candidate it proposes still goes through the exact same
+// boundsContain() / polygonsOverlap() / polygonsMinDistance() checks in
+// findBestPlacement() as every other candidate (Part C: non-negotiable).
+
+/** Bounded cap on how many true-shape candidates a single generateTrueShapeCandidates() call may return (Part H). */
+export const MAX_TRUE_SHAPE_CANDIDATES = 64;
+
+/**
+ * Per-call caps on how many vertices of the MOVING shape and of any ONE
+ * obstacle polygon are considered (Part H — avoids the
+ * O(edgesA * edgesB * iterations) blowup a naive "every vertex against
+ * every vertex of every obstacle" approach would hit on large/complex
+ * DXF parts). Deterministic: always the first N vertices in the
+ * polygon's existing (fixed) winding order, so the same geometry always
+ * yields the same truncated vertex set.
+ */
+const MAX_TRUE_SHAPE_MOVING_VERTICES = 24;
+const MAX_TRUE_SHAPE_OBSTACLE_VERTICES = 24;
+/** Only obstacle polygons whose bbox is within this margin of the moving shape's local bbox diagonal are considered "near enough" to be worth generating contact candidates against — a cheap spatial prefilter (Part H). */
+const TRUE_SHAPE_PROXIMITY_SLACK_MULTIPLIER = 3;
+
+/** Lower bound on |cos(angle between two edge directions)| for two edges to be treated as "near-parallel" for edge-contact candidates (~11.5 degrees). */
+const NEAR_PARALLEL_COS_THRESHOLD = 0.98;
+
+/**
+ * Lightweight, opt-in diagnostics counters for Phase 4A candidate
+ * generation (Part L). Entirely optional — findBestPlacement() only
+ * touches this when a caller explicitly passes one in, so there is zero
+ * overhead (and zero behavior change) for existing callers. Never logged
+ * to console; purely a plain object a caller can inspect/aggregate.
+ */
+export interface TrueShapeDiagnostics {
+  existingCandidatesGenerated: number;
+  trueShapeCandidatesGenerated: number;
+  candidatesValidated: number;
+  validCandidatesFound: number;
+}
+
+export function makeTrueShapeDiagnostics(): TrueShapeDiagnostics {
+  return { existingCandidatesGenerated: 0, trueShapeCandidatesGenerated: 0, candidatesValidated: 0, validCandidatesFound: 0 };
+}
+
+function polygonCentroidSimple(poly: Point[]): Point {
+  let x = 0;
+  let y = 0;
+  for (const p of poly) {
+    x += p.x;
+    y += p.y;
+  }
+  return { x: x / poly.length, y: y / poly.length };
+}
+
+/** Approximate outward normal at a polygon vertex: direction from the polygon's centroid to that vertex. Simple and robust for both convex and concave polygons (it can be geometrically imprecise right at a concave notch, but that only affects which APPROXIMATE candidates get proposed — never validity, which exact validation still decides). */
+function outwardNormalAtPoint(p: Point, centroid: Point): Point {
+  const dx = p.x - centroid.x;
+  const dy = p.y - centroid.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return { x: 1, y: 0 };
+  return { x: dx / len, y: dy / len };
+}
+
+/** Outward normal of an edge (a -> b): perpendicular to the edge, oriented toward the side AWAY from the polygon's centroid. */
+function edgeOutwardNormal(a: Point, b: Point, centroid: Point): Point {
+  const ex = b.x - a.x;
+  const ey = b.y - a.y;
+  const len = Math.hypot(ex, ey);
+  if (len < 1e-9) return { x: 1, y: 0 };
+  let nx = -ey / len;
+  let ny = ex / len;
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const toMid = { x: mid.x - centroid.x, y: mid.y - centroid.y };
+  if (nx * toMid.x + ny * toMid.y < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return { x: nx, y: ny };
+}
+
+/**
+ * Bounded NFP-style/Minkowski-style candidate generator (Phase 4A, Part B).
+ *
+ * `movingPoints` is the moving shape's OWN oriented, bbox-normalized outer
+ * contour (i.e. `computeOrientedShape(...).points` for some rotation — the
+ * SAME representation findBestPlacement() already uses for every other
+ * candidate, so results plug straight into the existing pipeline). Only
+ * the outer contour is used (Part E — matches the existing optimizer's
+ * geometry model, which does not carry hole geometry into
+ * OptimizerPartInstance/WorkingSheet at all; see report).
+ *
+ * `obstaclePolygons` are already-placed parts' outer contours in the
+ * SHEET's global coordinate frame (`sheet.polygons`).
+ *
+ * Returns a bounded, deterministic list of candidate ORIGINS — i.e.
+ * translations to apply to `movingPoints` (the same (x, y) convention
+ * generateCandidateOrigins() uses) — derived from:
+ *   1. vertex-to-vertex proximity,
+ *   2. vertex-to-edge proximity (moving vertex approaching an obstacle edge),
+ *   3. edge-to-vertex proximity (obstacle vertex approaching a moving edge),
+ *   4. near-parallel edge contact,
+ *   5. every one of the above already includes a `gapMm` outward offset
+ *      (gap-offset contact positions).
+ *
+ * This is a proposal step ONLY — see the Part C note above. Nothing here
+ * decides whether a candidate is actually usable.
+ */
+export function generateTrueShapeCandidates(
+  movingPoints: Point[],
+  obstaclePolygons: Point[][],
+  gapMm: number,
+  cap: number = MAX_TRUE_SHAPE_CANDIDATES,
+  diagnostics?: TrueShapeDiagnostics,
+): Point[] {
+  if (movingPoints.length < 3 || obstaclePolygons.length === 0) return [];
+
+  const movingBBox = computeBoundingBox(movingPoints);
+  const movingDiagonal = Math.hypot(movingBBox.width, movingBBox.height);
+  const movingCentroid = polygonCentroidSimple(movingPoints);
+  const movingVerts = movingPoints.length <= MAX_TRUE_SHAPE_MOVING_VERTICES ? movingPoints : movingPoints.slice(0, MAX_TRUE_SHAPE_MOVING_VERTICES);
+
+  const raw: Point[] = [];
+
+  for (const obstacle of obstaclePolygons) {
+    if (obstacle.length < 3) continue;
+
+    // Cheap spatial prefilter (Part H): an obstacle far outside any
+    // plausible contact range of the moving shape can't produce a useful
+    // contact candidate, so skip generating (and later deduplicating)
+    // candidates against it entirely.
+    const obstacleBBox = computeBoundingBox(obstacle);
+    const proximitySlack = movingDiagonal * TRUE_SHAPE_PROXIMITY_SLACK_MULTIPLIER + gapMm;
+    const nearEnough =
+      obstacleBBox.minX - proximitySlack <= movingBBox.maxX + proximitySlack &&
+      obstacleBBox.maxX + proximitySlack >= movingBBox.minX - proximitySlack &&
+      obstacleBBox.minY - proximitySlack <= movingBBox.maxY + proximitySlack &&
+      obstacleBBox.maxY + proximitySlack >= movingBBox.minY - proximitySlack;
+    if (!nearEnough) continue;
+
+    const obstacleCentroid = polygonCentroidSimple(obstacle);
+    const obVerts = obstacle.length <= MAX_TRUE_SHAPE_OBSTACLE_VERTICES ? obstacle : obstacle.slice(0, MAX_TRUE_SHAPE_OBSTACLE_VERTICES);
+
+    // 1) vertex-to-vertex proximity: place a moving vertex just outside an obstacle vertex.
+    for (const Vm of movingVerts) {
+      for (const Wo of obVerts) {
+        const n = outwardNormalAtPoint(Wo, obstacleCentroid);
+        raw.push({ x: Wo.x + n.x * gapMm - Vm.x, y: Wo.y + n.y * gapMm - Vm.y });
+      }
+    }
+
+    // 2) vertex-to-edge proximity: a moving vertex approaching an obstacle edge's midpoint.
+    for (const Vm of movingVerts) {
+      for (let i = 0; i < obVerts.length; i++) {
+        const a = obVerts[i];
+        const b = obVerts[(i + 1) % obVerts.length];
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const n = edgeOutwardNormal(a, b, obstacleCentroid);
+        raw.push({ x: mid.x + n.x * gapMm - Vm.x, y: mid.y + n.y * gapMm - Vm.y });
+      }
+    }
+
+    // 3) edge-to-vertex proximity: an obstacle vertex approaching a moving edge's midpoint.
+    for (let i = 0; i < movingVerts.length; i++) {
+      const a = movingVerts[i];
+      const b = movingVerts[(i + 1) % movingVerts.length];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const n = edgeOutwardNormal(a, b, movingCentroid);
+      for (const Wo of obVerts) {
+        raw.push({ x: Wo.x - n.x * gapMm - mid.x, y: Wo.y - n.y * gapMm - mid.y });
+      }
+    }
+
+    // 4) near-parallel edge contact: flush-align a moving edge against an obstacle edge.
+    for (let i = 0; i < movingVerts.length; i++) {
+      const ma = movingVerts[i];
+      const mb = movingVerts[(i + 1) % movingVerts.length];
+      const mdx = mb.x - ma.x;
+      const mdy = mb.y - ma.y;
+      const mlen = Math.hypot(mdx, mdy);
+      if (mlen < 1e-9) continue;
+      const mdir = { x: mdx / mlen, y: mdy / mlen };
+      const mmid = { x: (ma.x + mb.x) / 2, y: (ma.y + mb.y) / 2 };
+
+      for (let j = 0; j < obVerts.length; j++) {
+        const oa = obVerts[j];
+        const ob = obVerts[(j + 1) % obVerts.length];
+        const odx = ob.x - oa.x;
+        const ody = ob.y - oa.y;
+        const olen = Math.hypot(odx, ody);
+        if (olen < 1e-9) continue;
+        const odir = { x: odx / olen, y: ody / olen };
+        const dot = mdir.x * odir.x + mdir.y * odir.y;
+        if (Math.abs(dot) < NEAR_PARALLEL_COS_THRESHOLD) continue; // not near-parallel enough to be a useful flush-contact candidate
+
+        const omid = { x: (oa.x + ob.x) / 2, y: (oa.y + ob.y) / 2 };
+        const on = edgeOutwardNormal(oa, ob, obstacleCentroid);
+        raw.push({ x: omid.x + on.x * gapMm - mmid.x, y: omid.y + on.y * gapMm - mmid.y });
+      }
+    }
+  }
+
+  if (diagnostics) diagnostics.trueShapeCandidatesGenerated += raw.length;
+
+  // Deterministic deduplication (Part J): a small coordinate quantization
+  // used ONLY to collapse effectively-identical candidates — the actual
+  // (x, y) values pushed into `dedup` remain full, unrounded precision.
+  const DEDUP_QUANTIZE_MM = 0.01;
+  const seen = new Set<string>();
+  const dedup: Point[] = [];
+  for (const p of raw) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+    const key = `${Math.round(p.x / DEDUP_QUANTIZE_MM)}:${Math.round(p.y / DEDUP_QUANTIZE_MM)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedup.push(p);
+  }
+
+  // Deterministic ordering + bounded cap (Part H, Part J), reusing the
+  // same deterministic "lowest Y, then lowest X, then evenly-spaced
+  // stride sample" selection the existing bbox-based candidate generator
+  // uses (selectBoundedCandidateOrigins), so true-shape candidates are
+  // bounded and sampled the same principled way as every other candidate
+  // source rather than by an arbitrary/ad hoc truncation.
+  dedup.sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  return selectBoundedCandidateOrigins(dedup, cap);
+}
+
+/**
+ * Phase 4A, Part G — hybrid candidate generation: existing bbox/vertex
+ * candidates PLUS bounded true-shape candidates, deduplicated, funneled
+ * into ONE combined pool that findBestPlacement() then validates and
+ * scores exactly as before. The existing generator remains fully
+ * functional and is always included — if true-shape generation finds
+ * nothing (e.g. no obstacles placed yet), this returns exactly what
+ * generateCandidateOrigins() alone would have returned (backward
+ * compatible, Part G).
+ */
+function generateHybridCandidateOrigins(
+  shape: OrientedShape,
+  sheet: WorkingSheet,
+  gapMm: number,
+  maxCandidates: number,
+  diagnostics?: TrueShapeDiagnostics,
+): Point[] {
+  const existing = generateCandidateOrigins(shape.width, shape.height, sheet, gapMm, maxCandidates);
+  if (diagnostics) diagnostics.existingCandidatesGenerated += existing.length;
+
+  if (sheet.polygons.length === 0) return existing;
+
+  const trueShapeRaw = generateTrueShapeCandidates(shape.points, sheet.polygons, gapMm, MAX_TRUE_SHAPE_CANDIDATES, diagnostics);
+  if (trueShapeRaw.length === 0) return existing;
+
+  const seen = new Set<string>();
+  const combined: Point[] = [];
+  for (const p of existing) {
+    const key = `${p.x.toFixed(2)}:${p.y.toFixed(2)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(p);
+  }
+  for (const p of trueShapeRaw) {
+    // Same in-bounds prefilter generateCandidateOrigins() applies to its
+    // own raw candidates — true-shape candidates get no special pass.
+    if (p.x < sheet.minX - 1e-6 || p.y < sheet.minY - 1e-6) continue;
+    if (p.x + shape.width > sheet.maxX + 1e-6 || p.y + shape.height > sheet.maxY + 1e-6) continue;
+    const key = `${p.x.toFixed(2)}:${p.y.toFixed(2)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(p);
+  }
+  return combined;
+}
+
 interface PlacementAttempt {
   x: number;
   y: number;
@@ -449,6 +777,36 @@ function contactLength(candidate: BoundingBox, sheet: WorkingSheet, obstacleBoxe
  * rotation. Using the part's true (rotation-invariant) area instead
  * keeps the comparison fair across rotations of the same part.
  */
+/**
+ * Directional secondary preference (see PackingPreference above). Compares
+ * how much the occupied footprint's X extent (physical LENGTH) grows
+ * versus its Y extent (physical WIDTH) when this candidate is added, and
+ * returns a small signed bias — lower is better, matching
+ * computePlacementScore's convention.
+ *
+ * WIDTH_FIRST: penalize growth along X (length) more than growth along Y
+ * (width), so candidates that extend the footprint across the width
+ * before lengthening it are preferred.
+ * LENGTH_FIRST: the opposite.
+ * AUTO: always 0 — no bias, existing ranking is unchanged.
+ */
+function packingPreferenceBias(
+  occupiedBefore: BoundingBox | null,
+  occupiedAfter: BoundingBox,
+  packingPreference: PackingPreference,
+): number {
+  if (packingPreference === "AUTO") return 0;
+
+  const lengthGrowth = occupiedAfter.width - (occupiedBefore ? occupiedBefore.width : 0); // X axis == physical lengthMm
+  const widthGrowth = occupiedAfter.height - (occupiedBefore ? occupiedBefore.height : 0); // Y axis == physical widthMm
+
+  if (packingPreference === "WIDTH_FIRST") {
+    return PACKING_PREFERENCE_WEIGHT * (lengthGrowth - widthGrowth);
+  }
+  // LENGTH_FIRST
+  return PACKING_PREFERENCE_WEIGHT * (widthGrowth - lengthGrowth);
+}
+
 function computePlacementScore(
   candidateBBox: BoundingBox,
   occupiedBefore: BoundingBox | null,
@@ -456,11 +814,13 @@ function computePlacementScore(
   obstacleBoxes: BoundingBox[],
   gapMm: number,
   contactScale: number,
+  packingPreference: PackingPreference = "AUTO",
 ): number {
   const occupiedAfter = unionBBox(occupiedBefore, candidateBBox);
   const growth = occupiedBBoxArea(occupiedAfter) - occupiedBBoxArea(occupiedBefore);
   const contact = contactLength(candidateBBox, sheet, obstacleBoxes, gapMm);
-  return growth - contact * contactScale;
+  const directionalBias = packingPreferenceBias(occupiedBefore, occupiedAfter, packingPreference);
+  return growth - contact * contactScale + directionalBias;
 }
 
 export function findBestPlacement(
@@ -469,6 +829,8 @@ export function findBestPlacement(
   config: EngineConfig,
   maxCandidates: number,
   rotations: RotationCandidateCache,
+  packingPreference: PackingPreference = "AUTO",
+  diagnostics?: TrueShapeDiagnostics,
 ): PlacementAttempt | null {
   if (usableWidth(sheet) <= 0 || usableHeight(sheet) <= 0) return null;
 
@@ -508,10 +870,11 @@ export function findBestPlacement(
     const shape = computeOrientedShape(instance.outer, rotation);
     if (shape.width > usableWidth(sheet) + 1e-6 || shape.height > usableHeight(sheet) + 1e-6) continue;
 
-    const candidates = generateCandidateOrigins(shape.width, shape.height, sheet, config.partGapMm, maxCandidates);
+    const candidates = generateHybridCandidateOrigins(shape, sheet, config.partGapMm, maxCandidates, diagnostics);
 
     for (const c of candidates) {
       rotations.recordEvaluation();
+      if (diagnostics) diagnostics.candidatesValidated++;
       const polygon = translatePoints(shape.points, c.x, c.y);
 
       // ---- exact geometry validation (unchanged from before) ----------
@@ -560,7 +923,8 @@ export function findBestPlacement(
       if (polygonCollision) continue;
 
       // ---- candidate is valid: score it, don't return early -----------
-      const score = computePlacementScore(candidateBBox, occupiedBefore, sheet, obstacleBoxes, config.partGapMm, contactScale);
+      if (diagnostics) diagnostics.validCandidatesFound++;
+      const score = computePlacementScore(candidateBBox, occupiedBefore, sheet, obstacleBoxes, config.partGapMm, contactScale, packingPreference);
       const scored: ScoredCandidate = {
         x: c.x,
         y: c.y,
@@ -655,6 +1019,7 @@ function constructLayout(
   config: EngineConfig,
   maxCandidates: number,
   rotations: RotationCandidateCache,
+  packingPreference: PackingPreference = "AUTO",
 ): ConstructResult {
   const sheets: WorkingSheet[] = [];
   const openedCountBySourceId = new Map<string, number>();
@@ -687,7 +1052,7 @@ function constructLayout(
     let placed = false;
 
     for (const sheet of sheets) {
-      const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations);
+      const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference);
       if (attempt) {
         commitPlacement(sheet, instance, attempt);
         placed = true;
@@ -701,7 +1066,7 @@ function constructLayout(
         const sheet = openNextSheet();
         if (!sheet) break;
         freshAttempts++;
-        const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations);
+        const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference);
         if (attempt) {
           commitPlacement(sheet, instance, attempt);
           placed = true;
@@ -1319,6 +1684,7 @@ function localImprovementPass(
   rng: () => number,
   rotations: RotationCandidateCache,
   remainingParts: OptimizerPartInstance[],
+  packingPreference: PackingPreference = "AUTO",
 ): { sheets: WorkingSheet[]; moves: number; trialsEvaluated: number } {
   let working = cloneLayout(sheets);
   let bestScore = scoreLayout(working, areaByPartId, remainingParts);
@@ -1365,7 +1731,7 @@ function localImprovementPass(
     // deterministic tie-break, with no extra bookkeeping required.
     let relocated: { sheetIdx: number; attempt: PlacementAttempt } | null = null;
     trial.forEach((candidateSheet, sIdx) => {
-      const attempt = findBestPlacement(asInstance, candidateSheet, config, maxCandidates, rotations);
+      const attempt = findBestPlacement(asInstance, candidateSheet, config, maxCandidates, rotations, packingPreference);
       if (!attempt) return;
       if (!relocated || comparePlacementQuality(attempt, relocated.attempt) < 0) {
         relocated = { sheetIdx: sIdx, attempt };
@@ -1417,6 +1783,7 @@ export function localImprovement(
   deadline: number,
   rng: () => number,
   rotations: RotationCandidateCache,
+  packingPreference: PackingPreference = "AUTO",
 ): { sheets: WorkingSheet[]; moves: number; trialsEvaluated: number } {
   const remainingParts = buildRepresentativeInstances(outerByPartId, areaByPartId);
 
@@ -1427,7 +1794,7 @@ export function localImprovement(
   for (let pass = 0; pass < MAX_LOCAL_IMPROVEMENT_PASSES; pass++) {
     if (Date.now() > deadline) break;
 
-    const result = localImprovementPass(working, areaByPartId, outerByPartId, config, maxCandidates, deadline, rng, rotations, remainingParts);
+    const result = localImprovementPass(working, areaByPartId, outerByPartId, config, maxCandidates, deadline, rng, rotations, remainingParts, packingPreference);
     working = result.sheets;
     totalMoves += result.moves;
     totalTrials += result.trialsEvaluated;
@@ -1827,6 +2194,7 @@ export function adaptiveRuinAndRecreate(
   searchStartedAt: number,
   rng: () => number,
   rotations: RotationCandidateCache,
+  packingPreference: PackingPreference = "AUTO",
 ): {
   sheets: WorkingSheet[];
   iterations: number;
@@ -1917,7 +2285,7 @@ export function adaptiveRuinAndRecreate(
     for (const r of ordered) {
       let placedSomewhere = false;
       for (const sheet of trial) {
-        const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations);
+        const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations, packingPreference);
         if (attempt) {
           commitPlacement(sheet, r.instance, attempt);
           placedSomewhere = true;
@@ -2045,7 +2413,7 @@ export function packRemainingOntoSeededSheet(
   const stillUnplaced: OptimizerPartInstance[] = [];
 
   for (const instance of ordered) {
-    const attempt = findBestPlacement(instance, sheet, config, opts.maxCandidatesPerPart, rotations);
+    const attempt = findBestPlacement(instance, sheet, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
     if (attempt) {
       commitPlacement(sheet, instance, attempt);
       newlyPlacedCountByPart.set(instance.takeoffPartId, (newlyPlacedCountByPart.get(instance.takeoffPartId) ?? 0) + 1);
@@ -2147,6 +2515,7 @@ export function optimizeGroupPlacement(
       config,
       opts.maxCandidatesPerPart,
       rotations,
+      opts.packingPreference,
     );
     const emptyMetrics = summarizeSheets(sheets, areaByPartId);
     return {
@@ -2199,7 +2568,7 @@ export function optimizeGroupPlacement(
   for (let i = 0; i < strategies.length; i++) {
     if (Date.now() > constructionDeadline) break;
     const strat = strategies[i];
-    const result = constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations);
+    const result = constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
     strategiesEvaluated++;
     const quality: LayoutQuality = {
       placedTotal: totalPlaced(result.sheets),
@@ -2216,7 +2585,7 @@ export function optimizeGroupPlacement(
     // back to a single guaranteed construction so a valid result is always
     // returned (spec item 3 / TEST D: very small timeLimitMs must still
     // terminate safely).
-    best = constructLayout(strategies[0].order, rankedSources, config, opts.maxCandidatesPerPart, rotations);
+    best = constructLayout(strategies[0].order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
     bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId, remainingParts) };
     bestStartName = strategies[0].name;
     strategiesEvaluated++;
@@ -2224,7 +2593,7 @@ export function optimizeGroupPlacement(
 
   const rng = mulberry32(opts.randomSeed + 1000);
 
-  const improved = localImprovement(best.sheets, areaByPartId, outerByPartId, config, opts.maxCandidatesPerPart, deadline, rng, rotations);
+  const improved = localImprovement(best.sheets, areaByPartId, outerByPartId, config, opts.maxCandidatesPerPart, deadline, rng, rotations, opts.packingPreference);
 
   const ruinBudget = Math.max(0, opts.maxIterations - strategiesEvaluated);
   const ruinSearchStartedAt = Date.now();
@@ -2240,6 +2609,7 @@ export function optimizeGroupPlacement(
     ruinSearchStartedAt,
     rng,
     rotations,
+    opts.packingPreference,
   );
 
   let finalSheets = recreated.sheets;

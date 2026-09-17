@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runNestingAlgorithm, type EnginePartInput, type EngineSourceInput, type EngineConfig } from "./nesting-engine";
-import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, computeOrientedShape, translatePoints, type RotationDeg } from "./nesting-geometry";
+import { polygonsOverlap, polygonsMinDistance, boundsContain, transformGeometryForPlacement, computeOrientedShape, translatePoints, computeBoundingBox, type RotationDeg } from "./nesting-geometry";
 import type { Point } from "./dxf";
 import {
   findBestPlacement,
@@ -26,12 +26,18 @@ import {
   RUIN_OPERATOR_NAMES,
   RUIN_SIZE_TIERS,
   RECONSTRUCTION_STRATEGY_NAMES,
+  OPTIMIZER_ALGORITHM_VERSION,
+  generateTrueShapeCandidates,
+  MAX_TRUE_SHAPE_CANDIDATES,
+  makeTrueShapeDiagnostics,
   type OptimizerPartInstance,
   type RuinOperatorName,
   type RuinOperatorStats,
   type PoolSolution,
   type WorkingSheet,
   type LayoutQuality,
+  type PackingPreference,
+  type TrueShapeDiagnostics,
 } from "./nesting-optimizer";
 import type { EnginePlacementResult } from "./nesting-engine";
 
@@ -617,9 +623,15 @@ describe("FIX 2 — bounded candidate origin sampling preserves spatial diversit
     const evaluated = rotations.evaluationCount - before;
 
     expect(attempt).not.toBeNull();
-    // Bounded: at most `smallCap` origins evaluated per rotation candidate
-    // (4 rotations available at a 90-degree step here).
-    expect(evaluated).toBeLessThanOrEqual(smallCap * 4);
+    // Bounded: at most `smallCap` EXISTING origins plus up to
+    // MAX_TRUE_SHAPE_CANDIDATES true-shape origins evaluated per rotation
+    // candidate (4 rotations available at a 90-degree step here). The
+    // true-shape term is new as of Phase 4A (hybrid candidate generation,
+    // see generateHybridCandidateOrigins) — this bound was
+    // `smallCap * 4` before Phase 4A and is widened here to match, while
+    // still asserting the search remains STRICTLY BOUNDED (not
+    // unbounded/exhaustive).
+    expect(evaluated).toBeLessThanOrEqual((smallCap + MAX_TRUE_SHAPE_CANDIDATES) * 4);
 
     // Deterministic: repeating the exact same search reproduces the exact
     // same winning placement.
@@ -1350,6 +1362,631 @@ describe("PHASE 3 — ruin operators / reconstruction / acceptance / solution po
   // by the overall test run: the "PHASE 2A" and "PHASE 2B" describe blocks
   // above, and nesting-assisted-session.test.ts, all still pass unchanged).
 });
+
+// ----------------------------------------------------------------------------
+// Width-first / length-first packing preference (follow-up to Phase 3).
+//
+// Coordinate mapping used throughout (confirmed against makeWorkingSheet()
+// and buildOccupancyGrid()'s comment in nesting-optimizer.ts): the
+// WorkingSheet's X axis is the sheet's PHYSICAL LENGTH (source.lengthMm)
+// and its Y axis is the sheet's PHYSICAL WIDTH (source.widthMm). So
+// "extend along X" == "extend along the physical length" and "extend
+// along Y" == "extend along the physical width".
+// ----------------------------------------------------------------------------
+describe("Packing preference — WIDTH_FIRST / LENGTH_FIRST / AUTO", () => {
+  const PACKING_PREF_CONFIG: EngineConfig = {
+    marginLeftMm: 0,
+    marginRightMm: 0,
+    marginTopMm: 0,
+    marginBottomMm: 0,
+    partGapMm: 0,
+  };
+
+  // Sheet proportioned like the reported case (1500mm width x 6000mm
+  // length). 500x500 square parts are small relative to both dimensions,
+  // so a first part committed at the origin leaves TWO equally-valid,
+  // equally-scored second-part candidates that differ ONLY in direction:
+  // one extends the occupied footprint along X (physical length), the
+  // other along Y (physical width). Neither candidate touches any sheet
+  // boundary the other doesn't (1500 > 2*500 and 6000 >> 2*500), so the
+  // existing growth/contact placement score is identical for both — any
+  // difference in which one wins is attributable ONLY to the directional
+  // preference.
+  function buildSheetWithOnePart() {
+    const source: EngineSourceInput = {
+      sourceSheetId: "S1",
+      material: "Steel",
+      thicknessMm: 6,
+      widthMm: 1500, // physical width -> Y axis
+      lengthMm: 6000, // physical length -> X axis
+    };
+    const sheet = makeWorkingSheet(source, PACKING_PREF_CONFIG);
+    sheet.placements.push({
+      takeoffPartId: "seed",
+      instanceNumber: 1,
+      xMm: 0,
+      yMm: 0,
+      rotationDeg: 0,
+      widthMm: 500,
+      heightMm: 500,
+    });
+    sheet.polygons.push(rect(500, 500));
+    return sheet;
+  }
+
+  function secondPartInstance(): OptimizerPartInstance {
+    return {
+      takeoffPartId: "p2",
+      itemNo: 2,
+      instanceNumber: 1,
+      areaSqm: (500 * 500) / 1_000_000,
+      outer: rect(500, 500),
+    };
+  }
+
+  // 1 — AUTO remains backward compatible with the current/default behavior.
+  it("TEST 1 — AUTO (explicit) matches the default (omitted) preference exactly", () => {
+    const sheet = buildSheetWithOnePart();
+    const instance = secondPartInstance();
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const withDefault = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations);
+    const withExplicitAuto = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "AUTO");
+
+    expect(withExplicitAuto).toEqual(withDefault);
+    expect(withDefault).not.toBeNull();
+    // Matches the reported bug behavior: the tie falls through to lower Y,
+    // i.e. the second part extends along X (physical length) first.
+    expect(withDefault!.x).toBe(500);
+    expect(withDefault!.y).toBe(0);
+  });
+
+  // 2 — WIDTH_FIRST prefers filling across the physical sheet width before
+  // extending along the physical length, in a controlled scenario where
+  // both placements are equally valid (see buildSheetWithOnePart above).
+  it("TEST 2 — WIDTH_FIRST prefers extending along physical WIDTH (Y) over physical LENGTH (X)", () => {
+    const sheet = buildSheetWithOnePart();
+    const instance = secondPartInstance();
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "WIDTH_FIRST");
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.x).toBe(0);
+    expect(attempt!.y).toBe(500); // grew along Y (width), not X (length)
+  });
+
+  // 3 — LENGTH_FIRST prefers the opposite direction.
+  it("TEST 3 — LENGTH_FIRST prefers extending along physical LENGTH (X) over physical WIDTH (Y)", () => {
+    const sheet = buildSheetWithOnePart();
+    const instance = secondPartInstance();
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "LENGTH_FIRST");
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.x).toBe(500); // grew along X (length), not Y (width)
+    expect(attempt!.y).toBe(0);
+  });
+
+  function batchOfParts(qty: number): EnginePartInput[] {
+    return [part({ takeoffPartId: "p1", itemNo: 1, outer: rect(500, 500), qty })];
+  }
+
+  // 4/5 — WIDTH_FIRST never creates overlap and never violates sheet bounds
+  // across a full multi-part run (checked via the same independent,
+  // from-scratch collision/bounds re-check used by every other test here).
+  it("TEST 4/5 — WIDTH_FIRST: full run stays collision-free and within sheet bounds", () => {
+    const parts = batchOfParts(24);
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+    const config = DEFAULT_CONFIG();
+
+    const result = runNestingAlgorithm(parts, sources, config, { packingPreference: "WIDTH_FIRST" });
+
+    expect(result.totalPartsPlaced).toBeGreaterThan(0);
+    assertLayoutIsCollisionFree(result, parts, config);
+  });
+
+  // 6 — WIDTH_FIRST still respects partGapMm.
+  it("TEST 6 — WIDTH_FIRST still respects the configured partGapMm", () => {
+    const parts = batchOfParts(16);
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 5 };
+
+    const result = runNestingAlgorithm(parts, sources, config, { packingPreference: "WIDTH_FIRST" });
+
+    expect(result.totalPartsPlaced).toBeGreaterThan(0);
+    assertLayoutIsCollisionFree(result, parts, config);
+
+    for (const group of result.groups) {
+      for (const sheet of group.sheets) {
+        const polygons = sheet.placements.map((p) => {
+          const { outer } = transformGeometryForPlacement(rect(500, 500), [], p.rotationDeg as RotationDeg, p.xMm, p.yMm);
+          return outer;
+        });
+        for (let i = 0; i < polygons.length; i++) {
+          for (let j = i + 1; j < polygons.length; j++) {
+            expect(polygonsMinDistance(polygons[i], polygons[j])).toBeGreaterThanOrEqual(5 - 1e-6);
+          }
+        }
+      }
+    }
+  });
+
+  // 7 — same seed + same preference produces deterministic results.
+  it("TEST 7 — same seed + same preference is fully deterministic", () => {
+    const parts = batchOfParts(20);
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+    const config = DEFAULT_CONFIG();
+    // Generous time budget relative to this job, AND a modest maxIterations
+    // cap (kept low deliberately so the deterministic iteration cap is
+    // reached well before the time budget even under CPU contention from
+    // other tests running in parallel) — the binding constraint here must
+    // be the iteration cap, not wall-clock timing.
+    const options = { packingPreference: "WIDTH_FIRST" as PackingPreference, randomSeed: 4242, timeLimitMs: 20000, maxIterations: 20 };
+
+    const a = runNestingAlgorithm(parts, sources, config, options);
+    const b = runNestingAlgorithm(parts, sources, config, options);
+
+    const metricsA = a.groups.map((g) => ({ ...g.optimization, timeMs: 0 }));
+    const metricsB = b.groups.map((g) => ({ ...g.optimization, timeMs: 0 }));
+    expect(metricsB).toEqual(metricsA);
+    expect(b.groups.map((g) => g.sheets)).toEqual(a.groups.map((g) => g.sheets));
+  });
+
+  // 8 — changing WIDTH_FIRST/LENGTH_FIRST changes directional preference
+  // only where valid alternatives actually exist: (a) the two-candidate
+  // scenario above genuinely changes outcome; (b) a scenario with only ONE
+  // geometrically valid placement is unaffected by the preference.
+  it("TEST 8a — preference changes the outcome only where a real directional alternative exists", () => {
+    const sheet = buildSheetWithOnePart();
+    const instance = secondPartInstance();
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const widthFirst = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "WIDTH_FIRST");
+    const lengthFirst = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "LENGTH_FIRST");
+
+    expect([widthFirst!.x, widthFirst!.y]).not.toEqual([lengthFirst!.x, lengthFirst!.y]);
+  });
+
+  it("TEST 8b — preference has no effect when only one valid placement exists", () => {
+    // A sheet just barely big enough for the seed part plus exactly one
+    // more, in exactly one spot (to the right; there is no room above).
+    const source: EngineSourceInput = {
+      sourceSheetId: "S1",
+      material: "Steel",
+      thicknessMm: 6,
+      widthMm: 500, // exactly one part tall — no room to grow along Y
+      lengthMm: 1000, // exactly two parts wide — one spot to grow along X
+    };
+    const sheet = makeWorkingSheet(source, PACKING_PREF_CONFIG);
+    sheet.placements.push({
+      takeoffPartId: "seed",
+      instanceNumber: 1,
+      xMm: 0,
+      yMm: 0,
+      rotationDeg: 0,
+      widthMm: 500,
+      heightMm: 500,
+    });
+    sheet.polygons.push(rect(500, 500));
+    const instance = secondPartInstance();
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const auto = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "AUTO");
+    const widthFirst = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "WIDTH_FIRST");
+    const lengthFirst = findBestPlacement(instance, sheet, PACKING_PREF_CONFIG, 60, rotations, "LENGTH_FIRST");
+
+    // Only one geometrically valid spot exists, so every preference must
+    // land on the exact same x/y/rotation — the tiny directional score
+    // term (see packingPreferenceBias) is still additive to `score` even
+    // then, but it can never change WHICH candidate wins when there is
+    // only one to choose from.
+    expect([widthFirst!.x, widthFirst!.y, widthFirst!.rotationDeg]).toEqual([auto!.x, auto!.y, auto!.rotationDeg]);
+    expect([lengthFirst!.x, lengthFirst!.y, lengthFirst!.rotationDeg]).toEqual([auto!.x, auto!.y, auto!.rotationDeg]);
+    expect(auto!.x).toBe(500);
+    expect(auto!.y).toBe(0);
+  });
+
+  // 9 — placed-count-first priority remains unchanged regardless of
+  // packing preference.
+  it("TEST 9 — placed-count is identical across AUTO/WIDTH_FIRST/LENGTH_FIRST", () => {
+    const parts = batchOfParts(30);
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+    const config = DEFAULT_CONFIG();
+
+    const auto = runNestingAlgorithm(parts, sources, config, { packingPreference: "AUTO" });
+    const widthFirst = runNestingAlgorithm(parts, sources, config, { packingPreference: "WIDTH_FIRST" });
+    const lengthFirst = runNestingAlgorithm(parts, sources, config, { packingPreference: "LENGTH_FIRST" });
+
+    expect(widthFirst.totalPartsPlaced).toBe(auto.totalPartsPlaced);
+    expect(lengthFirst.totalPartsPlaced).toBe(auto.totalPartsPlaced);
+  });
+
+  it("OPTIMIZER_ALGORITHM_VERSION reflects the packing-preference feature or later", () => {
+    // This describe block's own version assertion predates Phase 4A; the
+    // authoritative, current-version check now lives in the Phase 4A
+    // describe block below ("OPTIMIZER_ALGORITHM_VERSION was bumped to
+    // 1.4.0"). Kept here only to confirm the constant is still a valid,
+    // non-empty semantic version string reachable from this import.
+    expect(OPTIMIZER_ALGORITHM_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+// 10 — existing Phase 1 / Phase 2A / Phase 2B / Phase 3 tests remain
+// passing: verified by running the full nesting-optimizer.test.ts suite
+// (every describe block above this one is unmodified).
+
+// ----------------------------------------------------------------------------
+// Phase 4A — True-shape / NFP-style candidate generation.
+// ----------------------------------------------------------------------------
+describe("Phase 4A — true-shape / NFP-style candidate generation", () => {
+  const ZERO_GAP_LARGE_CONFIG: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+  // Concave "U" polygon (bbox 300x300): material is the full 300x300
+  // square MINUS a 100x150 slot notch cut from the middle of the TOP
+  // edge (x:100-200, y:150-300). Unlike a corner notch, this slot's
+  // inner corners — (100,150) and (200,150) — are STRICTLY INTERIOR to
+  // the shape's bounding box on BOTH axes (neither x nor y equals a bbox
+  // extreme of 0 or 300). The existing candidate generator can only ever
+  // align one of the moving shape's four BBOX CORNERS against an
+  // obstacle vertex/edge (a fixed, single-axis offset from the obstacle
+  // vertex) — it has no way to target an arbitrary interior vertex like
+  // this. This is exactly the class of position true-shape candidate
+  // generation adds.
+  function concaveL(): Point[] {
+    return [
+      { x: 0, y: 0 },
+      { x: 300, y: 0 },
+      { x: 300, y: 300 },
+      { x: 200, y: 300 },
+      { x: 200, y: 150 },
+      { x: 100, y: 150 },
+      { x: 100, y: 300 },
+      { x: 0, y: 300 },
+    ];
+  }
+
+  function largeSheet(): WorkingSheet {
+    const source: EngineSourceInput = { sourceSheetId: "S1", material: "Steel", thicknessMm: 6, widthMm: 3000, lengthMm: 3000 };
+    return makeWorkingSheet(source, ZERO_GAP_LARGE_CONFIG);
+  }
+
+  function commitObstacle(sheet: WorkingSheet, outer: Point[], takeoffPartId = "obstacle") {
+    const bbox = computeBoundingBox(outer);
+    sheet.placements.push({
+      takeoffPartId,
+      instanceNumber: 1,
+      xMm: bbox.minX,
+      yMm: bbox.minY,
+      rotationDeg: 0,
+      widthMm: bbox.width,
+      heightMm: bbox.height,
+    });
+    sheet.polygons.push(outer);
+  }
+
+  // 1/2 — deterministic: same input + same rotation + same gap produces identical candidates.
+  it("TEST 1/2 — generateTrueShapeCandidates is deterministic for identical inputs", () => {
+    const moving = computeOrientedShape(concaveL(), 0).points;
+    const obstacle = rect(120, 120).map((p) => ({ x: p.x + 500, y: p.y + 500 }));
+
+    const a = generateTrueShapeCandidates(moving, [obstacle], 2);
+    const b = generateTrueShapeCandidates(moving, [obstacle], 2);
+
+    expect(b).toEqual(a);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  // 3 — candidate count never exceeds MAX_TRUE_SHAPE_CANDIDATES.
+  it("TEST 3 — candidate count is always bounded by MAX_TRUE_SHAPE_CANDIDATES", () => {
+    const moving = computeOrientedShape(concaveL(), 0).points;
+    // Many obstacles, each with many vertices, to try to force an explosion.
+    const obstacles: Point[][] = [];
+    for (let i = 0; i < 15; i++) {
+      const poly: Point[] = [];
+      const cx = 400 + i * 90;
+      const cy = 400 + (i % 5) * 90;
+      const sides = 10;
+      for (let k = 0; k < sides; k++) {
+        const ang = (k / sides) * Math.PI * 2;
+        poly.push({ x: cx + 40 * Math.cos(ang), y: cy + 40 * Math.sin(ang) });
+      }
+      obstacles.push(poly);
+    }
+
+    const candidates = generateTrueShapeCandidates(moving, obstacles, 2);
+    expect(candidates.length).toBeLessThanOrEqual(MAX_TRUE_SHAPE_CANDIDATES);
+
+    const smallCap = generateTrueShapeCandidates(moving, obstacles, 2, 10);
+    expect(smallCap.length).toBeLessThanOrEqual(10);
+  });
+
+  // 4 — vertex/edge proximity candidate generated for a simple non-rectangular shape.
+  it("TEST 4 — a triangle generates vertex/edge proximity candidates against a square obstacle", () => {
+    const moving = computeOrientedShape(rightTriangle(200, 150), 0).points; // simple non-rectangular shape
+    const obstacle = rect(100, 100).map((p) => ({ x: p.x + 600, y: p.y + 600 }));
+
+    const candidates = generateTrueShapeCandidates(moving, [obstacle], 3);
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const c of candidates) {
+      expect(Number.isFinite(c.x)).toBe(true);
+      expect(Number.isFinite(c.y)).toBe(true);
+    }
+  });
+
+  // 5 — concave L-shaped part produces usable true-shape candidates.
+  it("TEST 5 — the concave L produces true-shape candidates, and at least one is valid on a real sheet", () => {
+    const sheet = largeSheet();
+    const obstacle = rect(90, 110).map((p) => ({ x: p.x + 900, y: p.y + 900 }));
+    commitObstacle(sheet, obstacle);
+
+    const shape = computeOrientedShape(concaveL(), 0);
+    const candidates = generateTrueShapeCandidates(shape.points, sheet.polygons, sheet.placements.length ? 0 : 0);
+    expect(candidates.length).toBeGreaterThan(0);
+
+    const usable = candidates.some((c) => {
+      const polygon = translatePoints(shape.points, c.x, c.y);
+      if (!boundsContain(polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)) return false;
+      return !polygonsOverlap(polygon, obstacle);
+    });
+    expect(usable).toBe(true);
+  });
+
+  // 6 — hole-containing part does not break candidate generation; Part E:
+  // the existing optimizer geometry model (OptimizerPartInstance /
+  // WorkingSheet) does not carry hole geometry into the nesting-optimizer
+  // at all — makePartGeometry's `holes` array is not part of
+  // OptimizerPartInstance and sheet.polygons only ever stores OUTER
+  // contours. True-shape candidate generation preserves that: it is only
+  // ever given outer contours, exactly like the existing pipeline.
+  it("TEST 6 — a part whose PartGeometry includes holes still generates candidates using only the outer contour", () => {
+    const outerWithHoleInModel = rect(200, 200);
+    const holeRing: Point[] = [
+      { x: 60, y: 60 },
+      { x: 140, y: 60 },
+      { x: 140, y: 140 },
+      { x: 60, y: 140 },
+    ];
+    // Mirrors how the wider geometry layer represents a part with a hole
+    // (outer + holes[]) — nesting-optimizer.ts intentionally only ever
+    // consumes `outer`.
+    const geometry = { outer: outerWithHoleInModel, holes: [holeRing], areaSqm: 0.03, bbox: computeBoundingBox(outerWithHoleInModel) };
+
+    const sheet = largeSheet();
+    const obstacle = rect(80, 80).map((p) => ({ x: p.x + 500, y: p.y + 500 }));
+    commitObstacle(sheet, obstacle);
+
+    const shape = computeOrientedShape(geometry.outer, 0);
+    expect(() => generateTrueShapeCandidates(shape.points, sheet.polygons, 0)).not.toThrow();
+    const candidates = generateTrueShapeCandidates(shape.points, sheet.polygons, 0);
+    expect(candidates.length).toBeGreaterThan(0);
+    // The hole never influences the candidate positions — only `outer` was passed in.
+  });
+
+  // 7 — exact overlap validation still rejects invalid candidates, even
+  // when true-shape generation proposes ones that would overlap.
+  it("TEST 7 — findBestPlacement never returns an overlapping placement, hybrid candidates included", () => {
+    const sheet = largeSheet();
+    const obstacle = rect(300, 300).map((p) => ({ x: p.x + 200, y: p.y + 200 })); // big obstacle, easy for true-shape to propose bad candidates near it
+    commitObstacle(sheet, obstacle);
+
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO");
+    expect(attempt).not.toBeNull();
+    expect(polygonsOverlap(attempt!.polygon, obstacle)).toBe(false);
+    expect(boundsContain(attempt!.polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)).toBe(true);
+  });
+
+  // 8 — exact gap validation still rejects candidates violating partGapMm.
+  it("TEST 8 — findBestPlacement respects partGapMm even with hybrid candidates", () => {
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 8 };
+    const source: EngineSourceInput = { sourceSheetId: "S1", material: "Steel", thicknessMm: 6, widthMm: 3000, lengthMm: 3000 };
+    const sheet = makeWorkingSheet(source, config);
+    const obstacle = rect(300, 300).map((p) => ({ x: p.x + 200, y: p.y + 200 }));
+    commitObstacle(sheet, obstacle);
+
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, config, 60, rotations, "AUTO");
+    expect(attempt).not.toBeNull();
+    expect(polygonsMinDistance(attempt!.polygon, obstacle)).toBeGreaterThanOrEqual(8 - 1e-6);
+  });
+
+  // 9 — sheet bounds validation still rejects out-of-sheet candidates.
+  it("TEST 9 — findBestPlacement never returns a candidate outside sheet bounds, even near the edge", () => {
+    const source: EngineSourceInput = { sourceSheetId: "S1", material: "Steel", thicknessMm: 6, widthMm: 400, lengthMm: 400 };
+    const sheet = makeWorkingSheet(source, ZERO_GAP_LARGE_CONFIG);
+    const obstacle = rect(80, 80).map((p) => ({ x: p.x + 10, y: p.y + 10 })); // near the corner, close to sheet edges
+    commitObstacle(sheet, obstacle);
+
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO");
+    if (attempt) {
+      expect(boundsContain(attempt.polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)).toBe(true);
+    }
+  });
+
+  // 10 — existing candidate generator remains functional (unchanged behavior).
+  it("TEST 10 — generateCandidateOrigins (the pre-4A generator) is unaffected and still works standalone", () => {
+    const source: EngineSourceInput = { sourceSheetId: "S1", material: "Steel", thicknessMm: 6, widthMm: 1000, lengthMm: 1000 };
+    const sheet = makeWorkingSheet(source, ZERO_GAP_LARGE_CONFIG);
+    const origins = generateCandidateOrigins(100, 100, sheet, 0, 60);
+    expect(origins.length).toBeGreaterThan(0);
+    expect(origins[0]).toEqual({ x: sheet.minX, y: sheet.minY });
+  });
+
+  // 11 — hybrid candidate generation can find a valid placement when
+  // EITHER existing OR true-shape candidates provide it: with no
+  // obstacles yet placed, true-shape generation contributes nothing
+  // (sheet.polygons is empty) and the optimizer must still behave
+  // correctly using only the existing generator (Part G fallback).
+  it("TEST 11 — with no obstacles placed yet, findBestPlacement still works from existing candidates alone", () => {
+    const sheet = largeSheet(); // no commitObstacle call — sheet.polygons is empty
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO");
+    expect(attempt).not.toBeNull();
+    expect(attempt!.x).toBe(sheet.minX);
+    expect(attempt!.y).toBe(sheet.minY);
+  });
+
+  // 12 — IMPORTANT GEOMETRY REGRESSION: true-shape candidates find a
+  // genuinely TIGHTER valid nest than the old bbox/vertex-offset-only
+  // candidates can, for a concave part and an obstacle that can legally
+  // sit inside the concave notch. Compared on ACTUAL GEOMETRY (combined
+  // footprint bounding-box area of obstacle + placed part), with
+  // tolerance — not a fragile exact-coordinate or score-only comparison.
+  it("TEST 12 — GEOMETRY REGRESSION: true-shape candidates unlock a genuinely tighter valid nest than bbox-only candidates can reach", () => {
+    const sheet = largeSheet();
+    // Sized and positioned to fit inside the U's 100x150 interior slot
+    // notch with clearance on every side — a genuine interior vertex
+    // target, not an exact-corner coincidence with any of the 4 generic
+    // bbox-corner-alignment offsets the existing generator can produce.
+    const obstacle = rect(80, 130).map((p) => ({ x: p.x + 907, y: p.y + 913 }));
+    commitObstacle(sheet, obstacle);
+
+    const rotations = new RotationCandidateCache(5, 48);
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotationList = rotations.get(instance);
+
+    // Compare BOTH candidate sources on the SAME metric (tightest valid
+    // combined footprint bounding-box area) and the SAME validity rules
+    // (boundsContain / polygonsOverlap) — deliberately NOT routed through
+    // findBestPlacement()'s own growth/contact score (Part K: this test
+    // must isolate candidate generation, not the untouched scoring
+    // function's own trade-offs, from producing a misleading comparison).
+    function tightestValidFootprintArea(useTrueShape: boolean): number | null {
+      let bestArea: number | null = null;
+      for (const rot of rotationList) {
+        const shape = computeOrientedShape(concaveL(), rot);
+        const existingOrigins = generateCandidateOrigins(shape.width, shape.height, sheet, 0, 60);
+        const origins = useTrueShape
+          ? [...existingOrigins, ...generateTrueShapeCandidates(shape.points, sheet.polygons, 0)]
+          : existingOrigins;
+        for (const c of origins) {
+          const polygon = translatePoints(shape.points, c.x, c.y);
+          if (!boundsContain(polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)) continue;
+          if (polygonsOverlap(polygon, obstacle)) continue;
+          const footprint = computeBoundingBox([...polygon, ...obstacle]);
+          const area = footprint.width * footprint.height;
+          if (bestArea === null || area < bestArea) bestArea = area;
+        }
+      }
+      return bestArea;
+    }
+
+    const oldOnlyBestArea = tightestValidFootprintArea(false);
+    const hybridBestArea = tightestValidFootprintArea(true);
+
+    expect(oldOnlyBestArea).not.toBeNull();
+    expect(hybridBestArea).not.toBeNull();
+    // Tolerant strict-improvement check (Part M): true-shape must unlock
+    // an ADDITIONAL, MEANINGFULLY tighter (not just epsilon-better) valid
+    // nest than was reachable using only the pre-4A candidate set.
+    expect(hybridBestArea!).toBeLessThan(oldOnlyBestArea! - 1000);
+
+    // And confirm findBestPlacement() itself (the real, hybrid, scored
+    // pipeline) still only ever returns something valid, whichever
+    // candidate ends up scoring best.
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO");
+    expect(attempt).not.toBeNull();
+    expect(polygonsOverlap(attempt!.polygon, obstacle)).toBe(false);
+    expect(boundsContain(attempt!.polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)).toBe(true);
+  });
+
+  // 13 — rectangular parts do not regress.
+  it("TEST 13 — plain rectangular parts still pack collision-free and fully placed after Phase 4A", () => {
+    const parts = [part({ takeoffPartId: "p1", itemNo: 1, outer: rect(300, 200), qty: 12 })];
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 3000 })];
+    const config = DEFAULT_CONFIG();
+    const result = runNestingAlgorithm(parts, sources, config);
+    expect(result.totalPartsPlaced).toBe(12);
+    assertLayoutIsCollisionFree(result, parts, config);
+  });
+
+  // 14 — arbitrary rotation still works (a non-axis-aligned triangle).
+  it("TEST 14 — arbitrary (non-90-degree) rotation still finds valid placements", () => {
+    const sheet = largeSheet();
+    const obstacle = rect(150, 150).map((p) => ({ x: p.x + 500, y: p.y + 500 }));
+    commitObstacle(sheet, obstacle);
+
+    const skewedTriangle: Point[] = [
+      { x: 0, y: 0 },
+      { x: 253, y: 71 }, // deliberately non-axis-aligned edge
+      { x: 40, y: 210 },
+    ];
+    const instance: OptimizerPartInstance = { takeoffPartId: "tri", itemNo: 1, instanceNumber: 1, areaSqm: polygonArea(skewedTriangle) / 1_000_000, outer: skewedTriangle };
+    const rotations = new RotationCandidateCache(5, 48);
+
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO");
+    expect(attempt).not.toBeNull();
+    expect(boundsContain(attempt!.polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)).toBe(true);
+    expect(polygonsOverlap(attempt!.polygon, obstacle)).toBe(false);
+  });
+
+  // 15 — WIDTH_FIRST / LENGTH_FIRST / AUTO still work after Phase 4A.
+  it("TEST 15 — packing preference options still function correctly alongside true-shape candidates", () => {
+    const parts = [part({ takeoffPartId: "p1", itemNo: 1, outer: rect(500, 500), qty: 10 })];
+    const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+    const config: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+    for (const pref of ["AUTO", "WIDTH_FIRST", "LENGTH_FIRST"] as PackingPreference[]) {
+      const result = runNestingAlgorithm(parts, sources, config, { packingPreference: pref });
+      expect(result.totalPartsPlaced).toBeGreaterThan(0);
+      assertLayoutIsCollisionFree(result, parts, config);
+    }
+  });
+
+  // 16 — same seed produces deterministic optimizer output after Phase 4A.
+  it("TEST 16 — same seed is still fully deterministic after Phase 4A", () => {
+    const parts = [part({ takeoffPartId: "p1", itemNo: 1, outer: concaveL(), qty: 10 })];
+    const sources: EngineSourceInput[] = [source({ widthMm: 2000, lengthMm: 2000 })];
+    const config = DEFAULT_CONFIG();
+    const options = { randomSeed: 777, timeLimitMs: 20000, maxIterations: 15 };
+
+    const a = runNestingAlgorithm(parts, sources, config, options);
+    const b = runNestingAlgorithm(parts, sources, config, options);
+    expect(a.totalPartsPlaced).toBe(b.totalPartsPlaced);
+    expect(b.groups.map((g) => g.sheets)).toEqual(a.groups.map((g) => g.sheets));
+  });
+
+  // Lightweight diagnostics (Part L) — opt-in, doesn't change behavior.
+  it("diagnostics counters are opt-in and accumulate without altering the result", () => {
+    const sheet = largeSheet();
+    const obstacle = rect(90, 110).map((p) => ({ x: p.x + 900, y: p.y + 900 }));
+    commitObstacle(sheet, obstacle);
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (90000 - 15000) / 1_000_000, outer: concaveL() };
+    const rotations = new RotationCandidateCache(5, 48);
+    const diagnostics: TrueShapeDiagnostics = makeTrueShapeDiagnostics();
+
+    const withDiagnostics = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO", diagnostics);
+    const rotations2 = new RotationCandidateCache(5, 48);
+    const withoutDiagnostics = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations2, "AUTO");
+
+    expect(withDiagnostics).toEqual(withoutDiagnostics);
+    expect(diagnostics.existingCandidatesGenerated).toBeGreaterThan(0);
+    expect(diagnostics.trueShapeCandidatesGenerated).toBeGreaterThan(0);
+    expect(diagnostics.candidatesValidated).toBeGreaterThan(0);
+    expect(diagnostics.validCandidatesFound).toBeGreaterThan(0);
+  });
+
+  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.4.0", () => {
+    expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.4.0");
+  });
+});
+
+// 17/18/19/20/21 — existing Phase 1 / Phase 2A / Phase 2B / Phase 3 /
+// assisted-nesting tests remain passing: verified by running the full
+// nesting-optimizer.test.ts and nesting-assisted-session.test.ts suites
+// (every describe block above this one, and the separate assisted-nesting
+// test file, are unmodified by Phase 4A).
 
 function DEFAULT_CONFIG(): EngineConfig {
   return {
