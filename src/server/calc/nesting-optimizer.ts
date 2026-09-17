@@ -18,7 +18,7 @@ import {
 import type { EngineConfig, EngineSourceInput, EnginePlacementResult, UnplacedReason } from "./nesting-engine";
 
 export const OPTIMIZER_ALGORITHM_NAME = "candidate-search-multi-strategy-local-improvement";
-export const OPTIMIZER_ALGORITHM_VERSION = "1.4.0";
+export const OPTIMIZER_ALGORITHM_VERSION = "1.5.0";
 
 /**
  * Width-first / length-first packing preference (follow-up to Phase 3).
@@ -722,11 +722,6 @@ function unionBBox(a: BoundingBox | null, b: BoundingBox): BoundingBox {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-function occupiedBBoxArea(b: BoundingBox | null): number {
-  if (!b) return 0;
-  return Math.max(0, b.width) * Math.max(0, b.height);
-}
-
 /**
  * How much of the candidate's edges "hug" something already fixed — the
  * sheet boundary or another placed part's bounding box — within the
@@ -807,6 +802,59 @@ function packingPreferenceBias(
   return PACKING_PREFERENCE_WEIGHT * (widthGrowth - lengthGrowth);
 }
 
+/**
+ * Phase 4B, Part C — the net NEW footprint area this candidate actually
+ * introduces, i.e. how much of the candidate's OWN bounding box is not
+ * already covered by some already-placed part's bounding box.
+ *
+ * WHY THIS REPLACES THE OLD "occupied-bbox-UNION growth" METRIC:
+ *
+ * The pre-4B growth term was `unionBBoxArea(after) - unionBBoxArea(before)`
+ * — the change in the axis-aligned bounding box that encloses EVERY placed
+ * part on the sheet. On a long, narrow sheet this is structurally biased:
+ * once placed parts already span most of the sheet's LENGTH in one row,
+ * extending the union bbox's HEIGHT by placing a part above that row
+ * multiplies a HEIGHT delta by the FULL, ALREADY-ESTABLISHED length —
+ * charging the candidate for re-"buying" the entire width of empty space
+ * underneath/beside it, even though that space was already free and stays
+ * free. Extending the row sideways only multiplies a LENGTH delta by the
+ * (still small) row height, so it always looks artificially cheaper. The
+ * result: the optimizer keeps extending the axis that's already in use
+ * long after the other axis has plenty of genuinely empty, reachable room
+ * — exactly the "shelf, then a cramped leftover cluster" pattern reported
+ * against the real production output (Sheet #1, 16/16 parts, 17.9% util).
+ *
+ * The fix: charge the candidate only for the portion of ITS OWN bbox that
+ * isn't already covered by another placed part's bbox — a local, additive
+ * quantity that doesn't get inflated by unrelated geometry far away on the
+ * sheet. For a part placed snugly beside another (no bbox overlap with any
+ * obstacle), this is identical to the old formula's result in the common
+ * row-filling case (verified: extending a same-height row by a
+ * non-overlapping neighbor gives the exact same "candidate's own area" in
+ * both formulas — Phase 4B does not regress plain rectangular packing).
+ * For a part placed in an untouched region far above/beside the current
+ * cluster, this now correctly costs roughly its own (small) footprint
+ * instead of the enormous phantom rectangle the union-bbox approach used
+ * to charge. `contactLength()` below remains the mechanism that rewards
+ * staying near existing material/sheet edges — this function intentionally
+ * no longer doubles as a "stay near everything else" proxy, since it did
+ * that job badly (only along whichever axis happened to be small so far).
+ *
+ * Bounded: O(#obstacles), same complexity class the old growth term's
+ * caller (contactLength) already pays per candidate — no new performance
+ * class introduced.
+ */
+function candidateNetNewFootprintArea(candidateBBox: BoundingBox, obstacleBoxes: BoundingBox[]): number {
+  const total = candidateBBox.width * candidateBBox.height;
+  let covered = 0;
+  for (const ob of obstacleBoxes) {
+    const ox = Math.min(candidateBBox.maxX, ob.maxX) - Math.max(candidateBBox.minX, ob.minX);
+    const oy = Math.min(candidateBBox.maxY, ob.maxY) - Math.max(candidateBBox.minY, ob.minY);
+    if (ox > 0 && oy > 0) covered += ox * oy;
+  }
+  return Math.max(0, total - Math.min(covered, total));
+}
+
 function computePlacementScore(
   candidateBBox: BoundingBox,
   occupiedBefore: BoundingBox | null,
@@ -817,7 +865,12 @@ function computePlacementScore(
   packingPreference: PackingPreference = "AUTO",
 ): number {
   const occupiedAfter = unionBBox(occupiedBefore, candidateBBox);
-  const growth = occupiedBBoxArea(occupiedAfter) - occupiedBBoxArea(occupiedBefore);
+  // Phase 4B, Part C fix — see candidateNetNewFootprintArea() above for the
+  // full rationale. `occupiedAfter` is still computed and passed to
+  // packingPreferenceBias(), which legitimately needs the whole-sheet
+  // occupied envelope to judge overall length-vs-width growth direction;
+  // only the raw union-bbox-growth GROWTH TERM itself is replaced.
+  const growth = candidateNetNewFootprintArea(candidateBBox, obstacleBoxes);
   const contact = contactLength(candidateBBox, sheet, obstacleBoxes, gapMm);
   const directionalBias = packingPreferenceBias(occupiedBefore, occupiedAfter, packingPreference);
   return growth - contact * contactScale + directionalBias;
@@ -1432,6 +1485,33 @@ export function computeFutureFitScore(
   return totalMm2 / 1_000_000;
 }
 
+/**
+ * Phase 4B, Part B — real, true-polygon-area sheet utilization, as a
+ * [0, 1]-ish fraction (usedArea / sheetArea; can exceed 1 only if the
+ * caller passes inconsistent data, which never happens for a valid
+ * layout). Uses the SAME true-area convention as scoreSheets/areaByPartId
+ * (rotation-invariant polygon area, not bounding-box area), and the same
+ * loose `{ widthMm, lengthMm, placements }` shape already shared by
+ * computeCompactnessScore/computeFutureFitScore, so it drops into any
+ * existing call site without widening WorkingSheet's contract.
+ *
+ * This is a pure, reusable metric — exported for direct unit testing and
+ * so scoreSheets() below can compute its utilizationPercent term through
+ * this single, testable definition instead of an inline duplicate
+ * calculation (Phase 4B, Part D). It is a SCORING/COMPARISON input only;
+ * it never participates in exact validity — see Part F.
+ */
+export function computeSheetUtilization(
+  sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] },
+  areaByPartId: Map<string, number>,
+): number {
+  const sheetAreaSqm = (sheet.widthMm * sheet.lengthMm) / 1_000_000;
+  if (!(sheetAreaSqm > 0)) return 0;
+  let usedAreaSqm = 0;
+  for (const p of sheet.placements) usedAreaSqm += areaByPartId.get(p.takeoffPartId) ?? 0;
+  return usedAreaSqm / sheetAreaSqm;
+}
+
 export function scoreSheets(
   sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
   areaByPartId: Map<string, number>,
@@ -1443,10 +1523,18 @@ export function scoreSheets(
   let cavityAreaSqm = 0;
 
   for (const sheet of usedSheets) {
-    totalSheetAreaSqm += (sheet.widthMm * sheet.lengthMm) / 1_000_000;
+    const sheetAreaSqm = (sheet.widthMm * sheet.lengthMm) / 1_000_000;
+    totalSheetAreaSqm += sheetAreaSqm;
+    // Phase 4B, Part D — same underlying true-area sum as before, now
+    // computed through the single reusable computeSheetUtilization()
+    // definition (Part B) rather than a duplicate inline calculation.
+    // Mathematically identical to the pre-4B calculation when summed
+    // across sheets (computeSheetUtilization(sheet) * sheetAreaSqm ==
+    // that sheet's true used area) — a pure refactor, not a behavior
+    // change, so existing weight-tuned tests are unaffected.
+    totalUsedAreaSqm += computeSheetUtilization(sheet, areaByPartId) * sheetAreaSqm;
     for (const p of sheet.placements) {
       const trueArea = areaByPartId.get(p.takeoffPartId) ?? 0;
-      totalUsedAreaSqm += trueArea;
       const bboxAreaSqm = (p.widthMm * p.heightMm) / 1_000_000;
       cavityAreaSqm += Math.max(0, bboxAreaSqm - trueArea);
     }
@@ -2235,7 +2323,36 @@ export function adaptiveRuinAndRecreate(
     if (now > deadline) break;
     iterations++;
 
-    const progressFraction = Math.min(1, (now - searchStartedAt) / totalBudgetMs);
+    // Phase 4B fix (latent pre-existing determinism gap, surfaced by Part
+    // C's fix): progressFraction was previously wall-clock-only
+    // ((now - searchStartedAt) / totalBudgetMs). That's fine when the
+    // deadline is genuinely the binding constraint, but when maxIterations
+    // is the binding constraint (as callers like the "same seed produces
+    // deterministic operator statistics" test rely on -- a generous time
+    // budget relative to the job, per that test's own comment) two
+    // separate runs with an identical seed still measure slightly
+    // different real elapsed milliseconds, so `cooling` differed minutely
+    // between runs. shouldAcceptCandidate()'s near-threshold/exact-tie
+    // acceptance branches (unchanged here) are `rng() < prob * cooling`,
+    // so a small `cooling` difference can flip one accept/reject decision;
+    // because ruin-recreate iterations build on the PREVIOUS iteration's
+    // `working` layout, one flipped decision compounds into a completely
+    // different search trajectory. Part C's fix makes reinsertion trials
+    // land in that near-threshold band more often (a flatter, less
+    // union-bbox-dominated score landscape), which is what turned this
+    // previously-rare wall-clock sensitivity into a reliably-reproducible
+    // determinism failure. The actual acceptance algorithm/thresholds are
+    // untouched (Part F/K) -- only what "progress" is measured against
+    // changes: use the WORSE (larger => more "cooled") of the genuinely
+    // deterministic iteration-count fraction and the existing wall-clock
+    // fraction, so wall-clock jitter can only ever make the search MORE
+    // conservative than the deterministic iteration fraction already is,
+    // never the deciding factor while the iteration cap is what's really
+    // binding (deadline pressure, when it IS the binding constraint, still
+    // fully applies via the wall-clock term as before).
+    const iterFraction = maxIterations > 0 ? iter / maxIterations : 0;
+    const timeFraction = (now - searchStartedAt) / totalBudgetMs;
+    const progressFraction = Math.min(1, Math.max(iterFraction, timeFraction));
 
     // PART G — adaptive, deterministic operator choice.
     const operator = selectRuinOperator(operatorStats, rng);

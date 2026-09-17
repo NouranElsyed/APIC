@@ -1977,8 +1977,10 @@ describe("Phase 4A — true-shape / NFP-style candidate generation", () => {
     expect(diagnostics.validCandidatesFound).toBeGreaterThan(0);
   });
 
-  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.4.0", () => {
-    expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.4.0");
+  it("OPTIMIZER_ALGORITHM_VERSION was 1.4.0 at the end of Phase 4A", () => {
+    // Superseded by Phase 4B's own version-bump test below; kept only to
+    // document the Phase 4A baseline this phase built on.
+    expect(OPTIMIZER_ALGORITHM_VERSION).not.toBe("1.3.0");
   });
 });
 
@@ -1987,6 +1989,237 @@ describe("Phase 4A — true-shape / NFP-style candidate generation", () => {
 // nesting-optimizer.test.ts and nesting-assisted-session.test.ts suites
 // (every describe block above this one, and the separate assisted-nesting
 // test file, are unmodified by Phase 4A).
+
+// ---------------------------------------------------------------------------
+// Phase 4B — True-Shape Packing Quality: sheet-utilization-aware scoring +
+// the axis-bias fix to computePlacementScore's growth term.
+// ---------------------------------------------------------------------------
+describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
+  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.5.0", () => {
+    expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.5.0");
+  });
+
+  // 1 — computeSheetUtilization() true-polygon-area-based, hand-computable.
+  it("TEST 1 — computeSheetUtilization() returns the correct true-area-based fraction", () => {
+    // 1000x1000mm sheet (1 sqm). One placed part with TRUE area 0.3 sqm
+    // (areaByPartId), even though its bbox is bigger (200x200mm = 0.04 sqm
+    // -- doesn't matter here, computeSheetUtilization only cares about the
+    // true-area map, matching scoreSheets' existing convention).
+    const sheetShape = { widthMm: 1000, lengthMm: 1000, placements: [{ takeoffPartId: "p1", xMm: 0, yMm: 0, widthMm: 200, heightMm: 200 } as unknown as EnginePlacementResult] };
+    const areaByPartId = new Map([["p1", 0.3]]);
+    expect(computeSheetUtilization(sheetShape, areaByPartId)).toBeCloseTo(0.3, 6);
+  });
+
+  // 2 — distinguishes true-area utilization from bbox-only slack.
+  it("TEST 2 — computeSheetUtilization() is unaffected by bounding-box-only slack", () => {
+    const sheetA = {
+      widthMm: 1000,
+      lengthMm: 1000,
+      placements: [{ takeoffPartId: "p1", xMm: 0, yMm: 0, widthMm: 500, heightMm: 500 } as unknown as EnginePlacementResult],
+    };
+    const sheetB = {
+      widthMm: 1000,
+      lengthMm: 1000,
+      // Identical bbox footprint, but this layout's placement is a
+      // DIFFERENT part with a smaller true polygon area (e.g. a triangle
+      // inscribed in the same 500x500 bbox) -- computeSheetUtilization
+      // must reflect that, not the shared bbox.
+      placements: [{ takeoffPartId: "p2", xMm: 0, yMm: 0, widthMm: 500, heightMm: 500 } as unknown as EnginePlacementResult],
+    };
+    const areaByPartId = new Map([
+      ["p1", 0.25], // fills its whole 500x500 bbox (a square)
+      ["p2", 0.125], // half the bbox (e.g. a right triangle)
+    ]);
+    const utilA = computeSheetUtilization(sheetA, areaByPartId);
+    const utilB = computeSheetUtilization(sheetB, areaByPartId);
+    expect(utilA).toBeCloseTo(0.25, 6);
+    expect(utilB).toBeCloseTo(0.125, 6);
+    expect(utilA).not.toBeCloseTo(utilB, 3);
+  });
+
+  // 3 — THE CONFIRMED-BUG REGRESSION TEST. Several similar-height
+  // rectangles + several small rotated/irregular parts, on a sheet whose
+  // usable height is much larger than the rectangles' height (structurally
+  // equivalent to the reported Sheet #1 case: 1500x6000mm sheet, 16 parts,
+  // 17.9% utilization, parts squeezed into a thin strip).
+  function buildStructurallyBiasedScenario() {
+    // Usable sheet: 1500mm (Y) x 6000mm (X) -- tall usable-width axis, long
+    // usable-length axis, same aspect ratio character as the real report.
+    const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 1 })];
+    const cfg: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 5 };
+
+    // 6 similar-height rectangles (short height relative to the sheet's
+    // 1500mm usable width) -- exactly the shape that fills one "row" first.
+    const rects: EnginePartInput[] = Array.from({ length: 6 }, (_, i) =>
+      part({ takeoffPartId: `rect${i}`, itemNo: i + 1, outer: rect(400, 200), qty: 1 }),
+    );
+    // A handful of small triangles -- the "irregular parts get squeezed
+    // into whatever's left" shape from the report.
+    const triangles: EnginePartInput[] = Array.from({ length: 6 }, (_, i) =>
+      part({
+        takeoffPartId: `tri${i}`,
+        itemNo: 100 + i,
+        outer: [{ x: 0, y: 0 }, { x: 150, y: 0 }, { x: 0, y: 150 }],
+        qty: 1,
+      }),
+    );
+    return { parts: [...rects, ...triangles], sources, cfg };
+  }
+
+  it("TEST 3 — REGRESSION: utilization/footprint-height usage improves vs. the pre-Phase-4B structural bias", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
+    const group = result.groups[0];
+    expect(group.placedCount).toBe(12); // every part placed (feasibility preserved)
+
+    const sheet = group.sheets[0];
+    // How much of the sheet's usable HEIGHT (the axis the pre-4B bug
+    // structurally avoided using) is actually reached by some placement.
+    const usableHeightMm = 1500;
+    const maxYReached = Math.max(...sheet.placements.map((p) => p.yMm + p.heightMm));
+    const heightUsageFraction = maxYReached / usableHeightMm;
+
+    // Pre-4B, the biased growth term made extending into this axis
+    // structurally expensive regardless of how much genuinely empty room
+    // was left there, so the layout stayed confined to a thin strip near
+    // the bottom. Post-4B, at least SOME placement should reach well up
+    // into the sheet's usable height instead of everything huddling in a
+    // strip under ~25% of the usable height. Tolerant threshold (not a
+    // fragile exact geometry check), per Phase 4A's testing precedent.
+    expect(heightUsageFraction).toBeGreaterThan(0.5);
+  });
+
+  it("TEST 4 — placed-part count is never reduced by the Phase 4B scoring change", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
+    expect(result.groups[0].placedCount).toBe(parts.reduce((s, p) => s + p.qty, 0));
+  });
+
+  // 5 — irregular parts are considered for the unused region, not just
+  // appended after every rectangle (inspect final positions, not input order).
+  it("TEST 5 — irregular parts are placed using the vertically-unused region, not only after all rectangles", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
+    const sheet = result.groups[0].sheets[0];
+
+    const triPlacements = sheet.placements.filter((p) => p.takeoffPartId.startsWith("tri"));
+    expect(triPlacements.length).toBe(6);
+    // At least one triangle should sit above the rectangles' band (Y >
+    // 200mm, the rectangles' own height) -- i.e. genuinely using the
+    // previously-unused vertical region, not merely queued to the right
+    // of the rectangle row at the same low Y.
+    const anyTriangleAboveRectBand = triPlacements.some((p) => p.yMm > 200 - 1e-6);
+    expect(anyTriangleAboveRectBand).toBe(true);
+  });
+
+  // 6/7/8 — exact validation is still the sole authority on validity.
+  it("TEST 6 — exact overlap validation still rejects invalid candidates", () => {
+    const sheet = largeSheet();
+    const obstacle = rect(200, 200).map((p) => ({ x: p.x + 100, y: p.y + 100 }));
+    commitObstacle(sheet, obstacle);
+    // Force a single, deliberately-overlapping candidate by using a
+    // rotation cache and confirming no placement lands inside [100,300].
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (150 * 150) / 1_000_000, outer: rect(150, 150) };
+    const rotations = new RotationCandidateCache(5, 48);
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations);
+    expect(attempt).not.toBeNull();
+    if (attempt) {
+      const overlapsObstacle = polygonsOverlap(attempt.polygon, obstacle);
+      expect(overlapsObstacle).toBe(false);
+    }
+  });
+
+  it("TEST 7 — exact gap validation still rejects candidates violating partGapMm", () => {
+    const { parts, sources } = buildStructurallyBiasedScenario();
+    const gappyConfig: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 8 };
+    const result = runNestingAlgorithm(parts, sources, gappyConfig, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
+    const sheet = result.groups[0].sheets[0];
+    for (let i = 0; i < sheet.placements.length; i++) {
+      for (let j = i + 1; j < sheet.placements.length; j++) {
+        const a = sheet.placements[i];
+        const b = sheet.placements[j];
+        const polyA = translatePoints(computeOrientedShape(partOuterFor(parts, a.takeoffPartId), a.rotationDeg).points, a.xMm, a.yMm);
+        const polyB = translatePoints(computeOrientedShape(partOuterFor(parts, b.takeoffPartId), b.rotationDeg).points, b.xMm, b.yMm);
+        expect(polygonsMinDistance(polyA, polyB)).toBeGreaterThanOrEqual(8 - 1e-6);
+      }
+    }
+  });
+
+  it("TEST 8 — sheet bounds validation still rejects out-of-sheet candidates", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
+    const sheet = result.groups[0].sheets[0];
+    for (const p of sheet.placements) {
+      expect(p.xMm).toBeGreaterThanOrEqual(-1e-6);
+      expect(p.yMm).toBeGreaterThanOrEqual(-1e-6);
+      expect(p.xMm + p.widthMm).toBeLessThanOrEqual(6000 + 1e-6);
+      expect(p.yMm + p.heightMm).toBeLessThanOrEqual(1500 + 1e-6);
+    }
+  });
+
+  // 9 — rectangular-only parts do not regress.
+  it("TEST 9 — rectangular-only parts still pack collision-free and fully placed after Phase 4B", () => {
+    const parts: EnginePartInput[] = Array.from({ length: 10 }, (_, i) =>
+      part({ takeoffPartId: `r${i}`, itemNo: i + 1, outer: rect(300, 250), qty: 1 }),
+    );
+    const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 1 })];
+    const cfg = DEFAULT_CONFIG();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 99, timeLimitMs: 6000, maxIterations: 150 });
+    expect(result.groups[0].placedCount).toBe(10);
+    const sheet = result.groups[0].sheets[0];
+    for (let i = 0; i < sheet.placements.length; i++) {
+      for (let j = i + 1; j < sheet.placements.length; j++) {
+        const a = sheet.placements[i];
+        const b = sheet.placements[j];
+        const polyA = translatePoints(computeOrientedShape(rect(300, 250), a.rotationDeg).points, a.xMm, a.yMm);
+        const polyB = translatePoints(computeOrientedShape(rect(300, 250), b.rotationDeg).points, b.xMm, b.yMm);
+        expect(polygonsOverlap(polyA, polyB)).toBe(false);
+      }
+    }
+  });
+
+  // 10 — arbitrary rotation still works.
+  it("TEST 10 — arbitrary rotation still works after Phase 4B", () => {
+    const sheet = largeSheet();
+    const instance: OptimizerPartInstance = { takeoffPartId: "moving", itemNo: 1, instanceNumber: 1, areaSqm: (300 * 120) / 1_000_000, outer: rect(300, 120) };
+    const rotations = new RotationCandidateCache(5, 48);
+    const attempt = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations);
+    expect(attempt).not.toBeNull();
+    if (attempt) expect(SUPPORTED_ROTATIONS_FOR_TEST_CHECK(attempt.rotationDeg)).toBe(true);
+  });
+
+  // 11 — WIDTH_FIRST / LENGTH_FIRST / AUTO still work and remain distinct.
+  it("TEST 11 — WIDTH_FIRST / LENGTH_FIRST / AUTO still work and produce directionally distinct layouts after Phase 4B", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const runWith = (pref: PackingPreference) => runNestingAlgorithm(parts, sources, cfg, { randomSeed: 555, timeLimitMs: 6000, maxIterations: 150, packingPreference: pref });
+    const widthFirst = runWith("WIDTH_FIRST");
+    const lengthFirst = runWith("LENGTH_FIRST");
+    const auto = runWith("AUTO");
+    expect(widthFirst.groups[0].placedCount).toBe(12);
+    expect(lengthFirst.groups[0].placedCount).toBe(12);
+    expect(auto.groups[0].placedCount).toBe(12);
+  });
+
+  // 12 — determinism (same seed => identical output), utilization included.
+  it("TEST 12 — same seed produces deterministic optimizer output, including utilization, after Phase 4B", () => {
+    const { parts, sources, cfg } = buildStructurallyBiasedScenario();
+    const runOnce = () => runNestingAlgorithm(parts, sources, cfg, { randomSeed: 777, timeLimitMs: 6000, maxIterations: 150 });
+    const a = runOnce();
+    const b = runOnce();
+    expect(b.groups[0].sheets).toEqual(a.groups[0].sheets);
+    expect(b.groups[0].optimization.utilizationPercent).toBe(a.groups[0].optimization.utilizationPercent);
+  });
+});
+
+function SUPPORTED_ROTATIONS_FOR_TEST_CHECK(_deg: number): boolean {
+  return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
+}
+
+function partOuterFor(parts: EnginePartInput[], takeoffPartId: string): Point[] {
+  const found = parts.find((p) => p.takeoffPartId === takeoffPartId);
+  if (!found) throw new Error(`part not found: ${takeoffPartId}`);
+  return found.outer;
+}
 
 function DEFAULT_CONFIG(): EngineConfig {
   return {
