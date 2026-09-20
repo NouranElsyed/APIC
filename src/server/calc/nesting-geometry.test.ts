@@ -39,6 +39,125 @@ describe("polygonsOverlap", () => {
   });
 });
 
+// ----------------------------------------------------------------------------
+// Phase 5 hardening — regression tests for the confirmed false-negative bug:
+// two axis-aligned rectangles that share a full edge-range (e.g. the same
+// y-extent) and only overlap by sliding along the other axis previously
+// returned `false` from polygonsOverlap, because every vertex of each
+// rectangle sat exactly ON the other's boundary (never strictly inside),
+// no edge pair properly CROSSED (the coincident edges are collinear, the
+// perpendicular ones only meet at T-junctions), and a <50% overlap keeps
+// both centroids outside the other polygon. This is exactly the dense,
+// edge-aligned placement pattern Phase 5's block/grid pattern candidates
+// produce. See the doc comment on polygonsOverlap in nesting-geometry.ts.
+// ----------------------------------------------------------------------------
+describe("polygonsOverlap — Phase 5 hardening regression suite (false-negative fix)", () => {
+  it("1. axis-aligned partial rectangle overlap — same y-extent, sliding overlap along x (the confirmed bug case)", () => {
+    // Reproduces the exact real-world case found in the 1500x6000 Phase 5
+    // benchmark: two 900x700 rectangles at x=600 and x=1100 (both y=0..700)
+    // genuinely overlap by 400x700mm but every vertex sits on the other's
+    // boundary and neither centroid lands inside the other.
+    const a = translatePoints(rect(900, 700), 600, 0);
+    const b = translatePoints(rect(900, 700), 1100, 0);
+    expect(polygonsOverlap(a, b)).toBe(true);
+    expect(polygonsOverlap(b, a)).toBe(true); // symmetric
+  });
+
+  it("1b. axis-aligned partial rectangle overlap — same x-extent, sliding overlap along y", () => {
+    const a = translatePoints(rect(700, 900), 0, 600);
+    const b = translatePoints(rect(700, 900), 0, 1100);
+    expect(polygonsOverlap(a, b)).toBe(true);
+  });
+
+  it("2. T-junction / collinear-edge case — genuinely stacked with a collinear shared edge range is NOT overlap", () => {
+    // B sits directly on top of A; the edge y=1000 is collinear and their
+    // x-ranges overlap ([500,1000]), but B is strictly above and A strictly
+    // below that shared line — zero-area contact, not a positive-area
+    // overlap.
+    const a = translatePoints(rect(1000, 1000), 0, 0);
+    const b = translatePoints(rect(1000, 1000), 500, 1000);
+    expect(polygonsOverlap(a, b)).toBe(false);
+  });
+
+  it("2b. T-junction — a T-shaped edge meeting (perpendicular edge ending mid-edge of the other) is NOT overlap", () => {
+    const a = translatePoints(rect(1000, 1000), 0, 0);
+    // b's bottom-left corner touches the midpoint of a's top edge exactly.
+    const b = translatePoints(rect(1000, 1000), 500, 1000);
+    expect(polygonsOverlap(a, b)).toBe(false);
+    expect(polygonsOverlap(b, a)).toBe(false);
+  });
+
+  it("3. edge-only touching — flush edge-to-edge along the full shared edge is NOT overlap", () => {
+    const a = translatePoints(rect(900, 700), 0, 0);
+    const b = translatePoints(rect(900, 700), 900, 0);
+    expect(polygonsOverlap(a, b)).toBe(false);
+  });
+
+  it("4. corner-only touching is NOT overlap", () => {
+    const a = translatePoints(rect(900, 700), 0, 0);
+    const b = translatePoints(rect(900, 700), 900, 700);
+    expect(polygonsOverlap(a, b)).toBe(false);
+  });
+
+  it("5. contained polygon — a fully contained rectangle IS overlap even with a shared-boundary-heavy layout nearby", () => {
+    const outer = translatePoints(rect(2000, 2000), 0, 0);
+    const inner = translatePoints(rect(50, 50), 975, 975);
+    expect(polygonsOverlap(outer, inner)).toBe(true);
+  });
+
+  it("6. concave polygon overlap — two overlapping L-shapes are detected as overlapping", () => {
+    const lShape: Point[] = [
+      { x: 0, y: 0 },
+      { x: 200, y: 0 },
+      { x: 200, y: 100 },
+      { x: 100, y: 100 },
+      { x: 100, y: 200 },
+      { x: 0, y: 200 },
+    ];
+    const a = translatePoints(lShape, 0, 0);
+    const b = translatePoints(lShape, 50, 50);
+    expect(polygonsOverlap(a, b)).toBe(true);
+  });
+
+  it("6b. concave polygon — two disjoint L-shapes are NOT flagged as overlapping", () => {
+    const lShape: Point[] = [
+      { x: 0, y: 0 },
+      { x: 200, y: 0 },
+      { x: 200, y: 100 },
+      { x: 100, y: 100 },
+      { x: 100, y: 200 },
+      { x: 0, y: 200 },
+    ];
+    const a = translatePoints(lShape, 0, 0);
+    const b = translatePoints(lShape, 300, 300);
+    expect(polygonsOverlap(a, b)).toBe(false);
+  });
+
+  it("7. clearly separated polygons are NOT overlap", () => {
+    const a = translatePoints(rect(900, 700), 0, 0);
+    const b = translatePoints(rect(900, 700), 5000, 0);
+    expect(polygonsOverlap(a, b)).toBe(false);
+  });
+
+  it("does not regress polygonsMinDistance — overlapping polygons still report distance 0", () => {
+    const a = translatePoints(rect(900, 700), 600, 0);
+    const b = translatePoints(rect(900, 700), 1100, 0);
+    expect(polygonsMinDistance(a, b)).toBe(0);
+  });
+
+  it("does not regress polygonsMinDistance — flush-touching polygons still report distance 0 (not a positive gap)", () => {
+    const a = translatePoints(rect(900, 700), 0, 0);
+    const b = translatePoints(rect(900, 700), 900, 0);
+    expect(polygonsMinDistance(a, b)).toBe(0);
+  });
+
+  it("does not regress polygonsMinDistance — clearly separated polygons still report the exact gap", () => {
+    const a = translatePoints(rect(900, 700), 0, 0);
+    const b = translatePoints(rect(900, 700), 1000, 0); // 100mm gap along x
+    expect(polygonsMinDistance(a, b)).toBeCloseTo(100, 6);
+  });
+});
+
 describe("computeOrientedShape", () => {
   it("swaps width/height for 90 and 270 degree rotations", () => {
     const outer = rect(300, 150);

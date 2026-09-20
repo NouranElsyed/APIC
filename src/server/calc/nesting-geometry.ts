@@ -150,6 +150,81 @@ function centroid(poly: Point[]): Point {
   return { x: x / poly.length, y: y / poly.length };
 }
 
+// Tiny inward nudge used only to disambiguate exact-boundary sample points
+// (see polygonsOverlap doc comment below). Far below any physically
+// meaningful tolerance for mm-scale sheet-metal geometry (0.1 micron) and
+// consistent with this file's other numerical epsilons (1e-6 in
+// `orientation`/`aabbOverlap`/`boundsContain`); chosen a couple of orders
+// larger than those purely to comfortably clear floating-point noise in the
+// ray-casting `pointInPolygon` test at an exact boundary coordinate.
+const OVERLAP_SAMPLE_NUDGE_MM = 1e-4;
+
+/**
+ * Nudges `p` a hair towards `poly`'s own centroid. For any point ON poly's
+ * boundary (a vertex or edge midpoint), this reliably lands just inside
+ * poly's interior — which is exactly what's needed to get a deterministic,
+ * side-of-the-boundary answer out of `pointInPolygon`'s exact-boundary-value
+ * ambiguity (see below) without changing what "inside" means anywhere else.
+ */
+function nudgeTowardCentroid(p: Point, poly: Point[]): Point {
+  const c = centroid(poly);
+  const dx = c.x - p.x;
+  const dy = c.y - p.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return p;
+  return { x: p.x + (dx / len) * OVERLAP_SAMPLE_NUDGE_MM, y: p.y + (dy / len) * OVERLAP_SAMPLE_NUDGE_MM };
+}
+
+/**
+ * Bug fix (Phase 5 hardening): the previous implementation only tested
+ * proper edge CROSSINGS (segmentsIntersect requires every orientation to be
+ * non-zero, i.e. it deliberately ignores collinear/touching cases — see
+ * `orientation`) plus each polygon's single CENTROID against the other.
+ * That combination has a real false-negative: two axis-aligned rectangles
+ * that share the same y-range and only overlap by sliding along x (e.g.
+ * [600,1500]x[0,700] vs [1100,2000]x[0,700]) have every vertex sitting
+ * exactly ON the other rectangle's boundary (never strictly inside, because
+ * the y-extents coincide exactly), no edge pair properly CROSSES (the
+ * shared top/bottom edges are collinear, and the perpendicular edges only
+ * meet those at T-junctions), and neither centroid lands inside the other
+ * (a <50%-overlap slide keeps both centroids outside) — so the old test
+ * returned `false` for a genuine ~40% positive-area overlap. This is
+ * exactly the dense, edge-aligned overlap pattern the new Phase 5 block/grid
+ * candidates are prone to producing, which is how it surfaced.
+ *
+ * Fix: in addition to the existing edge-crossing and centroid checks, also
+ * test every VERTEX and every EDGE MIDPOINT of each polygon against the
+ * other. A perpendicular edge's midpoint is immune to the "sits exactly on
+ * the other polygon's boundary" degeneracy above (e.g. rect A's right-edge
+ * midpoint (1500,350) is genuinely strictly inside rect B in the example
+ * above, even though every VERTEX of A merely touches B's boundary), which
+ * is what closes the gap. Each sample point is first nudged an infinitesimal
+ * distance toward its OWN polygon's centroid before the point-in-polygon
+ * test: without this, a sample that lies exactly on the OTHER polygon's
+ * boundary too (the flush-edge / corner-touch / T-junction "just touching"
+ * cases) hits `pointInPolygon`'s ray-casting boundary ambiguity and can
+ * resolve to either side depending on which edge's half-open interval
+ * happens to catch it — nudging the sample into its own polygon's interior
+ * first resolves that ambiguity deterministically and correctly: it moves
+ * AWAY from the other polygon when only touching (so touching still
+ * reports no overlap), while a sample from a real interior-overlap region
+ * simply stays inside the other polygon (so genuine overlap is unaffected).
+ * This keeps the same bounded O(|A|*|B|) shape as before (a fixed, small
+ * multiple of point-in-polygon tests — no new O(n!) or unbounded work) and
+ * changes nothing about how zero-area touching is classified; see the
+ * dedicated regression tests in nesting-geometry.test.ts.
+ */
+function polygonSamplePoints(poly: Point[]): Point[] {
+  const points: Point[] = poly.map((p) => nudgeTowardCentroid(p, poly));
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    points.push(nudgeTowardCentroid(mid, poly));
+  }
+  return points;
+}
+
 export function polygonsOverlap(polyA: Point[], polyB: Point[]): boolean {
   if (polyA.length < 3 || polyB.length < 3) return false;
   for (let i = 0; i < polyA.length; i++) {
@@ -160,6 +235,17 @@ export function polygonsOverlap(polyA: Point[], polyB: Point[]): boolean {
       const b2 = polyB[(j + 1) % polyB.length];
       if (segmentsIntersect(a1, a2, b1, b2)) return true;
     }
+  }
+  // Vertices + edge midpoints of A (nudged into A's own interior) against
+  // B, and of B against A — see the doc comment above for why this (not
+  // just the raw centroid) is required to catch the axis-aligned "sliding
+  // overlap" false negative while still correctly excluding touching-only
+  // contact.
+  for (const p of polygonSamplePoints(polyA)) {
+    if (pointInPolygon(p, polyB)) return true;
+  }
+  for (const p of polygonSamplePoints(polyB)) {
+    if (pointInPolygon(p, polyA)) return true;
   }
   if (pointInPolygon(centroid(polyA), polyB)) return true;
   if (pointInPolygon(centroid(polyB), polyA)) return true;
