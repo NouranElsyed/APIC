@@ -1,5 +1,10 @@
 export type PricingScope = "Supply" | "Site Activity";
 
+export type InstallRateKey =
+  | "transportRate" | "handlingPerTon" | "packingPerTon" | "cranePerTon"
+  | "scaffoldPerTon" | "manHourPerTon" | "safetyPerTon" | "toolsPerTon"
+  | "ppePerTon" | "touchUpPerTon" | "weldSurveyorPerTon";
+
 export interface MaterialFamily {
   name: string;
   unit: string;
@@ -9,6 +14,8 @@ export interface MaterialFamily {
   scrapPct: number;
   /** Converts a piece/area quantity into an equivalent tonnage for per-ton install rates. */
   weightFactor?: number;
+  /** Per-material overrides of the global per-ton install rates (e.g. site handling). Missing = use global rate. */
+  installOverrides?: Partial<Record<InstallRateKey, number>>;
   /** True for placeholder families that had no price in the source sheet. */
   flag?: boolean;
 }

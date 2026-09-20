@@ -10,8 +10,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   DEFAULT_ITEMS, DEFAULT_SETTINGS, FAMILIES, FAM_ORDER, SECTION_LABEL, SETTINGS_META,
 } from "./steel-pricing-data";
-import { calcItem, fmt, fmt2 } from "./steel-pricing-engine";
-import type { BoqItem, PricingScope, PricingSettings } from "./types";
+import { calcItem, fmt, fmt2, installRate } from "./steel-pricing-engine";
+import type { BoqItem, InstallRateKey, PricingScope, PricingSettings } from "./types";
+
+const INSTALL_RATE_COLS: { key: InstallRateKey; label: string }[] = [
+  { key: "transportRate", label: "Transport" },
+  { key: "handlingPerTon", label: "Site handling" },
+  { key: "packingPerTon", label: "Packing" },
+  { key: "cranePerTon", label: "Crane" },
+  { key: "scaffoldPerTon", label: "Scaffolding" },
+  { key: "manHourPerTon", label: "Labor hours" },
+  { key: "safetyPerTon", label: "Safety" },
+  { key: "toolsPerTon", label: "Tools" },
+  { key: "ppePerTon", label: "PPE" },
+  { key: "touchUpPerTon", label: "Touch-up" },
+  { key: "weldSurveyorPerTon", label: "Weld survey" },
+];
 
 const SETTINGS_STORAGE_KEY = "steelflow_pricing_settings_v1";
 const ITEMS_STORAGE_KEY = "steelflow_pricing_items_v1";
@@ -188,6 +202,56 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
             </TableBody>
           </Table>
         </div>
+
+        <div>
+          <h4 className="mb-1 text-xs font-semibold">Install rates per material (EGP / MT)</h4>
+          <p className="mb-2 max-w-2xl text-xs text-muted-foreground">
+            Site handling, crane, etc. can cost differently depending on what is being handled. Leave a cell
+            empty to use the global rate (shown as the placeholder); type a value to override it for that material only.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-border bg-muted/40">
+            <Table className="min-w-[1100px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Material / Family</TableHead>
+                  {INSTALL_RATE_COLS.map((c) => <TableHead key={c.key}>{c.label}</TableHead>)}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {FAM_ORDER.filter((k) => !FAMILIES[k].flag).map((key) => {
+                  const fam = FAMILIES[key];
+                  return (
+                    <TableRow key={key}>
+                      <TableCell className="whitespace-nowrap font-medium">{fam.name}</TableCell>
+                      {INSTALL_RATE_COLS.map((c) => {
+                        const ov = fam.installOverrides?.[c.key];
+                        return (
+                          <TableCell key={c.key}>
+                            <Input
+                              type="number"
+                              step="any"
+                              placeholder={String(settings[c.key])}
+                              value={typeof ov === "number" ? ov : ""}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const next = { ...(fam.installOverrides || {}) };
+                                if (raw === "") delete next[c.key];
+                                else next[c.key] = parseFloat(raw) || 0;
+                                fam.installOverrides = next;
+                                setFamVersion((n) => n + 1);
+                              }}
+                              className={"h-7 w-20 font-mono text-xs" + (typeof ov === "number" ? " border-primary" : "")}
+                            />
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
       </section>
 
       {/* ================= SECTION 2: CALCULATOR ================= */}
@@ -324,22 +388,22 @@ function CalcFlow({
 
   const installLinesBase: [string, number][] = isSupply
     ? [
-      ["Transport", wQty * settings.transportRate],
-      ["Site handling", wQty * settings.handlingPerTon],
-      ["Packing & unpacking", wQty * settings.packingPerTon],
+      ["Transport", wQty * installRate(fam, settings, "transportRate")],
+      ["Site handling", wQty * installRate(fam, settings, "handlingPerTon")],
+      ["Packing & unpacking", wQty * installRate(fam, settings, "packingPerTon")],
     ]
     : [
-      ["Transport", wQty * settings.transportRate],
-      ["Site handling", wQty * settings.handlingPerTon],
-      ["Packing & unpacking", wQty * settings.packingPerTon],
-      ["Crane", wQty * settings.cranePerTon],
-      ["Scaffolding", wQty * settings.scaffoldPerTon],
-      ["Labor hours", wQty * settings.manHourPerTon],
-      ["Occupational safety", wQty * settings.safetyPerTon],
-      ["Tools & consumables", wQty * settings.toolsPerTon],
-      ["Protective equipment", wQty * settings.ppePerTon],
-      ["Touch-up paint", wQty * settings.touchUpPerTon],
-      ["Welding supervision", wQty * settings.weldSurveyorPerTon],
+      ["Transport", wQty * installRate(fam, settings, "transportRate")],
+      ["Site handling", wQty * installRate(fam, settings, "handlingPerTon")],
+      ["Packing & unpacking", wQty * installRate(fam, settings, "packingPerTon")],
+      ["Crane", wQty * installRate(fam, settings, "cranePerTon")],
+      ["Scaffolding", wQty * installRate(fam, settings, "scaffoldPerTon")],
+      ["Labor hours", wQty * installRate(fam, settings, "manHourPerTon")],
+      ["Occupational safety", wQty * installRate(fam, settings, "safetyPerTon")],
+      ["Tools & consumables", wQty * installRate(fam, settings, "toolsPerTon")],
+      ["Protective equipment", wQty * installRate(fam, settings, "ppePerTon")],
+      ["Touch-up paint", wQty * installRate(fam, settings, "touchUpPerTon")],
+      ["Welding supervision", wQty * installRate(fam, settings, "weldSurveyorPerTon")],
     ];
   const installLines = fam.weightFactor
     ? ([[`Equivalent weight for calculation (${qty} × ${fam.weightFactor} MT/unit)`, wQty], ...installLinesBase] as [string, number][])

@@ -1,5 +1,11 @@
 import { FAMILIES } from "./steel-pricing-data";
-import type { PricingResult, PricingScope, PricingSettings } from "./types";
+import type { InstallRateKey, MaterialFamily, PricingResult, PricingScope, PricingSettings } from "./types";
+
+/** Effective per-ton install rate: the material's own override if set, otherwise the global rate. */
+export function installRate(fam: MaterialFamily, S: PricingSettings, key: InstallRateKey): number {
+  const o = fam.installOverrides?.[key];
+  return typeof o === "number" ? o : S[key];
+}
 
 /**
  * Recreates the original pricing sheet's logic in one place:
@@ -47,15 +53,16 @@ export function calcItem(qtyRaw: number, famKey: string, scope: PricingScope, S:
       painting * (1 + S.paintMargin / 100);
   }
 
+  const R = (k: InstallRateKey) => installRate(fam, S, k);
   let installDirect: number;
   if (isSupply) {
-    installDirect = wQty * (S.transportRate + S.handlingPerTon + S.packingPerTon);
+    installDirect = wQty * (R("transportRate") + R("handlingPerTon") + R("packingPerTon"));
   } else {
     installDirect =
       wQty *
-      (S.transportRate + S.handlingPerTon + S.packingPerTon + S.cranePerTon +
-        S.scaffoldPerTon + S.manHourPerTon + S.safetyPerTon + S.toolsPerTon +
-        S.ppePerTon + S.touchUpPerTon + S.weldSurveyorPerTon);
+      (R("transportRate") + R("handlingPerTon") + R("packingPerTon") + R("cranePerTon") +
+        R("scaffoldPerTon") + R("manHourPerTon") + R("safetyPerTon") + R("toolsPerTon") +
+        R("ppePerTon") + R("touchUpPerTon") + R("weldSurveyorPerTon"));
   }
   const installIndirect = installDirect * (S.installIndirectPct / 100);
   const installSale = (installDirect + installIndirect) * (1 + S.installMarginPct / 100);
