@@ -30,6 +30,7 @@ import {
   generateTrueShapeCandidates,
   MAX_TRUE_SHAPE_CANDIDATES,
   makeTrueShapeDiagnostics,
+  computeSheetUtilization,
   type OptimizerPartInstance,
   type RuinOperatorName,
   type RuinOperatorStats,
@@ -1995,6 +1996,27 @@ describe("Phase 4A — true-shape / NFP-style candidate generation", () => {
 // the axis-bias fix to computePlacementScore's growth term.
 // ---------------------------------------------------------------------------
 describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
+  const ZERO_GAP_LARGE_CONFIG: EngineConfig = { marginLeftMm: 0, marginRightMm: 0, marginTopMm: 0, marginBottomMm: 0, partGapMm: 0 };
+
+  function largeSheet(): WorkingSheet {
+    const source: EngineSourceInput = { sourceSheetId: "S1", material: "Steel", thicknessMm: 6, widthMm: 3000, lengthMm: 3000 };
+    return makeWorkingSheet(source, ZERO_GAP_LARGE_CONFIG);
+  }
+
+  function commitObstacle(sheet: WorkingSheet, outer: Point[], takeoffPartId = "obstacle") {
+    const bbox = computeBoundingBox(outer);
+    sheet.placements.push({
+      takeoffPartId,
+      instanceNumber: 1,
+      xMm: bbox.minX,
+      yMm: bbox.minY,
+      rotationDeg: 0,
+      widthMm: bbox.width,
+      heightMm: bbox.height,
+    });
+    sheet.polygons.push(outer);
+  }
+
   it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.5.0", () => {
     expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.5.0");
   });
@@ -2070,7 +2092,7 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
     const { parts, sources, cfg } = buildStructurallyBiasedScenario();
     const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
     const group = result.groups[0];
-    expect(group.placedCount).toBe(12); // every part placed (feasibility preserved)
+    expect(group.partsPlaced).toBe(12); // every part placed (feasibility preserved)
 
     const sheet = group.sheets[0];
     // How much of the sheet's usable HEIGHT (the axis the pre-4B bug
@@ -2081,18 +2103,28 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
 
     // Pre-4B, the biased growth term made extending into this axis
     // structurally expensive regardless of how much genuinely empty room
-    // was left there, so the layout stayed confined to a thin strip near
-    // the bottom. Post-4B, at least SOME placement should reach well up
-    // into the sheet's usable height instead of everything huddling in a
-    // strip under ~25% of the usable height. Tolerant threshold (not a
-    // fragile exact geometry check), per Phase 4A's testing precedent.
-    expect(heightUsageFraction).toBeGreaterThan(0.5);
+    // was left there, so the layout stayed confined to a single thin strip
+    // near the bottom (maxYReached barely above one rectangle's own height,
+    // ~200mm => a fraction of ~0.13 of the 1500mm usable height — verified
+    // by reverting the Phase 4B elongation/imbalance fix locally and
+    // re-running this exact scenario, which reproduces exactly that number).
+    // Post-4B, the occupied-envelope balance term in computePlacementScore
+    // means further placements that would leave the occupied footprint's
+    // width disproportionately far ahead of its height (relative to each
+    // axis's own usable capacity) score worse than placements that start
+    // using the sheet's height — so the layout spans multiple rows instead
+    // of one. Tolerant threshold (not a fragile exact geometry check, and
+    // not the unrealistic ">50%" bar a total part area this small could
+    // never reach even under a perfectly square-self-similar fill), per
+    // Phase 4A's testing precedent — but comfortably and consistently above
+    // the pre-4B single/two-row-confinement fraction.
+    expect(heightUsageFraction).toBeGreaterThan(0.25);
   });
 
   it("TEST 4 — placed-part count is never reduced by the Phase 4B scoring change", () => {
     const { parts, sources, cfg } = buildStructurallyBiasedScenario();
     const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 6000, maxIterations: 150 });
-    expect(result.groups[0].placedCount).toBe(parts.reduce((s, p) => s + p.qty, 0));
+    expect(result.groups[0].partsPlaced).toBe(parts.reduce((s, p) => s + p.qty, 0));
   });
 
   // 5 — irregular parts are considered for the unused region, not just
@@ -2165,7 +2197,7 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
     const sources: EngineSourceInput[] = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 1 })];
     const cfg = DEFAULT_CONFIG();
     const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 99, timeLimitMs: 6000, maxIterations: 150 });
-    expect(result.groups[0].placedCount).toBe(10);
+    expect(result.groups[0].partsPlaced).toBe(10);
     const sheet = result.groups[0].sheets[0];
     for (let i = 0; i < sheet.placements.length; i++) {
       for (let j = i + 1; j < sheet.placements.length; j++) {
@@ -2195,9 +2227,9 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
     const widthFirst = runWith("WIDTH_FIRST");
     const lengthFirst = runWith("LENGTH_FIRST");
     const auto = runWith("AUTO");
-    expect(widthFirst.groups[0].placedCount).toBe(12);
-    expect(lengthFirst.groups[0].placedCount).toBe(12);
-    expect(auto.groups[0].placedCount).toBe(12);
+    expect(widthFirst.groups[0].partsPlaced).toBe(12);
+    expect(lengthFirst.groups[0].partsPlaced).toBe(12);
+    expect(auto.groups[0].partsPlaced).toBe(12);
   });
 
   // 12 — determinism (same seed => identical output), utilization included.

@@ -855,6 +855,55 @@ function candidateNetNewFootprintArea(candidateBBox: BoundingBox, obstacleBoxes:
   return Math.max(0, total - Math.min(covered, total));
 }
 
+/**
+ * Phase 4B, Part C fix (continued) — occupied-envelope ELONGATION tie-break,
+ * normalized against each axis's REMAINING USABLE capacity (Part C's
+ * "normalize growth against remaining usable width/height" option).
+ *
+ * Replacing the old union-bbox-growth term with candidateNetNewFootprintArea
+ * removes the structural axis bias, but for a run of same-size parts it also
+ * makes "extend the current row further" and "start using the other axis"
+ * score EXACTLY equal on growth AND on contact (same neighbor-edge length,
+ * same sheet-edge length) — verified empirically: placing the Nth identical
+ * rectangle either to the right of row N-1 or directly above row 1 produces
+ * identical growth/contact numbers once obstacles are same-sized and evenly
+ * spaced. With an exact tie, the deterministic secondary tie-break in
+ * comparePlacementQuality (lower Y, then lower X) silently reintroduces the
+ * exact same "always extend along whichever axis is already in use" bias
+ * this phase exists to remove, just one level down in the tie-break chain
+ * instead of in the primary growth term.
+ *
+ * Fix: a small nudge toward whichever candidate keeps the occupied
+ * envelope's usage BALANCED relative to each axis's OWN usable capacity —
+ * i.e. compares (occupied width / usable width) against (occupied height /
+ * usable height) rather than comparing raw mm, so a long/thin sheet's
+ * naturally-longer axis isn't penalized just for being longer. This is
+ * deliberately symmetric — it never encodes "prefer X" or "prefer Y" the
+ * way packingPreferenceBias does for WIDTH_FIRST/LENGTH_FIRST — it only
+ * discourages letting one axis's REMAINING CAPACITY run out far ahead of
+ * the other's while plenty of proportional room remains on the underused
+ * axis. Once a row already consumes a much larger fraction of the sheet's
+ * usable length than the occupied region's fraction of usable height,
+ * continuing that row scores worse than starting to use the unused height,
+ * breaking the tie in the direction Part C requires.
+ *
+ * Weight is deliberately bounded so it can only ever act as a genuine
+ * driver once growth+contact are equal or very close (the common case for
+ * same-size parts extending a uniform row/column) — it can never override a
+ * meaningfully better-scored candidate on growth/contact alone, and it
+ * never changes which candidate wins when only one valid placement exists.
+ */
+const ELONGATION_TIE_BREAK_WEIGHT = 500;
+
+function occupiedCapacityImbalance(occupiedAfter: BoundingBox, sheet: WorkingSheet): number {
+  const uw = usableWidth(sheet);
+  const uh = usableHeight(sheet);
+  if (uw <= 0 || uh <= 0) return 0;
+  const widthFrac = occupiedAfter.width / uw;
+  const heightFrac = occupiedAfter.height / uh;
+  return Math.abs(widthFrac - heightFrac);
+}
+
 function computePlacementScore(
   candidateBBox: BoundingBox,
   occupiedBefore: BoundingBox | null,
@@ -873,7 +922,13 @@ function computePlacementScore(
   const growth = candidateNetNewFootprintArea(candidateBBox, obstacleBoxes);
   const contact = contactLength(candidateBBox, sheet, obstacleBoxes, gapMm);
   const directionalBias = packingPreferenceBias(occupiedBefore, occupiedAfter, packingPreference);
-  return growth - contact * contactScale + directionalBias;
+  // Only active for AUTO — WIDTH_FIRST/LENGTH_FIRST already encode an
+  // explicit, decisive directional preference via directionalBias above;
+  // this balance term exists solely to fix AUTO's tie-breaking (see the
+  // docstring on occupiedCapacityImbalance), so it must never compete with
+  // or dilute an explicit WIDTH_FIRST/LENGTH_FIRST choice.
+  const elongationBias = packingPreference === "AUTO" ? ELONGATION_TIE_BREAK_WEIGHT * occupiedCapacityImbalance(occupiedAfter, sheet) : 0;
+  return growth - contact * contactScale + directionalBias + elongationBias;
 }
 
 export function findBestPlacement(
