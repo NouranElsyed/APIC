@@ -1,9 +1,23 @@
 export type PricingScope = "Supply" | "Site Activity";
 
+/** The 11 per-ton install cost items. */
 export type InstallRateKey =
   | "transportRate" | "handlingPerTon" | "packingPerTon" | "cranePerTon"
   | "scaffoldPerTon" | "manHourPerTon" | "safetyPerTon" | "toolsPerTon"
   | "ppePerTon" | "touchUpPerTon" | "weldSurveyorPerTon";
+
+/** Everything a rate profile controls: the 11 per-ton rates + install indirect % + install margin %. */
+export type ProfileKey = InstallRateKey | "installIndirectPct" | "installMarginPct";
+
+/**
+ * Rate profiles. The original sheet keeps 5 rows of install rates (crane, scaffolding, man-hours...)
+ * and every BOQ item points at one of them per cost line. "A" = the standard rates edited in the
+ * Rate Card (group 2); B–E are the extra sets.
+ */
+export type ProfileId = "A" | "B" | "C" | "D" | "E";
+export type InstallProfiles = Record<Exclude<ProfileId, "A">, Record<ProfileKey, number>>;
+/** Which profile each cost line of one BOQ item uses. Missing key = that cost line is not charged. */
+export type ItemRateMap = Partial<Record<ProfileKey, ProfileId>>;
 
 export interface MaterialFamily {
   name: string;
@@ -14,8 +28,6 @@ export interface MaterialFamily {
   scrapPct: number;
   /** Converts a piece/area quantity into an equivalent tonnage for per-ton install rates. */
   weightFactor?: number;
-  /** Per-material overrides of the global per-ton install rates (e.g. site handling). Missing = use global rate. */
-  installOverrides?: Partial<Record<InstallRateKey, number>>;
   /** True for placeholder families that had no price in the source sheet. */
   flag?: boolean;
 }
@@ -64,9 +76,17 @@ export interface BoqItem {
   unit: string;
   qty: number;
   fam: string;
+  /** Per-item install rate profile picks (from the original sheet). */
+  rates?: ItemRateMap;
+  /** Priced "like" another item (the sheet reuses unit prices: G = G<other row> × factor). */
+  priceLike?: { no: string; factor: number };
+  /** Hard-coded unit price from the sheet (overrides the calculation). */
+  fixedUnitPrice?: number;
 }
 
 export interface PricingResult {
+  /** Set when this item takes its unit price from another item. */
+  linkedTo?: string;
   flag: boolean;
   materialPrice: number;
   handling: number;

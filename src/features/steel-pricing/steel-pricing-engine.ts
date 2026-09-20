@@ -1,17 +1,46 @@
 import { FAMILIES } from "./steel-pricing-data";
-import type { InstallRateKey, MaterialFamily, PricingResult, PricingScope, PricingSettings } from "./types";
+import { DEFAULT_PROFILES } from "./steel-pricing-data";
+import type { BoqItem, InstallProfiles, InstallRateKey, ItemRateMap, PricingResult, PricingScope, PricingSettings, ProfileId, ProfileKey } from "./types";
 
-/** Effective per-ton install rate: the material's own override if set, otherwise the global rate. */
-export function installRate(fam: MaterialFamily, S: PricingSettings, key: InstallRateKey): number {
-  const o = fam.installOverrides?.[key];
-  return typeof o === "number" ? o : S[key];
+export const PER_TON_KEYS: InstallRateKey[] = [
+  "transportRate", "handlingPerTon", "packingPerTon", "cranePerTon", "scaffoldPerTon", "manHourPerTon",
+  "safetyPerTon", "toolsPerTon", "ppePerTon", "touchUpPerTon", "weldSurveyorPerTon",
+];
+const SUPPLY_KEYS: InstallRateKey[] = ["transportRate", "handlingPerTon", "packingPerTon"];
+
+/** Value of one cost line under a given profile. "A" is the standard rate card (settings). */
+export function profileValue(id: ProfileId, key: ProfileKey, S: PricingSettings, profiles: InstallProfiles): number {
+  return id === "A" ? S[key] : profiles[id][key];
+}
+
+/** Default rate map when no per-item map exists (e.g. the quick calculator): every line on one profile. */
+export function defaultRateMap(scope: PricingScope, profile: ProfileId = "A"): ItemRateMap {
+  const keys = scope === "Supply" ? SUPPLY_KEYS : PER_TON_KEYS;
+  const m: ItemRateMap = { installIndirectPct: profile, installMarginPct: profile };
+  keys.forEach((k) => { m[k] = profile; });
+  return m;
+}
+
+/** Resolve a rate map into actual numbers. Unmapped per-ton lines are 0; unmapped % lines use the standard rate. */
+export function resolveRates(
+  S: PricingSettings, profiles: InstallProfiles, map: ItemRateMap,
+): Record<ProfileKey, number> {
+  const out = {} as Record<ProfileKey, number>;
+  PER_TON_KEYS.forEach((k) => { out[k] = map[k] ? profileValue(map[k] as ProfileId, k, S, profiles) : 0; });
+  (["installIndirectPct", "installMarginPct"] as const).forEach((k) => {
+    out[k] = profileValue(map[k] || "A", k, S, profiles);
+  });
+  return out;
 }
 
 /**
  * Recreates the original pricing sheet's logic in one place:
  * material cost -> fabrication cost -> install cost -> overheads -> tax & insurance.
  */
-export function calcItem(qtyRaw: number, famKey: string, scope: PricingScope, S: PricingSettings): PricingResult {
+export function calcItem(
+  qtyRaw: number, famKey: string, scope: PricingScope, S: PricingSettings,
+  rateMap?: ItemRateMap, profiles: InstallProfiles = DEFAULT_PROFILES,
+): PricingResult {
   const fam = FAMILIES[famKey] || FAMILIES.st37;
   const qty = Number(qtyRaw) || 0;
 
@@ -53,19 +82,10 @@ export function calcItem(qtyRaw: number, famKey: string, scope: PricingScope, S:
       painting * (1 + S.paintMargin / 100);
   }
 
-  const R = (k: InstallRateKey) => installRate(fam, S, k);
-  let installDirect: number;
-  if (isSupply) {
-    installDirect = wQty * (R("transportRate") + R("handlingPerTon") + R("packingPerTon"));
-  } else {
-    installDirect =
-      wQty *
-      (R("transportRate") + R("handlingPerTon") + R("packingPerTon") + R("cranePerTon") +
-        R("scaffoldPerTon") + R("manHourPerTon") + R("safetyPerTon") + R("toolsPerTon") +
-        R("ppePerTon") + R("touchUpPerTon") + R("weldSurveyorPerTon"));
-  }
-  const installIndirect = installDirect * (S.installIndirectPct / 100);
-  const installSale = (installDirect + installIndirect) * (1 + S.installMarginPct / 100);
+  const rates = resolveRates(S, profiles, rateMap || defaultRateMap(scope));
+  const installDirect = wQty * PER_TON_KEYS.reduce((sum, k) => sum + rates[k], 0);
+  const installIndirect = installDirect * (rates.installIndirectPct / 100);
+  const installSale = (installDirect + installIndirect) * (1 + rates.installMarginPct / 100);
 
   let mobDemob = 0, thirdParty = 0, heightFactor = 0;
   const baseForOverhead = supplySalePrice + installSale;
@@ -94,6 +114,52 @@ export function calcItem(qtyRaw: number, famKey: string, scope: PricingScope, S:
     mobDemob, thirdParty, heightFactor, commissioning,
     finalSalePrice, unitPrice, total: finalSalePrice, totalCost, profit, profitPct,
   };
+}
+
+/**
+ * Prices the whole BOQ. Items with a fixed unit price or a "priced like item X" link take their unit price
+ * from there (exactly like the original sheet); everything else runs through calcItem.
+ */
+export function calcBoq(
+  items: BoqItem[], S: PricingSettings, profiles: InstallProfiles,
+): Record<number, PricingResult> {
+  const byNo = new Map(items.map((it) => [it.no, it]));
+  const own = new Map<number, PricingResult>();
+  const out: Record<number, PricingResult> = {};
+
+  function ownResult(it: BoqItem): PricingResult {
+    let r = own.get(it.id);
+    if (!r) { r = calcItem(it.qty, it.fam, it.scope, S, it.rates, profiles); own.set(it.id, r); }
+    return r;
+  }
+  function unitOf(it: BoqItem, depth: number): { unit: number; profitPct: number } {
+    if (it.fixedUnitPrice !== undefined) return { unit: it.fixedUnitPrice, profitPct: 0 };
+    if (it.priceLike && depth < 10) {
+      const src = byNo.get(it.priceLike.no);
+      if (src) {
+        const s = unitOf(src, depth + 1);
+        return { unit: s.unit * it.priceLike.factor, profitPct: s.profitPct };
+      }
+    }
+    const r = ownResult(it);
+    return { unit: r.flag ? 0 : r.unitPrice, profitPct: r.profitPct };
+  }
+
+  items.forEach((it) => {
+    if (it.fixedUnitPrice !== undefined || it.priceLike) {
+      const { unit, profitPct } = unitOf(it, 0);
+      const total = unit * (Number(it.qty) || 0);
+      const base = ownResult({ ...it, fam: it.fam === "unpriced" ? "st37" : it.fam });
+      out[it.id] = {
+        ...base, flag: false, linkedTo: it.priceLike?.no ?? "fixed",
+        finalSalePrice: total, total, unitPrice: unit, profitPct,
+        profit: total - total / (1 + profitPct / 100), totalCost: total / (1 + profitPct / 100),
+      };
+    } else {
+      out[it.id] = ownResult(it);
+    }
+  });
+  return out;
 }
 
 export function fmt(n: number): string {
