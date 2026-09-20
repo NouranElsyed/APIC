@@ -2329,8 +2329,8 @@ function measureBenchmark(result: ReturnType<typeof runNestingAlgorithm>, source
   // since this benchmark only compares fragmentation/compactness/footprint here.
 
   const sheetShape = { widthMm: sheet.widthMm, lengthMm: sheet.lengthMm, placements: sheet.placements };
-  const fragmentationAreaSqm = computeFragmentationScore(sheetShape);
-  const compactnessScore = computeCompactnessScore(sheetShape);
+  const fragmentationAreaSqm = computeFragmentationScore([sheetShape]);
+  const compactnessScore = computeCompactnessScore([sheetShape]);
 
   return {
     partsPlaced: result.totalPartsPlaced,
@@ -2579,7 +2579,8 @@ describe("PHASE 5 — no regressions: existing strategies/options remain fully c
     expect(OPTIMIZER_ALGORITHM_VERSION).not.toBe("1.5.0");
   });
 });
-return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
+function SUPPORTED_ROTATIONS_FOR_TEST_CHECK(_rotationDeg: number): boolean {
+  return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
 }
 
 function partOuterFor(parts: EnginePartInput[], takeoffPartId: string): Point[] {
