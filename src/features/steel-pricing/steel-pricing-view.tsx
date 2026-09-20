@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   DEFAULT_ITEMS, DEFAULT_SETTINGS, FAMILIES, FAM_ORDER, SECTION_LABEL, SETTINGS_META,
@@ -52,6 +51,8 @@ function initialItems(): BoqItem[] {
 export function SteelPricingView({ canExport }: { canExport: boolean }) {
   const [settings, setSettings] = React.useState<PricingSettings>(initialSettings);
   const [items, setItems] = React.useState<BoqItem[]>(initialItems);
+  // Bumped whenever a material rate (stored in FAMILIES) changes, so memos recompute
+  const [famVersion, setFamVersion] = React.useState(0);
 
   // Calculator tab state
   const [calcFam, setCalcFam] = React.useState("st37");
@@ -86,11 +87,13 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
       if (it.sec === "supply") supplyTotal += t; else installTotal += t;
     });
     return { supplyTotal, installTotal, grand: supplyTotal + installTotal };
-  }, [items, settings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, settings, famVersion]);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Sticky live-totals bar: always visible while editing any section below */}
+      <div className="sticky top-0 z-20 -mx-1 flex flex-col gap-3 rounded-lg border border-border bg-background/95 px-3 py-2 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Ruler className="h-5 w-5" />
@@ -98,7 +101,7 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
           <div>
             <h2 className="text-sm font-semibold">Steel Structures Pricing Engine</h2>
             <p className="text-xs text-muted-foreground">
-              The original pricing sheet reorganized into one editable page.
+              Rates, calculator and BOQ on one page. Change any value and everything updates live.
             </p>
           </div>
         </div>
@@ -109,183 +112,178 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
         </div>
       </div>
 
-      <Tabs defaultValue="rates">
-        <TabsList>
-          <TabsTrigger value="rates">Base Rate Card</TabsTrigger>
-          <TabsTrigger value="calc">Item Pricing Calculator</TabsTrigger>
-          <TabsTrigger value="boq">Full BOQ Table</TabsTrigger>
-        </TabsList>
+      {/* ================= SECTION 1: RATE CARD ================= */}
+      <section className="space-y-5">
+        <h3 className="text-sm font-semibold">1. Base Rate Card</h3>
+        <p className="max-w-2xl text-xs text-muted-foreground">
+          Every value that was scattered across many columns in the original sheet is grouped here into 4 clear
+          groups, plus a material rate table. Change any number and pricing updates instantly across the whole page.
+        </p>
 
-        {/* ================= TAB 1: RATE CARD ================= */}
-        <TabsContent value="rates" className="space-y-5 pt-4">
-          <p className="max-w-2xl text-xs text-muted-foreground">
-            Every value that was scattered across many columns in the original sheet is grouped here into 4 clear
-            groups, plus a material rate table. Change any number and pricing updates instantly across the whole page.
-          </p>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {SETTINGS_META.map((group) => (
-              <Card key={group.key}>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-xs font-semibold text-primary">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    {group.title}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-1 pt-0">
-                  {group.fields.map((f) => (
-                    <div key={f.key} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-none">
-                      <Label className="flex-1 text-xs font-normal text-muted-foreground">{f.label}</Label>
-                      <Input
-                        type="number"
-                        step="any"
-                        value={settings[f.key]}
-                        onChange={(e) => updateSetting(f.key, parseFloat(e.target.value) || 0)}
-                        className="h-7 w-24 font-mono text-xs"
-                      />
-                      <span className="w-9 text-[11px] text-muted-foreground">{f.suffix}</span>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          <div className="overflow-x-auto rounded-lg border border-border bg-muted/40">
-            <Table className="min-w-[760px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Material / Family</TableHead>
-                  <TableHead>Unit</TableHead>
-                  <TableHead>Material price / unit</TableHead>
-                  <TableHead>Fabrication & welding rate / unit</TableHead>
-                  <TableHead>Painting rate / unit</TableHead>
-                  <TableHead>Scrap %</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {FAM_ORDER.filter((k) => !FAMILIES[k].flag).map((key) => {
-                  const fam = FAMILIES[key];
-                  return (
-                    <TableRow key={key}>
-                      <TableCell className="whitespace-nowrap font-medium">{fam.name}</TableCell>
-                      <TableCell><Badge variant="gray">{fam.unit}</Badge></TableCell>
-                      {(["materialPrice", "weldingRate", "paintingRate", "scrapPct"] as const).map((prop) => (
-                        <TableCell key={prop}>
-                          <Input
-                            type="number"
-                            step="any"
-                            value={fam[prop]}
-                            onChange={(e) => {
-                              const v = parseFloat(e.target.value) || 0;
-                              FAMILIES[key][prop] = v;
-                              setItems((prev) => [...prev]); // trigger recompute
-                            }}
-                            className="h-7 w-20 font-mono text-xs"
-                          />
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        </TabsContent>
-
-        {/* ================= TAB 2: CALCULATOR ================= */}
-        <TabsContent value="calc" className="pt-4">
-          <p className="mb-4 max-w-2xl text-xs text-muted-foreground">
-            Enter a quantity, pick a material and scope, and see exactly how the price is built up step by step —
-            instead of it being buried in tangled formulas.
-          </p>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr] lg:items-start">
-            <Card>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {SETTINGS_META.map((group) => (
+            <Card key={group.key}>
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-xs font-semibold text-primary">
                   <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Item inputs
+                  {group.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-1 pt-0">
-                <div className="flex items-center justify-between gap-2 border-b border-dashed border-border py-2">
-                  <Label className="text-xs text-muted-foreground">Material / Family</Label>
-                  <Select value={calcFam} onValueChange={setCalcFam}>
-                    <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {FAM_ORDER.filter((k) => !FAMILIES[k].flag).map((key) => (
-                        <SelectItem key={key} value={key}>{FAMILIES[key].name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center justify-between gap-2 border-b border-dashed border-border py-2">
-                  <Label className="text-xs text-muted-foreground">Scope</Label>
-                  <Select value={calcScope} onValueChange={(v) => setCalcScope(v as PricingScope)}>
-                    <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Supply">Supply only</SelectItem>
-                      <SelectItem value="Site Activity">Dismantle & Install</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center justify-between gap-2 py-2">
-                  <Label className="text-xs text-muted-foreground">
-                    Quantity <span className="text-[11px] text-muted-foreground">({FAMILIES[calcFam].unit})</span>
-                  </Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={calcQty}
-                    onChange={(e) => setCalcQty(parseFloat(e.target.value) || 0)}
-                    className="h-8 w-36 font-mono text-xs"
-                  />
-                </div>
+                {group.fields.map((f) => (
+                  <div key={f.key} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-none">
+                    <Label className="flex-1 text-xs font-normal text-muted-foreground">{f.label}</Label>
+                    <Input
+                      type="number"
+                      step="any"
+                      value={settings[f.key]}
+                      onChange={(e) => updateSetting(f.key, parseFloat(e.target.value) || 0)}
+                      className="h-7 w-24 font-mono text-xs"
+                    />
+                    <span className="w-9 text-[11px] text-muted-foreground">{f.suffix}</span>
+                  </div>
+                ))}
               </CardContent>
             </Card>
+          ))}
+        </div>
 
-            <CalcFlow famKey={calcFam} scope={calcScope} qty={calcQty} settings={settings} />
-          </div>
-        </TabsContent>
+        <div className="overflow-x-auto rounded-lg border border-border bg-muted/40">
+          <Table className="min-w-[760px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Material / Family</TableHead>
+                <TableHead>Unit</TableHead>
+                <TableHead>Material price / unit</TableHead>
+                <TableHead>Fabrication & welding rate / unit</TableHead>
+                <TableHead>Painting rate / unit</TableHead>
+                <TableHead>Scrap %</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {FAM_ORDER.filter((k) => !FAMILIES[k].flag).map((key) => {
+                const fam = FAMILIES[key];
+                return (
+                  <TableRow key={key}>
+                    <TableCell className="whitespace-nowrap font-medium">{fam.name}</TableCell>
+                    <TableCell><Badge variant="gray">{fam.unit}</Badge></TableCell>
+                    {(["materialPrice", "weldingRate", "paintingRate", "scrapPct"] as const).map((prop) => (
+                      <TableCell key={prop}>
+                        <Input
+                          type="number"
+                          step="any"
+                          value={fam[prop]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value) || 0;
+                            FAMILIES[key][prop] = v;
+                            setFamVersion((n) => n + 1); // trigger recompute everywhere
+                          }}
+                          className="h-7 w-20 font-mono text-xs"
+                        />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </section>
 
-        {/* ================= TAB 3: FULL BOQ ================= */}
-        <TabsContent value="boq" className="pt-4">
-          <p className="mb-4 max-w-2xl text-xs text-muted-foreground">
-            The exact same project items (74 items) with their sub-sections — quantity and material are editable,
-            and unit price and total recalculate instantly.
-          </p>
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Input
-              placeholder="Search by item number or description..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="min-w-[220px] flex-1"
-            />
-            <Select value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
-              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All sections</SelectItem>
-                <SelectItem value="supply">Supply & fabrication only</SelectItem>
-                <SelectItem value="install">Dismantle & install only</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <BoqTable items={items} settings={settings} search={search} filter={filter} onUpdate={updateItem} />
-
-          <Card className="mt-5 flex flex-row items-center justify-between p-4">
-            <span className="text-sm font-semibold">Project grand total</span>
-            <span className="font-mono text-lg font-bold text-warning">{fmt(totals.grand)} EGP</span>
+      {/* ================= SECTION 2: CALCULATOR ================= */}
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">2. Item Pricing Calculator</h3>
+        <p className="mb-4 max-w-2xl text-xs text-muted-foreground">
+          Enter a quantity, pick a material and scope, and see exactly how the price is built up step by step —
+          instead of it being buried in tangled formulas.
+        </p>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr] lg:items-start">
+          <Card className="lg:sticky lg:top-28">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-xs font-semibold text-primary">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                Item inputs
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-1 pt-0">
+              <div className="flex items-center justify-between gap-2 border-b border-dashed border-border py-2">
+                <Label className="text-xs text-muted-foreground">Material / Family</Label>
+                <Select value={calcFam} onValueChange={setCalcFam}>
+                  <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {FAM_ORDER.filter((k) => !FAMILIES[k].flag).map((key) => (
+                      <SelectItem key={key} value={key}>{FAMILIES[key].name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2 border-b border-dashed border-border py-2">
+                <Label className="text-xs text-muted-foreground">Scope</Label>
+                <Select value={calcScope} onValueChange={(v) => setCalcScope(v as PricingScope)}>
+                  <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Supply">Supply only</SelectItem>
+                    <SelectItem value="Site Activity">Dismantle & Install</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2 py-2">
+                <Label className="text-xs text-muted-foreground">
+                  Quantity <span className="text-[11px] text-muted-foreground">({FAMILIES[calcFam].unit})</span>
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={calcQty}
+                  onChange={(e) => setCalcQty(parseFloat(e.target.value) || 0)}
+                  className="h-8 w-36 font-mono text-xs"
+                />
+              </div>
+            </CardContent>
           </Card>
 
-          {!canExport && (
-            <p className="mt-3 text-[11px] text-muted-foreground">
-              Exporting a priced workbook from this tool requires the Scrap & Material export permission.
-            </p>
-          )}
-        </TabsContent>
-      </Tabs>
+          <CalcFlow key={famVersion} famKey={calcFam} scope={calcScope} qty={calcQty} settings={settings} />
+        </div>
+      </section>
+
+      {/* ================= SECTION 3: FULL BOQ ================= */}
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">3. Full BOQ Table</h3>
+        <p className="mb-4 max-w-2xl text-xs text-muted-foreground">
+          The exact same project items (74 items) with their sub-sections — quantity and material are editable,
+          and unit price and total recalculate instantly.
+        </p>
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Input
+            placeholder="Search by item number or description..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="min-w-[220px] flex-1"
+          />
+          <Select value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
+            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sections</SelectItem>
+              <SelectItem value="supply">Supply & fabrication only</SelectItem>
+              <SelectItem value="install">Dismantle & install only</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <BoqTable key={famVersion} items={items} settings={settings} search={search} filter={filter} onUpdate={updateItem} />
+
+        <Card className="mt-5 flex flex-row items-center justify-between p-4">
+          <span className="text-sm font-semibold">Project grand total</span>
+          <span className="font-mono text-lg font-bold text-warning">{fmt(totals.grand)} EGP</span>
+        </Card>
+
+        {!canExport && (
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            Exporting a priced workbook from this tool requires the Scrap & Material export permission.
+          </p>
+        )}
+      </section>
 
       <p className="max-w-4xl text-[11px] leading-relaxed text-muted-foreground">
         <b className="text-foreground">Note:</b> this reorganizes the pricing logic from the original Excel file
