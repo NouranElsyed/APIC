@@ -21,7 +21,7 @@ export function applyOverride(item: BoqItem, ov?: ItemOverride): BoqItem {
     if (line && p) install[k as keyof typeof install] = { ...line, p };
   }
   const matRow = ov.matRow === undefined ? item.spec.matRow : ov.matRow;
-  return { ...item, qty, spec: { ...item.spec, matRow, install } };
+  return { ...item, qty, spec: { ...item.spec, matRow, install, paintBasis: ov.paintBasis ?? item.spec.paintBasis, paintArea: ov.paintArea ?? item.spec.paintArea } };
 }
 
 export function materialPriceOf(spec: CalcSpec, qty: number, mats: MaterialTable): number {
@@ -60,8 +60,14 @@ export function calcItem(
   const welding = s.welding ? weight * rate(R.welding, s.welding) : 0;
   const fabricationCost = cutting + welding; // rolling is 0 for every workbook item
   const ndt = s.ndt ? fabricationCost * rate(R.ndt, "A") : 0;
-  const paintRate = s.paintingRate ?? (s.painting ? rate(R.painting, s.painting) : 0);
-  const painting = weight * paintRate;
+  // Painting: per ton of steel (workbook) or, when the painted area is known, per m².
+  const paintBasis = s.paintBasis ?? "ton";
+  const paintArea = Number(s.paintArea) || 0;
+  const paintRate =
+    paintBasis === "area"
+      ? (s.painting ? rate(R.paintingArea, s.painting) : 0)
+      : s.paintingRate ?? (s.painting ? rate(R.painting, s.painting) : 0);
+  const painting = (paintBasis === "area" ? paintArea : weight) * paintRate;
   const totalFabricationCost = materialCost + fabricationCost + ndt + painting;
   const fabIndirect = totalFabricationCost * rate(R.fabIndirect, s.fabIndirect);
   const supplySalePrice =
@@ -109,7 +115,7 @@ export function calcItem(
 
   return {
     mode: "calc", qty, weight, matRow: s.matRow, materialRate, materialPrice, handling, scrap, accessories, materialCost,
-    cutting, welding, fabricationCost, ndt, painting, totalFabricationCost, fabIndirect, supplySalePrice,
+    cutting, welding, fabricationCost, ndt, painting, paintBasis, paintArea, paintRate, totalFabricationCost, fabIndirect, supplySalePrice,
     installLines, installDirect, installIndirect, installSale, supplyAndInstall,
     mobDemob, heightFactor, thirdParty, beforeCommissioning, commissioning, totalSale,
     tax, insurance, finalPrice, unitPrice: weight > 0 ? finalPrice / weight : 0,

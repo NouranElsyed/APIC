@@ -10,11 +10,11 @@ import { CalcBreakdown, SpecialBreakdown } from "./item-breakdown";
 import { SectionTitle } from "./pricing-inputs";
 import { INSTALL_LABEL, MATERIAL_ORDER, SECTION_LABEL } from "./steel-pricing-data";
 import { applyOverride, fmt, fmt2, pct } from "./steel-pricing-engine";
-import type { BoqItem, BoqResult, InstallKey, ItemOverride, MaterialTable, Overrides, Profile, RateBook } from "./types";
+import type { BoqItem, BoqResult, InstallKey, ItemOverride, MaterialTable, Overrides, PaintBasis, Profile, RateBook } from "./types";
 import { PROFILES } from "./types";
 
 type Filter = "all" | "supply" | "install";
-const HEAD = ["Item", "Description", "Material", "Unit", "Quantity", "Unit price", "Total (EGP)", "Profit %", "Scope", "Install profile"];
+const HEAD = ["Item", "Description", "Material", "Unit", "Quantity", "Unit price", "Total (EGP)", "Profit %", "Scope", "Install profile", "Painting price"];
 
 export function BoqSection({ items, result, rates, materials, overrides, onOverride }: {
   items: BoqItem[]; result: BoqResult; rates: RateBook; materials: MaterialTable; overrides: Overrides;
@@ -65,11 +65,11 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
               return (
                 <React.Fragment key={sec}>
                   <tr className="bg-primary/10"><td colSpan={6} className="px-2 py-2 text-xs font-semibold text-primary">{SECTION_LABEL[sec]}</td>
-                    <td className="px-2 py-2 text-right font-mono text-xs font-semibold text-primary">{fmt(secTotal(sec))}</td><td colSpan={3} /></tr>
+                    <td className="px-2 py-2 text-right font-mono text-xs font-semibold text-primary">{fmt(secTotal(sec))}</td><td colSpan={4} /></tr>
                   {secGroups.map((g) => (
                     <React.Fragment key={g.sub}>
                       <tr className="bg-muted/30"><td colSpan={6} className="px-2 py-1.5 text-[11px] font-semibold">{g.sub}</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[11px] font-semibold">{fmt(g.rows.reduce((s, r) => s + result.items[r.no].finalPrice, 0))}</td><td colSpan={3} /></tr>
+                        <td className="px-2 py-1.5 text-right font-mono text-[11px] font-semibold">{fmt(g.rows.reduce((s, r) => s + result.items[r.no].finalPrice, 0))}</td><td colSpan={4} /></tr>
                       {g.rows.map((base) => {
                         const it = applyOverride(base, overrides[base.no]);
                         const r = result.items[it.no];
@@ -116,10 +116,15 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
                                   </Select>
                                 ) : <span className="text-muted-foreground">—</span>}
                               </td>
+                              <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+                                {it.mode === "calc" && (it.spec.painting || it.spec.paintingRate) ? (
+                                  <PaintBasisControl item={it} onOverride={onOverride} override={overrides[it.no]} rates={rates} />
+                                ) : <span className="text-muted-foreground">—</span>}
+                              </td>
                             </tr>
                             {isOpen && (
                               <tr className="border-t border-border bg-background">
-                                <td colSpan={10} className="px-4 py-4">
+                                <td colSpan={11} className="px-4 py-4">
                                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                                     <div>
                                       <div className="text-sm font-semibold">{it.no} — {it.desc}</div>
@@ -144,7 +149,7 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
                 </React.Fragment>
               );
             })}
-            {visible.length === 0 && <tr><td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">No items match.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">No items match.</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -188,6 +193,37 @@ function ActivityProfiles({ item, base, override, onOverride }: {
           </Select>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Per-item choice: price the painting per ton of steel, or per m² when the painted area is known. */
+function PaintBasisControl({ item, override, onOverride, rates }: {
+  item: Extract<BoqItem, { mode: "calc" }>; override?: ItemOverride; rates: RateBook;
+  onOverride: (no: string, patch: ItemOverride | null) => void;
+}) {
+  const basis: PaintBasis = item.spec.paintBasis ?? "ton";
+  const rateM2 = item.spec.painting ? rates.paintingArea[item.spec.painting] ?? 0 : 0;
+  const area = item.spec.paintArea ?? 0;
+  const missing = basis === "area" && (rateM2 <= 0 || area <= 0);
+  return (
+    <div className="flex items-center gap-1">
+      <Select value={basis} onValueChange={(v) => onOverride(item.no, { ...override, paintBasis: v as PaintBasis })}>
+        <SelectTrigger className="h-7 w-24 text-xs"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="ton">Per ton</SelectItem>
+          <SelectItem value="area">Per m²</SelectItem>
+        </SelectContent>
+      </Select>
+      {basis === "area" && (
+        <span className="relative inline-flex items-center">
+          <input value={String(area || "")} placeholder="area" inputMode="decimal"
+            onChange={(e) => { const n = Number(e.target.value); if (isFinite(n) && n >= 0) onOverride(item.no, { ...override, paintBasis: "area", paintArea: n }); }}
+            className={cn("h-7 w-20 rounded-md border bg-card px-2 pr-6 text-right font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring", missing ? "border-destructive" : "border-input")} />
+          <span className="pointer-events-none absolute right-1.5 text-[10px] text-muted-foreground">m²</span>
+        </span>
+      )}
+      {missing && <span className="text-[10px] text-destructive" title="Enter the painted area and the per-m² painting price in Pricing setup">{rateM2 <= 0 ? "no m² price" : "no area"}</span>}
     </div>
   );
 }

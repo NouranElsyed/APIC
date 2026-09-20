@@ -10,7 +10,7 @@ import { CalcBreakdown, FinalCard } from "./item-breakdown";
 import { SectionTitle } from "./pricing-inputs";
 import { MATERIAL_ORDER } from "./steel-pricing-data";
 import { calcItem, fmt } from "./steel-pricing-engine";
-import type { BoqItem, InstallKey, MaterialTable, PricingScope, Profile, RateBook } from "./types";
+import type { BoqItem, InstallKey, MaterialTable, PaintBasis, PricingScope, Profile, RateBook } from "./types";
 import { INSTALL_KEYS, PROFILES } from "./types";
 
 // Material rows 11–15 carry a full rate set (scrap / welding / painting) — same letter mapping the workbook uses.
@@ -44,8 +44,14 @@ export function ItemCalculator({ rates, materials }: { rates: RateBook; material
   const [scope, setScope] = React.useState<PricingScope>("Supply");
   const [profile, setProfile] = React.useState<Profile>("A");
   const [qty, setQty] = React.useState("10");
+  const [paintBasis, setPaintBasis] = React.useState<PaintBasis>("ton");
+  const [paintArea, setPaintArea] = React.useState("");
   const unit = materials[matRow]?.unit ?? "MT";
-  const item = React.useMemo(() => typicalItem(matRow, scope, profile, Number(qty) || 0, unit), [matRow, scope, profile, qty, unit]);
+  const item = React.useMemo(() => {
+    const it = typicalItem(matRow, scope, profile, Number(qty) || 0, unit);
+    if (SET_PROFILE[matRow]) { it.spec.paintBasis = paintBasis; it.spec.paintArea = Number(paintArea) || 0; }
+    return it;
+  }, [matRow, scope, profile, qty, unit, paintBasis, paintArea]);
   const r = React.useMemo(() => calcItem(item, rates, materials), [item, rates, materials]);
   const [showDetail, setShowDetail] = React.useState(false);
 
@@ -83,6 +89,18 @@ export function ItemCalculator({ rates, materials }: { rates: RateBook; material
             <div className="space-y-1"><Label className="text-[11px]">Quantity</Label><Input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" className="h-8 font-mono text-xs" /></div>
             <div className="space-y-1"><Label className="text-[11px]">Unit</Label><div className="flex h-8 items-center rounded-md border border-input bg-muted px-3 text-xs">{unit}</div></div>
           </div>
+          {SET_PROFILE[matRow] && (
+            <div className="space-y-1"><Label className="text-[11px]">Painting price</Label>
+              <div className="flex gap-2">
+                <Select value={paintBasis} onValueChange={(v) => setPaintBasis(v as PaintBasis)}>
+                  <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="ton">Per ton</SelectItem><SelectItem value="area">Per m²</SelectItem></SelectContent>
+                </Select>
+                {paintBasis === "area" && <Input value={paintArea} onChange={(e) => setPaintArea(e.target.value)} placeholder="Area m²" inputMode="decimal" className="h-8 w-24 font-mono text-xs" />}
+              </div>
+              {paintBasis === "area" && (rates.paintingArea[SET_PROFILE[matRow]] ?? 0) <= 0 && <p className="text-[11px] text-destructive">Enter the per-m² painting price in Pricing setup.</p>}
+            </div>
+          )}
           <p className="text-[11px] text-muted-foreground">Supply prices add delivery only (transport, handling, packing); dismantle &amp; install adds every site activity plus mob/demob and certificates.</p>
         </Card>
 

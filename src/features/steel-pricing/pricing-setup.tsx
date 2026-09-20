@@ -61,7 +61,8 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
                   <TableHead className="text-right text-[11px]">Material price (EGP)</TableHead>
                   <TableHead className="text-right text-[11px]">Scrap %</TableHead>
                   <TableHead className="text-right text-[11px]">Welding rate (EGP/t)</TableHead>
-                  <TableHead className="text-right text-[11px]">Painting rate (EGP/t)</TableHead>
+                  <TableHead className="text-right text-[11px]">Painting per ton (EGP/t)</TableHead>
+                  <TableHead className="text-right text-[11px]">Painting per m² (EGP/m²)</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -76,12 +77,13 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
                       <TableCell className="py-1 text-right">{p && p !== "E" ? <RateInput value={rates.scrap[p]} scale={100} suffix="%" className="w-20" onChange={(v) => setProfile((r) => r.scrap, p, v)} /> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="py-1 text-right">{p ? <RateInput value={rates.welding[p]} decimals={0} className="w-24" onChange={(v) => setProfile((r) => r.welding, p, v)} /> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="py-1 text-right">{p ? <RateInput value={rates.painting[p]} decimals={0} className="w-24" onChange={(v) => setProfile((r) => r.painting, p, v)} /> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
+                      <TableCell className="py-1 text-right">{p ? <RateInput value={rates.paintingArea[p]} decimals={2} placeholder="enter" className="w-24" onChange={(v) => setProfile((r) => r.paintingArea, p, v)} /> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
                     </TableRow>
                   );
                 })}
               </TableBody>
             </Table>
-            <p className="text-[11px] text-muted-foreground">Welding and painting rates are per ton. Materials without a rate set are supplied without in-house welding/painting; each BOQ item keeps the scrap, welding and painting profile the workbook assigns to it.</p>
+            <p className="text-[11px] text-muted-foreground">Welding is per ton. Painting has two prices: per ton (used when the painted area is unknown — the workbook rate) and per m² (used when you know the area). The per-m² price is not in the workbook, so enter it yourself; you choose per ton or per m² for each item in the BOQ. Materials without a rate set are supplied without in-house welding/painting; each BOQ item keeps the scrap, welding and painting profile the workbook assigns to it.</p>
           </div>
         )}
 
@@ -94,7 +96,8 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
                 <TableBody>
                   <ProfileRow label="Cutting (EGP/t)" rates={rates.cutting} decimals={0} onChange={(p, v) => setProfile((r) => r.cutting, p, v)} only={["A"]} />
                   <ProfileRow label="Fit-up & welding (EGP/t)" rates={rates.welding} decimals={0} onChange={(p, v) => setProfile((r) => r.welding, p, v)} />
-                  <ProfileRow label="Painting (EGP/t)" rates={rates.painting} decimals={0} onChange={(p, v) => setProfile((r) => r.painting, p, v)} />
+                  <ProfileRow label="Painting per ton (EGP/t)" rates={rates.painting} decimals={0} onChange={(p, v) => setProfile((r) => r.painting, p, v)} />
+                  <ProfileRow label="Painting per m² (EGP/m²)" rates={rates.paintingArea} decimals={2} onChange={(p, v) => setProfile((r) => r.paintingArea, p, v)} />
                   <ProfileRow label="NDT (% of fabrication)" rates={rates.ndt} scale={100} suffix="%" onChange={(p, v) => setProfile((r) => r.ndt, p, v)} only={["A"]} />
                   <ProfileRow label="Fabrication indirect (%)" rates={rates.fabIndirect} scale={100} suffix="%" onChange={(p, v) => setProfile((r) => r.fabIndirect, p, v)} only={["A", "B"]} />
                 </TableBody>

@@ -69,7 +69,9 @@ export function CalcBreakdown({ item, r, R, mats }: { item: Extract<BoqItem, { m
               {s.cutting && <Row label="Cutting" rate={fmt(R.cutting[s.cutting] ?? 0)} amount={r.cutting} />}
               {s.welding && <Row label="Fit-up & welding" rate={`${fmt(R.welding[s.welding] ?? 0)} (profile ${s.welding})`} amount={r.welding} />}
               {s.ndt && <Row label="NDT" rate={`${pctOf(R.ndt.A ?? 0)} of fabrication`} amount={r.ndt} />}
-              {(s.painting || s.paintingRate) && <Row label="Painting" rate={s.paintingRate ? `${fmt(s.paintingRate)} (item rate)` : `${fmt(R.painting[s.painting!] ?? 0)} (profile ${s.painting})`} amount={r.painting} />}
+              {(s.painting || s.paintingRate) && (r.paintBasis === "area"
+                ? <Row label="Painting (per m²)" rate={`${fmt2(r.paintRate)} EGP/m² × ${fmt2(r.paintArea)} m² (profile ${s.painting})`} amount={r.painting} />
+                : <Row label="Painting (per ton)" rate={s.paintingRate ? `${fmt(s.paintingRate)} (item rate)` : `${fmt(R.painting[s.painting!] ?? 0)} EGP/t (profile ${s.painting})`} amount={r.painting} />)}
               {s.fabIndirect && <Row label="Fabrication indirect" rate={`${pctOf(R.fabIndirect[s.fabIndirect] ?? 0)} of (material + fabrication)`} amount={r.fabIndirect} />}
               <Row bold label="Fabrication cost" amount={r.totalFabricationCost - r.materialCost + r.fabIndirect} />
               <Row muted label="Supply & fabrication sale price (with margins)" rate={<span title="Margin multipliers on material, fabrication, NDT and painting">×{R.margins.material} / {R.margins.fabrication} / {R.margins.ndt} / {s.paintingMargin ?? R.margins.painting}</span>} amount={r.supplySalePrice} />

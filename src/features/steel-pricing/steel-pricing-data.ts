@@ -36,6 +36,7 @@ export const DEFAULT_RATES: RateBook = {
     "D": 10795,
     "E": 10000
   },
+  "paintingArea": {},
   "fabIndirect": {
     "A": 0.0025,
     "B": 0.005

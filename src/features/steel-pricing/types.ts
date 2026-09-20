@@ -8,6 +8,7 @@
 export type Profile = "A" | "B" | "C" | "D" | "E";
 export const PROFILES: Profile[] = ["A", "B", "C", "D", "E"];
 
+export type PaintBasis = "ton" | "area";
 export type PricingScope = "Supply" | "Site Activity";
 export type ProfileRates = Partial<Record<Profile, number>>;
 
@@ -28,6 +29,8 @@ export interface RateBook {
   cutting: ProfileRates;
   welding: ProfileRates;
   painting: ProfileRates;
+  /** Painting per m² (EGP/m²). Not in the workbook, so it starts empty and is entered by the user. */
+  paintingArea: ProfileRates;
   ndt: ProfileRates;
   fabIndirect: ProfileRates;
   margins: { material: number; fabrication: number; ndt: number; painting: number };
@@ -71,6 +74,10 @@ export interface CalcSpec {
   painting: Profile | null;
   paintingRate?: number;
   paintingMargin?: number;
+  /** Painting basis: per ton of steel (workbook default) or per m² of painted area. */
+  paintBasis?: PaintBasis;
+  /** Painted area in m² (used when paintBasis = "area"). */
+  paintArea?: number;
   ndt: boolean;
   fabIndirect: Profile | null;
   install: Partial<Record<InstallKey, InstallLineSpec>>;
@@ -104,6 +111,8 @@ export type BoqItem =
 export interface ItemOverride {
   qty?: number;
   matRow?: number | null;
+  paintBasis?: PaintBasis;
+  paintArea?: number;
   /** Per-activity install profile overrides. */
   install?: Partial<Record<InstallKey, Profile>>;
 }
@@ -136,6 +145,9 @@ export interface CalcResult {
   fabricationCost: number; // cutting + rolling + fit-up & welding
   ndt: number;
   painting: number;
+  paintBasis: PaintBasis;
+  paintArea: number;
+  paintRate: number;
   totalFabricationCost: number;
   fabIndirect: number;
   supplySalePrice: number;

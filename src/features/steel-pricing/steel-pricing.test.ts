@@ -53,6 +53,18 @@ expectUp("material switch (ST-52 heavy -> Handrail 55,000) on S2.1", grand(DEFAU
 if (boq.items["S3.4"].mode !== "fixed" || boq.items["S3.4"].unitPrice !== 125000) { failures++; console.error("FAIL: S3.4 fixed price"); }
 if (boq.items["S2.6"].mode !== "unpriced" || boq.items["S2.6"].finalPrice !== 0) { failures++; console.error("FAIL: S2.6 unpriced"); }
 if (boq.items["S3.1"].mode !== "pricedLike") { failures++; console.error("FAIL: S3.1 should be priced-like"); }
+// Painting per m²: with a per-m² price and a painted area, painting = area x price; default stays per ton.
+{
+  const R2 = { ...DEFAULT_RATES, paintingArea: { A: 100, B: 100, C: 100, D: 100, E: 100 } };
+  const asArea = calcBoq(DEFAULT_ITEMS, R2, DEFAULT_MATERIALS, { "S1.1": { paintBasis: "area", paintArea: 2000 } }).items["S1.1"];
+  const asTon = boq.items["S1.1"];
+  if (asArea.mode !== "calc" || asTon.mode !== "calc") { failures++; console.error("FAIL: S1.1 should be calculated"); }
+  else {
+    check("S1.1 painting per m2 = 2000 x 100", asArea.painting, 200000);
+    check("S1.1 painting per ton = default (25 t x 12,500)", asTon.painting, 312500);
+    if (asArea.finalPrice === asTon.finalPrice) { failures++; console.error("FAIL: painting basis had no effect"); }
+  }
+}
 // Reconciliation: final price = total cost + profit for every calculated item.
 for (const item of DEFAULT_ITEMS) { const r = boq.items[item.no]; if (r.mode === "calc") check(`${item.no} cost+profit=final`, r.totalCost + r.profit, r.finalPrice); }
 
