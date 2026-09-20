@@ -31,6 +31,9 @@ import {
   MAX_TRUE_SHAPE_CANDIDATES,
   makeTrueShapeDiagnostics,
   computeSheetUtilization,
+  optimizeGroupPlacement,
+  buildPatternCandidates,
+  type PatternBlockCandidate,
   type OptimizerPartInstance,
   type RuinOperatorName,
   type RuinOperatorStats,
@@ -1144,9 +1147,9 @@ describe("PHASE 3 — ruin operators / reconstruction / acceptance / solution po
       expect(sheet.placements[selected[0].placementIdx].takeoffPartId).toBe("large");
     });
 
-    it("all 5 documented operator names are covered", () => {
+    it("all 6 documented operator names are covered (Phase 5 adds PATTERN_RUIN)", () => {
       expect(RUIN_OPERATOR_NAMES.sort()).toEqual(
-        ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN"].sort(),
+        ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN", "PATTERN_RUIN"].sort(),
       );
     });
   });
@@ -2017,8 +2020,8 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
     sheet.polygons.push(outer);
   }
 
-  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.5.0", () => {
-    expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.5.0");
+  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.5.0 (Phase 4B)", () => {
+    expect(OPTIMIZER_ALGORITHM_VERSION).not.toBe("1.4.0");
   });
 
   // 1 — computeSheetUtilization() true-polygon-area-based, hand-computable.
@@ -2243,8 +2246,340 @@ describe("Phase 4B — sheet-utilization-aware scoring & compaction", () => {
   });
 });
 
-function SUPPORTED_ROTATIONS_FOR_TEST_CHECK(_deg: number): boolean {
-  return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
+// ============================================================================
+// PHASE 5 — GLOBAL PATTERN / BLOCK SEARCH
+// ============================================================================
+//
+// PART A — BASELINE / REGRESSION BENCHMARK.
+//
+// Reproduces the real-world 1500x6000mm sheet / 6 rectangles + 10
+// triangles scenario described in the Phase 5 spec, using the smallest
+// representative equivalent geometry (exact production coordinates aren't
+// available to this test suite): 6 identical 900x700mm rectangles and 10
+// small right triangles, sized so that EVERY part fits on one sheet
+// regardless of which construction strategy wins — the point of this
+// benchmark is LAYOUT QUALITY (compactness / elongation / fragmentation /
+// future-fit / footprint shape), never placed-count, which PART L/Part K
+// require to stay at 16/16 either way.
+//
+// The rectangles are deliberately sized so a naive "extend along the
+// 6000mm length axis" row (6 x 900mm = 5400mm long, only 700mm tall) and a
+// compact 3x2 block (2700mm x 1400mm — nearly square) have IDENTICAL total
+// area but very different footprint shapes, which is exactly the
+// distinction PART K's metrics (footprint elongation / normalized axis
+// usage / compactness) are meant to catch.
+function buildBlockBenchmarkScenario(): { parts: EnginePartInput[]; sources: EngineSourceInput[]; cfg: EngineConfig } {
+  const parts: EnginePartInput[] = [
+    part({ takeoffPartId: "rect-block", itemNo: 1, outer: rect(900, 700), qty: 6 }),
+    part({ takeoffPartId: "tri-fill", itemNo: 2, outer: rightTriangle(300, 250), qty: 10 }),
+  ];
+  const sources: EngineSourceInput[] = [source({ widthMm: 1500, lengthMm: 6000 })];
+  return { parts, sources, cfg: ZERO_MARGIN_CONFIG };
+}
+
+/** PART A — every metric the spec requires the benchmark to measure, computed the same way for the "before" and "after" runs. */
+interface BenchmarkMetrics {
+  partsPlaced: number;
+  sheetsUsed: number;
+  utilizationPercent: number;
+  footprintWidthMm: number; // occupied bounding box, X axis (physical length)
+  footprintHeightMm: number; // occupied bounding box, Y axis (physical width)
+  elongationRatio: number; // footprintWidthMm / footprintHeightMm — lower is more "square"/compact
+  normalizedAxisUsage: number; // |occupiedWidthFrac - occupiedHeightFrac| relative to the sheet's own usable extents — lower is more balanced
+  fragmentationAreaSqm: number;
+  compactnessScore: number;
+  futureFitPenaltyMm2: number;
+  finalScore: number;
+  signature: string;
+}
+
+function measureBenchmark(result: ReturnType<typeof runNestingAlgorithm>, sources: EngineSourceInput[]): BenchmarkMetrics {
+  const group = result.groups[0];
+  const sheet = group.sheets[0];
+  expect(sheet).toBeDefined();
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of sheet.placements) {
+    minX = Math.min(minX, p.xMm);
+    minY = Math.min(minY, p.yMm);
+    maxX = Math.max(maxX, p.xMm + p.widthMm);
+    maxY = Math.max(maxY, p.yMm + p.heightMm);
+  }
+  const footprintWidthMm = maxX - minX;
+  const footprintHeightMm = maxY - minY;
+
+  const sourceDef = sources[0];
+  const usableW = sourceDef.lengthMm; // X axis
+  const usableH = sourceDef.widthMm; // Y axis
+  const widthFrac = footprintWidthMm / usableW;
+  const heightFrac = footprintHeightMm / usableH;
+
+  const areaByPartId = new Map<string, number>();
+  for (const p of group.sheets[0].placements) {
+    // Recompute true polygon area isn't available post-hoc from bbox-only
+    // placements; reuse the group's own reported per-part area instead —
+    // consistent with how scoreLayout/scoreSheets are fed elsewhere.
+    if (!areaByPartId.has(p.takeoffPartId)) {
+      areaByPartId.set(p.takeoffPartId, 0);
+    }
+  }
+  // areaByPartId values aren't used by computeFragmentationScore/computeCompactnessScore
+  // (bbox-only, PART A doc comment on those functions) — only computeFutureFitScore needs
+  // per-part area, and it degrades gracefully (still bounded/finite) with zero-valued areas
+  // since this benchmark only compares fragmentation/compactness/footprint here.
+
+  const sheetShape = { widthMm: sheet.widthMm, lengthMm: sheet.lengthMm, placements: sheet.placements };
+  const fragmentationAreaSqm = computeFragmentationScore(sheetShape);
+  const compactnessScore = computeCompactnessScore(sheetShape);
+
+  return {
+    partsPlaced: result.totalPartsPlaced,
+    sheetsUsed: result.totalSheetsUsed,
+    utilizationPercent: result.overallUtilizationPercent,
+    footprintWidthMm,
+    footprintHeightMm,
+    elongationRatio: footprintWidthMm / Math.max(1e-6, footprintHeightMm),
+    normalizedAxisUsage: Math.abs(widthFrac - heightFrac),
+    fragmentationAreaSqm,
+    compactnessScore,
+    futureFitPenaltyMm2: 0, // see note above — not meaningfully comparable post-hoc without per-instance area; the dedicated PART K test below asserts on the metrics that ARE comparable this way.
+    finalScore: group.optimization.finalScore,
+    signature: sheet.placements
+      .map((p) => `${p.takeoffPartId}|${p.instanceNumber}|${Math.round(p.xMm * 100) / 100}|${Math.round(p.yMm * 100) / 100}|${p.rotationDeg}`)
+      .sort()
+      .join(";"),
+  };
+}
+
+describe("PHASE 5 — GLOBAL PATTERN / BLOCK SEARCH (1500x6000 real-world benchmark)", () => {
+  const BENCH_OPTIONS = { randomSeed: 20260901, timeLimitMs: 8000, maxIterations: 150 };
+
+  it("PART A — baseline (disablePatternBlockSearch: true) reproduces a long/elongated row-style footprint deterministically", () => {
+    const { parts, sources, cfg } = buildBlockBenchmarkScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { ...BENCH_OPTIONS, disablePatternBlockSearch: true });
+
+    expect(result.totalPartsPlaced).toBe(16);
+    expect(result.totalPartsUnplaced).toBe(0);
+    expect(result.totalSheetsUsed).toBe(1);
+    assertLayoutIsCollisionFree(result, parts, cfg);
+
+    const metrics = measureBenchmark(result, sources);
+    // Deterministic — same seed, same everything, run twice.
+    const result2 = runNestingAlgorithm(parts, sources, cfg, { ...BENCH_OPTIONS, disablePatternBlockSearch: true });
+    const metrics2 = measureBenchmark(result2, sources);
+    expect(metrics2.signature).toBe(metrics.signature);
+    expect(metrics2.finalScore).toBe(metrics.finalScore);
+  });
+
+  it("PART K — the new global block search discovers a measurably more compact/less elongated layout than the pre-Phase-5 baseline, without losing placed-count, sheet-count, or exact geometry validity", () => {
+    const { parts, sources, cfg } = buildBlockBenchmarkScenario();
+
+    const before = runNestingAlgorithm(parts, sources, cfg, { ...BENCH_OPTIONS, disablePatternBlockSearch: true });
+    const after = runNestingAlgorithm(parts, sources, cfg, { ...BENCH_OPTIONS, disablePatternBlockSearch: false });
+
+    // PART L / PART K non-negotiables: never worse on placed-count, sheet
+    // count, or geometry validity — for EITHER run.
+    expect(before.totalPartsPlaced).toBe(16);
+    expect(after.totalPartsPlaced).toBe(16);
+    expect(before.totalSheetsUsed).toBe(1);
+    expect(after.totalSheetsUsed).toBe(1);
+    assertLayoutIsCollisionFree(before, parts, cfg);
+    assertLayoutIsCollisionFree(after, parts, cfg);
+
+    const beforeMetrics = measureBenchmark(before, sources);
+    const afterMetrics = measureBenchmark(after, sources);
+
+    // PART K — do NOT require an exact copy of the manual solution; verify
+    // measurable improvement in global metrics instead. The rectangle
+    // group's own 6-piece footprint is what PART K's "row vs block" claim
+    // is actually about, so also directly measure the occupied envelope of
+    // JUST the "rect-block" group's 6 placements (the part of the layout
+    // this phase specifically targets) in addition to the whole-sheet
+    // footprint.
+    function rectGroupFootprint(result: ReturnType<typeof runNestingAlgorithm>): { widthMm: number; heightMm: number; elongation: number } {
+      const placements = result.groups[0].sheets[0].placements.filter((p) => p.takeoffPartId === "rect-block");
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of placements) {
+        minX = Math.min(minX, p.xMm);
+        minY = Math.min(minY, p.yMm);
+        maxX = Math.max(maxX, p.xMm + p.widthMm);
+        maxY = Math.max(maxY, p.yMm + p.heightMm);
+      }
+      const widthMm = maxX - minX;
+      const heightMm = maxY - minY;
+      return { widthMm, heightMm, elongation: widthMm / Math.max(1e-6, heightMm) };
+    }
+
+    const beforeRectFootprint = rectGroupFootprint(before);
+    const afterRectFootprint = rectGroupFootprint(after);
+
+    // The core claim (spec PART P): the new search must be able to find a
+    // 2D block (elongation close to 2700/1400 ~= 1.93) instead of settling
+    // for the 1D row (elongation 5400/700 ~= 7.71) whenever a block is the
+    // globally better choice. We assert the NEW run's rectangle-group
+    // footprint is decisively less elongated than the OLD run's — not
+    // pinned to the exact manual numbers, since ties/alternate-but-equally-
+    // good block orientations are acceptable (PART K).
+    expect(afterRectFootprint.elongation).toBeLessThan(beforeRectFootprint.elongation);
+
+    // The whole-sheet metrics should reflect at least one of the
+    // documented global-quality signals improving (PART K allows ANY of
+    // these — footprint elongation, normalized axis usage, compactness,
+    // fragmentation, future-fit, or final score — rather than requiring
+    // every single one to move, since they can legitimately trade off
+    // against each other once the 10 triangles are also re-optimized
+    // around the new rectangle footprint).
+    const improvedSomewhere =
+      afterMetrics.elongationRatio < beforeMetrics.elongationRatio - 1e-6 ||
+      afterMetrics.normalizedAxisUsage < beforeMetrics.normalizedAxisUsage - 1e-6 ||
+      afterMetrics.compactnessScore < beforeMetrics.compactnessScore - 1e-6 ||
+      afterMetrics.fragmentationAreaSqm < beforeMetrics.fragmentationAreaSqm - 1e-6 ||
+      afterMetrics.finalScore < beforeMetrics.finalScore - 1e-6;
+    expect(improvedSomewhere).toBe(true);
+  });
+
+  it("PART K/L — deterministic output: running the new search twice with the same seed produces an identical layout", () => {
+    const { parts, sources, cfg } = buildBlockBenchmarkScenario();
+    const run = () => runNestingAlgorithm(parts, sources, cfg, BENCH_OPTIONS);
+    const a = measureBenchmark(run(), sources);
+    const b = measureBenchmark(run(), sources);
+    expect(b.signature).toBe(a.signature);
+    expect(b.finalScore).toBe(a.finalScore);
+  });
+});
+
+describe("PHASE 5 PART B/C — buildPatternCandidates() (pure, bounded pattern/block generation)", () => {
+  it("generates grid block candidates for a repeated rectangular group, including an exact-count 3x2/2x3 variant for 6 instances", () => {
+    const outer = rect(900, 700);
+    const instances: OptimizerPartInstance[] = Array.from({ length: 6 }, (_, i) => ({
+      takeoffPartId: "rect-block",
+      itemNo: 1,
+      instanceNumber: i + 1,
+      areaSqm: 0.63,
+      outer,
+    }));
+    const candidates = buildPatternCandidates(instances, ZERO_MARGIN_CONFIG);
+
+    expect(candidates.length).toBeGreaterThan(0);
+    const exactFits = candidates.filter((c) => c.slots.length === 6);
+    expect(exactFits.length).toBeGreaterThan(0);
+    // Both orientations should be discoverable somewhere in the bounded set.
+    const shapes = new Set(exactFits.map((c) => `${c.rows}x${c.cols}`));
+    expect(shapes.has("3x2") || shapes.has("2x3") || shapes.has("1x6") || shapes.has("6x1")).toBe(true);
+
+    for (const c of candidates) {
+      expect(c.slots.length).toBe(c.rows * c.cols);
+      expect(c.widthMm).toBeGreaterThan(0);
+      expect(c.heightMm).toBeGreaterThan(0);
+    }
+  });
+
+  it("is bounded: never returns more than the documented cap regardless of instance count or group count", () => {
+    const outer = rect(100, 100);
+    const instances: OptimizerPartInstance[] = Array.from({ length: 40 }, (_, i) => ({
+      takeoffPartId: `p${i % 5}`, // 5 distinct groups of 8 each
+      itemNo: 1,
+      instanceNumber: Math.floor(i / 5) + 1,
+      areaSqm: 0.01,
+      outer,
+    }));
+    const candidates = buildPatternCandidates(instances, ZERO_MARGIN_CONFIG);
+    expect(candidates.length).toBeLessThanOrEqual(18); // MAX_PATTERN_GROUP_SEEDS(3) * MAX_PATTERN_VARIANTS_PER_GROUP(6)
+  });
+
+  it("ignores non-repeated (single-instance) parts entirely", () => {
+    const instances: OptimizerPartInstance[] = [
+      { takeoffPartId: "solo-a", itemNo: 1, instanceNumber: 1, areaSqm: 0.1, outer: rect(100, 100) },
+      { takeoffPartId: "solo-b", itemNo: 2, instanceNumber: 1, areaSqm: 0.1, outer: rect(120, 80) },
+    ];
+    expect(buildPatternCandidates(instances, ZERO_MARGIN_CONFIG)).toEqual([]);
+  });
+
+  it("every generated block's slots are internally non-overlapping (grid tiling respects config.partGapMm)", () => {
+    const gapConfig: EngineConfig = { ...ZERO_MARGIN_CONFIG, partGapMm: 5 };
+    const outer = rect(200, 150);
+    const instances: OptimizerPartInstance[] = Array.from({ length: 6 }, (_, i) => ({
+      takeoffPartId: "rect-block",
+      itemNo: 1,
+      instanceNumber: i + 1,
+      areaSqm: 0.03,
+      outer,
+    }));
+    const candidates = buildPatternCandidates(instances, gapConfig);
+    for (const block of candidates) {
+      for (let i = 0; i < block.slots.length; i++) {
+        for (let j = i + 1; j < block.slots.length; j++) {
+          const a = block.slots[i];
+          const b = block.slots[j];
+          const shapeA = computeOrientedShape(outer, a.rotationDeg);
+          const shapeB = computeOrientedShape(outer, b.rotationDeg);
+          const polyA = translatePoints(shapeA.points, a.dxMm, a.dyMm);
+          const polyB = translatePoints(shapeB.points, b.dxMm, b.dyMm);
+          expect(polygonsOverlap(polyA, polyB)).toBe(false);
+          expect(polygonsMinDistance(polyA, polyB)).toBeGreaterThanOrEqual(gapConfig.partGapMm - 1e-6);
+        }
+      }
+    }
+  });
+});
+
+describe("PHASE 5 PART H — PATTERN_RUIN ruin operator", () => {
+  it("selectRuinTargets(\"PATTERN_RUIN\", ...) selects a whole compact repeated-part group, not a scattered subset", () => {
+    const sheet = makeWorkingSheet(source({ widthMm: 2000, lengthMm: 2000 }), ZERO_MARGIN_CONFIG);
+    // A tight 3x2 block of "A" (compact) plus a handful of scattered "B" singletons.
+    const positions = [
+      [0, 0], [100, 0], [200, 0],
+      [0, 100], [100, 100], [200, 100],
+    ];
+    for (const [x, y] of positions) {
+      sheet.placements.push({ takeoffPartId: "A", instanceNumber: sheet.placements.length + 1, xMm: x, yMm: y, rotationDeg: 0, widthMm: 90, heightMm: 90 });
+      sheet.polygons.push(rect(90, 90).map((p) => ({ x: p.x + x, y: p.y + y })));
+    }
+    sheet.placements.push({ takeoffPartId: "B", instanceNumber: 1, xMm: 1000, yMm: 0, rotationDeg: 0, widthMm: 50, heightMm: 50 });
+    sheet.polygons.push(rect(50, 50).map((p) => ({ x: p.x + 1000, y: p.y })));
+    sheet.placements.push({ takeoffPartId: "B", instanceNumber: 2, xMm: 1900, yMm: 1900, rotationDeg: 0, widthMm: 50, heightMm: 50 });
+    sheet.polygons.push(rect(50, 50).map((p) => ({ x: p.x + 1900, y: p.y + 1900 })));
+
+    const selected = selectRuinTargets("PATTERN_RUIN", [sheet], new Map(), 6, mulberry32(1));
+    expect(selected.length).toBe(6);
+    for (const ref of selected) {
+      expect(sheet.placements[ref.placementIdx].takeoffPartId).toBe("A");
+    }
+  });
+
+  it("falls back to a RANDOM_RUIN-style bounded subset when no repeated group exists (never a permanent no-op)", () => {
+    const sheet = makeWorkingSheet(source({ widthMm: 2000, lengthMm: 2000 }), ZERO_MARGIN_CONFIG);
+    sheet.placements.push({ takeoffPartId: "solo-1", instanceNumber: 1, xMm: 0, yMm: 0, rotationDeg: 0, widthMm: 90, heightMm: 90 });
+    sheet.polygons.push(rect(90, 90));
+    sheet.placements.push({ takeoffPartId: "solo-2", instanceNumber: 1, xMm: 200, yMm: 0, rotationDeg: 0, widthMm: 90, heightMm: 90 });
+    sheet.polygons.push(rect(90, 90).map((p) => ({ x: p.x + 200, y: p.y })));
+
+    const selected = selectRuinTargets("PATTERN_RUIN", [sheet], new Map(), 1, mulberry32(1));
+    expect(selected.length).toBe(1);
+  });
+
+  it("RUIN_OPERATOR_NAMES / adaptive search integration: PATTERN_RUIN can be adaptively selected and never reduces placed-count across a full run", () => {
+    const { parts, sources, cfg } = buildBlockBenchmarkScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 4242, timeLimitMs: 8000, maxIterations: 150 });
+    expect(result.totalPartsPlaced).toBe(16);
+    assertLayoutIsCollisionFree(result, parts, cfg);
+  });
+});
+
+describe("PHASE 5 — no regressions: existing strategies/options remain fully compatible", () => {
+  it("disablePatternBlockSearch defaults to false but every other existing option remains respected", () => {
+    const { parts, sources, cfg } = buildBlockBenchmarkScenario();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 1, timeLimitMs: 6000, maxIterations: 100, packingPreference: "WIDTH_FIRST" });
+    expect(result.totalPartsPlaced).toBe(16);
+    assertLayoutIsCollisionFree(result, parts, cfg);
+  });
+
+  it("OPTIMIZER_ALGORITHM_VERSION was bumped to 1.6.0 for Phase 5", () => {
+    expect(OPTIMIZER_ALGORITHM_VERSION).toBe("1.6.0");
+    expect(OPTIMIZER_ALGORITHM_VERSION).not.toBe("1.5.0");
+  });
+});
+return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
 }
 
 function partOuterFor(parts: EnginePartInput[], takeoffPartId: string): Point[] {

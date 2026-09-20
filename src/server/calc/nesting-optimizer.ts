@@ -18,7 +18,7 @@ import {
 import type { EngineConfig, EngineSourceInput, EnginePlacementResult, UnplacedReason } from "./nesting-engine";
 
 export const OPTIMIZER_ALGORITHM_NAME = "candidate-search-multi-strategy-local-improvement";
-export const OPTIMIZER_ALGORITHM_VERSION = "1.5.0";
+export const OPTIMIZER_ALGORITHM_VERSION = "1.6.0";
 
 /**
  * Width-first / length-first packing preference (follow-up to Phase 3).
@@ -78,6 +78,26 @@ export interface OptimizerOptions {
    * Default "AUTO" preserves existing behavior exactly (no new bias term).
    */
   packingPreference?: PackingPreference;
+  /**
+   * Phase 5 — GLOBAL PATTERN / BLOCK SEARCH (see PART B/C/D/E below).
+   *
+   * When false (default), a bounded number of additional "block-first"
+   * multi-start seeds are added on top of the existing 8 fixed + extra
+   * perturbed strategies: for groups of repeated compatible parts, a small
+   * grid/block arrangement (e.g. a 3x2 block of identical rectangles) is
+   * constructed and placed as ONE structural unit before the remaining
+   * parts are placed greedily, one at a time, in the usual way. This gives
+   * the search a genuine chance to discover compact 2D layouts that a
+   * purely part-by-part greedy order can only ever stumble into by luck
+   * (see the 1500x6000 benchmark in nesting-optimizer.test.ts).
+   *
+   * Set true to reproduce PRE-Phase-5 (<=1.5.0) construction behavior
+   * exactly — used by the dedicated regression/benchmark test to capture
+   * a deterministic "before" baseline to compare the new search against.
+   * Every other phase (2A/2B/3/4A/4B, assisted nesting) is unaffected by
+   * this flag either way.
+   */
+  disablePatternBlockSearch?: boolean;
 }
 
 const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
@@ -90,6 +110,7 @@ const DEFAULT_OPTIONS: Required<OptimizerOptions> = {
   maxRotationCandidatesPerPart: 48,
   maxExtraRandomStarts: 16,
   packingPreference: "AUTO",
+  disablePatternBlockSearch: false,
 };
 
 /**
@@ -1128,9 +1149,23 @@ function constructLayout(
   maxCandidates: number,
   rotations: RotationCandidateCache,
   packingPreference: PackingPreference = "AUTO",
+  /**
+   * Phase 5, PART E — optional pre-seeded sheets to continue construction
+   * onto (e.g. a sheet that already has a pattern block committed to it),
+   * instead of always starting from zero open sheets. Purely additive:
+   * every existing call site omits this and gets EXACTLY the previous
+   * behavior (empty array, same as before). `openedCountBySourceId` is
+   * initialized by counting how many sheets of each source are already
+   * present, so availableQty accounting for newly-opened sheets stays
+   * correct.
+   */
+  initialSheets?: WorkingSheet[],
 ): ConstructResult {
-  const sheets: WorkingSheet[] = [];
+  const sheets: WorkingSheet[] = initialSheets ? [...initialSheets] : [];
   const openedCountBySourceId = new Map<string, number>();
+  for (const s of sheets) {
+    openedCountBySourceId.set(s.sourceSheetId, (openedCountBySourceId.get(s.sourceSheetId) ?? 0) + 1);
+  }
 
   function openNextSheet(): WorkingSheet | null {
     for (const sourceDef of rankedSources) {
@@ -1781,6 +1816,313 @@ function buildExtraStartStrategies(
   return extra;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 — GLOBAL PATTERN / BLOCK SEARCH.
+// ---------------------------------------------------------------------------
+// The construction strategies above (buildStrategies / buildExtraStartStrategies)
+// all share one structural limitation: they decide an ORDER for placing
+// instances ONE AT A TIME, and each instance is committed via
+// findBestPlacement() the moment its turn comes up. For a group of several
+// IDENTICAL/compatible repeated parts, this means the very first instance's
+// placement effectively pre-commits the group to whatever local shape
+// findBestPlacement's contact/growth scoring happens to prefer for a SINGLE
+// part at that moment (typically: extend the current row) — by the time the
+// group's 2nd, 3rd, ... Nth instance is placed, a genuinely better GLOBAL
+// pattern for the group as a whole (e.g. a compact 3x2 block instead of a
+// 1x6 row) can no longer be discovered, because it would require several
+// instances to be placed as a coordinated unit, not independently.
+//
+// This section adds a bounded, deterministic, exact-geometry-validated way
+// to propose and place small "block" patterns — an NxM grid of copies of
+// one repeated part — as ONE atomic placement, so the search can compare a
+// genuinely 2D block against the row/column layout greedy placement alone
+// would have produced. It does NOT implement NFP/Minkowski-sum nesting,
+// does NOT bypass any exact geometry validation (boundsContain /
+// polygonsOverlap / polygonsMinDistance — the same functions used
+// everywhere else in this file, PART J), and does NOT change scoreLayout /
+// scoreSheets / isBetterLayout (PART G — search changes, not score changes).
+// Every bound below is a small fixed constant, independent of job size.
+
+/** PART B/M — largest repeated-part GROUP (by instance count) this phase will ever try to arrange as a block. */
+const MAX_PATTERN_PARTS = 9;
+/** PART B/M — number of DISTINCT repeated-part groups (by takeoffPartId) considered for block seeding, largest-quantity groups first. */
+const MAX_PATTERN_GROUP_SEEDS = 3;
+/** PART B/M — bounded grid variants (rows x cols) tried per group, per rotation option. */
+const MAX_PATTERN_VARIANTS_PER_GROUP = 6;
+/** PART B/M — hard cap on the total number of block-first multi-start seeds this phase can add, across every group. */
+const MAX_PATTERN_CANDIDATES = MAX_PATTERN_GROUP_SEEDS * MAX_PATTERN_VARIANTS_PER_GROUP;
+
+/**
+ * PART B — the bounded, fixed set of grid shapes this phase will ever try.
+ * Deliberately small and explicit (spec PART B) rather than derived from
+ * factoring the group size, so the search space stays a small fixed
+ * constant regardless of how many instances are in a group.
+ */
+const PATTERN_GRID_SHAPES: [rows: number, cols: number][] = [
+  [1, 2], [2, 1],
+  [1, 3], [3, 1],
+  [2, 2],
+  [2, 3], [3, 2],
+  [1, 4], [4, 1],
+  [2, 4], [4, 2],
+  [3, 3],
+  [1, 5], [5, 1],
+  [1, 6], [6, 1],
+];
+
+/** PART C — one member slot inside a pattern block, relative to the block's own (0,0) origin. */
+export interface PatternBlockSlot {
+  dxMm: number;
+  dyMm: number;
+  rotationDeg: RotationDeg;
+}
+
+/** PART B/C — a small, bounded candidate arrangement of copies of ONE repeated part. */
+export interface PatternBlockCandidate {
+  /** Human-readable/deterministic identity, e.g. "grid-3x2-rot0" — used for the multi-start seed name and as part of the synthetic placement-search instance id (never collides with a real takeoffPartId). */
+  name: string;
+  takeoffPartId: string;
+  rows: number;
+  cols: number;
+  /** Rotation applied to every member slot (PART F — "row-first" vs "column-first" grid variants are two SEPARATE candidates with swapped rows/cols, not a mid-search rotation of one candidate). */
+  rotationDeg: RotationDeg;
+  widthMm: number;
+  heightMm: number;
+  slots: PatternBlockSlot[];
+}
+
+/**
+ * PART C — buildPatternCandidates(): the bounded "generate several possible
+ * local arrangements of compatible copies" step. Pure and deterministic —
+ * no sheet/placement state, no randomness, no time budget needed (its
+ * total work is bounded by the constants above regardless of instance
+ * count). Groups instances by takeoffPartId (PART B: "same part type, same
+ * thickness/material compatibility" already holds by construction — every
+ * OptimizerPartInstance in one optimizeGroupPlacement() call already
+ * shares material/thickness, that's what a "group" IS at the engine layer)
+ * and, for each of the MAX_PATTERN_GROUP_SEEDS largest such groups, tiles
+ * the representative member's own oriented shape (at rotationDeg 0 and, if
+ * it changes the shape's footprint, one alternate rotation) into every
+ * bounded grid shape from PATTERN_GRID_SHAPES that fits within the group's
+ * available count. Grid shapes that use the group's FULL count are
+ * prioritized first (PART E — "the block itself" needs an exact-count
+ * variant both to seed COMPACT_BLOCK_FIRST well and, later, for
+ * PATTERN_RUIN to reconstruct a fully-removed group as one alternate
+ * block), then the largest remaining partial-count variants fill any
+ * remaining budget.
+ *
+ * Tiling uses the SAME oriented-shape + gap spacing every other exact
+ * placement in this file relies on (computeOrientedShape, config.partGapMm)
+ * — adjacent slots are therefore guaranteed non-overlapping and
+ * gap-respecting BY CONSTRUCTION; attemptPlacePatternBlock() below still
+ * re-validates every member with the real exact geometry functions before
+ * ever committing anything, so this is a performance shortcut, never a
+ * trust shortcut.
+ */
+export function buildPatternCandidates(instances: OptimizerPartInstance[], config: EngineConfig): PatternBlockCandidate[] {
+  const byPart = new Map<string, OptimizerPartInstance[]>();
+  for (const inst of instances) {
+    const arr = byPart.get(inst.takeoffPartId);
+    if (arr) arr.push(inst);
+    else byPart.set(inst.takeoffPartId, [inst]);
+  }
+
+  const groups = [...byPart.entries()]
+    .filter(([, arr]) => arr.length >= 2)
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+    .slice(0, MAX_PATTERN_GROUP_SEEDS);
+
+  const candidates: PatternBlockCandidate[] = [];
+
+  for (const [partId, groupInstances] of groups) {
+    const representative = groupInstances[0];
+    const groupCount = Math.min(groupInstances.length, MAX_PATTERN_PARTS);
+
+    const rotationOptions: RotationDeg[] = [0];
+    for (const alt of generateRotationCandidates(representative.outer, 90, 4)) {
+      if (alt === 0) continue;
+      const base = computeOrientedShape(representative.outer, 0);
+      const rotated = computeOrientedShape(representative.outer, alt);
+      // Only worth a separate variant if it actually changes the footprint
+      // (e.g. a square's 90deg rotation is a no-op grid-wise).
+      if (Math.abs(rotated.width - base.width) > 1e-6 || Math.abs(rotated.height - base.height) > 1e-6) {
+        rotationOptions.push(alt);
+        break; // PART M — bounded: at most one alternate rotation per group.
+      }
+    }
+
+    const shapesForGroup = PATTERN_GRID_SHAPES.filter(([rows, cols]) => rows * cols >= 2 && rows * cols <= groupCount).sort((a, b) => {
+      const areaA = a[0] * a[1];
+      const areaB = b[0] * b[1];
+      const exactA = areaA === groupCount ? 0 : 1;
+      const exactB = areaB === groupCount ? 0 : 1;
+      if (exactA !== exactB) return exactA - exactB; // exact-count fits first (PART E)
+      return areaB - areaA; // then largest partial fits
+    });
+
+    let variantsForGroup = 0;
+    outer: for (const rotationDeg of rotationOptions) {
+      const shape = computeOrientedShape(representative.outer, rotationDeg);
+      for (const [rows, cols] of shapesForGroup) {
+        if (variantsForGroup >= MAX_PATTERN_VARIANTS_PER_GROUP) break outer;
+
+        const slots: PatternBlockSlot[] = [];
+        for (let ry = 0; ry < rows; ry++) {
+          for (let cx = 0; cx < cols; cx++) {
+            slots.push({ dxMm: cx * (shape.width + config.partGapMm), dyMm: ry * (shape.height + config.partGapMm), rotationDeg });
+          }
+        }
+
+        candidates.push({
+          name: `grid-${rows}x${cols}-rot${rotationDeg}`,
+          takeoffPartId: partId,
+          rows,
+          cols,
+          rotationDeg,
+          widthMm: cols * shape.width + (cols - 1) * config.partGapMm,
+          heightMm: rows * shape.height + (rows - 1) * config.partGapMm,
+          slots,
+        });
+        variantsForGroup++;
+      }
+    }
+  }
+
+  return candidates.slice(0, MAX_PATTERN_CANDIDATES);
+}
+
+/**
+ * PART C/J — places one PatternBlockCandidate onto `sheet` as ONE atomic
+ * unit, or does nothing at all (PART I/L — quantity-safe: never a partial
+ * block). Two-step, both reusing EXISTING exact machinery rather than
+ * duplicating it (spec PART C/J):
+ *
+ *  1. Find where the block's own bounding rectangle fits via the SAME
+ *     findBestPlacement() every other placement in this file goes through
+ *     — `blockRotationCache` is a dedicated RotationCandidateCache capped
+ *     at 1 rotation candidate, so it always resolves to exactly rotation 0
+ *     for the synthetic rectangle (PART F: row-first vs column-first are
+ *     already separate PatternBlockCandidates with their own width/height —
+ *     this call must not ALSO rotate the block, or slot offsets would no
+ *     longer line up with the chosen origin's axes).
+ *  2. Translate every member slot to that origin and validate EACH one
+ *     with the exact boundsContain / polygonsOverlap / polygonsMinDistance
+ *     functions (PART J) against both the sheet's existing placements and
+ *     the block's own other members (checked incrementally as they're
+ *     staged). Only if every single slot validates does the block commit;
+ *     any failure aborts with the sheet left completely untouched.
+ */
+function attemptPlacePatternBlock(
+  block: PatternBlockCandidate,
+  groupInstances: OptimizerPartInstance[],
+  sheet: WorkingSheet,
+  config: EngineConfig,
+  maxCandidates: number,
+  blockRotationCache: RotationCandidateCache,
+  packingPreference: PackingPreference,
+): OptimizerPartInstance[] | null {
+  if (groupInstances.length < block.slots.length) return null;
+  if (usableWidth(sheet) <= 0 || usableHeight(sheet) <= 0) return null;
+
+  const blockOuter: Point[] = [
+    { x: 0, y: 0 },
+    { x: block.widthMm, y: 0 },
+    { x: block.widthMm, y: block.heightMm },
+    { x: 0, y: block.heightMm },
+  ];
+  const syntheticInstance: OptimizerPartInstance = {
+    takeoffPartId: `__pattern_block__${block.name}__${block.takeoffPartId}`,
+    itemNo: -1,
+    instanceNumber: 0,
+    areaSqm: (block.widthMm * block.heightMm) / 1_000_000,
+    outer: blockOuter,
+  };
+
+  const originAttempt = findBestPlacement(syntheticInstance, sheet, config, maxCandidates, blockRotationCache, packingPreference);
+  if (!originAttempt) return null;
+
+  const staged: { instance: OptimizerPartInstance; x: number; y: number; rotationDeg: RotationDeg; width: number; height: number; polygon: Point[] }[] = [];
+  const stagedPolygons: Point[][] = [];
+
+  for (let i = 0; i < block.slots.length; i++) {
+    const slot = block.slots[i];
+    const memberInstance = groupInstances[i];
+    const shape = computeOrientedShape(memberInstance.outer, slot.rotationDeg);
+    const x = originAttempt.x + slot.dxMm;
+    const y = originAttempt.y + slot.dyMm;
+    const polygon = translatePoints(shape.points, x, y);
+
+    if (!boundsContain(polygon, sheet.minX, sheet.minY, sheet.maxX, sheet.maxY)) return null;
+
+    for (const existing of sheet.polygons) {
+      if (polygonsOverlap(polygon, existing)) return null;
+      if (config.partGapMm > 0 && polygonsMinDistance(polygon, existing) < config.partGapMm - 1e-6) return null;
+    }
+    for (const existing of stagedPolygons) {
+      if (polygonsOverlap(polygon, existing)) return null;
+      if (config.partGapMm > 0 && polygonsMinDistance(polygon, existing) < config.partGapMm - 1e-6) return null;
+    }
+
+    stagedPolygons.push(polygon);
+    staged.push({ instance: memberInstance, x, y, rotationDeg: slot.rotationDeg, width: shape.width, height: shape.height, polygon });
+  }
+
+  // Every slot validated — commit atomically (PART I/L).
+  for (const s of staged) {
+    commitPlacement(sheet, s.instance, { x: s.x, y: s.y, rotationDeg: s.rotationDeg, width: s.width, height: s.height, polygon: s.polygon, score: 0 });
+  }
+  return staged.map((s) => s.instance);
+}
+
+/**
+ * PART E — "block-first construction": seeds ONE fresh sheet with a single
+ * PatternBlockCandidate placed as a unit, removes exactly those consumed
+ * instances from the job, then hands everything else (the rest of the same
+ * group plus every other part) to the EXISTING constructLayout() — same
+ * function, same per-instance findBestPlacement search, now just continuing
+ * onto a sheet that already has the block on it (constructLayout's new
+ * optional `initialSheets` parameter — see below — is the only change to
+ * that function). Returns null (no seed produced) if the block doesn't
+ * even fit on an empty first-ranked sheet, so a bad/oversized block
+ * candidate simply drops out of the multi-start comparison instead of
+ * corrupting it (PART I — the global best can never regress below what the
+ * ordinary strategies alone would have found).
+ */
+function constructBlockFirstLayout(
+  block: PatternBlockCandidate,
+  allInstances: OptimizerPartInstance[],
+  rankedSources: EngineSourceInput[],
+  config: EngineConfig,
+  maxCandidates: number,
+  rotations: RotationCandidateCache,
+  packingPreference: PackingPreference,
+  blockRotationCache: RotationCandidateCache,
+): ConstructResult | null {
+  if (rankedSources.length === 0) return null;
+
+  const groupInstances = allInstances.filter((i) => i.takeoffPartId === block.takeoffPartId).slice(0, block.slots.length);
+  if (groupInstances.length < block.slots.length) return null;
+
+  const seedSheet = makeWorkingSheet(rankedSources[0], config);
+  const placedGroupInstances = attemptPlacePatternBlock(block, groupInstances, seedSheet, config, maxCandidates, blockRotationCache, packingPreference);
+  if (!placedGroupInstances) return null;
+
+  const consumed = new Set(placedGroupInstances);
+  const remaining = allInstances.filter((i) => !consumed.has(i));
+  // Largest-area-first is a solid general-purpose order for "everything
+  // else" — the block itself is what carries this seed's distinctive 2D
+  // structure; the remainder is placed the same well-tested way every
+  // other strategy places its own full instance list.
+  const remainingOrdered = [...remaining].sort((a, b) => b.areaSqm - a.areaSqm || stableTieBreak(a, b));
+
+  const rest = constructLayout(remainingOrdered, rankedSources, config, maxCandidates, rotations, packingPreference, [seedSheet]);
+
+  const placedCountByPart = new Map(rest.placedCountByPart);
+  placedCountByPart.set(block.takeoffPartId, (placedCountByPart.get(block.takeoffPartId) ?? 0) + placedGroupInstances.length);
+
+  return { sheets: rest.sheets, placedCountByPart, failureReasonByPart: rest.failureReasonByPart };
+}
+
 export interface LayoutQuality {
   placedTotal: number;
   score: number;
@@ -1964,10 +2306,23 @@ export function localImprovement(
 // the literature) -- it is a simple, bounded, weighted-adaptive version of
 // the same idea, sized to fit this codebase.
 
-/** PART C — the ruin operators this phase implements. */
-export type RuinOperatorName = "RANDOM_RUIN" | "WORST_PLACEMENT_RUIN" | "CLUSTER_RUIN" | "SHEET_RUIN" | "LARGE_PART_RUIN";
+/**
+ * PART C — the ruin operators this phase implements.
+ *
+ * PART H — PATTERN_RUIN (Phase 5) is the newest addition: it identifies the
+ * most spatially COMPACT repeated-part group currently on the layout and
+ * removes it as a unit, so adaptiveRuinAndRecreate (below) gets a real
+ * chance to reconstruct that group as a DIFFERENT pattern-block variant
+ * (e.g. swap a 3x2 block for 2x3, or a block for the row/column the
+ * pre-Phase-5 greedy search would have produced) — exactly the "ruin a
+ * block/pattern as a unit" escape hatch a purely per-part ruin operator
+ * can't offer, since removing a block's members one-by-one via
+ * WORST_PLACEMENT_RUIN/CLUSTER_RUIN never guarantees ALL of the group's
+ * current members get removed together.
+ */
+export type RuinOperatorName = "RANDOM_RUIN" | "WORST_PLACEMENT_RUIN" | "CLUSTER_RUIN" | "SHEET_RUIN" | "LARGE_PART_RUIN" | "PATTERN_RUIN";
 
-export const RUIN_OPERATOR_NAMES: RuinOperatorName[] = ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN"];
+export const RUIN_OPERATOR_NAMES: RuinOperatorName[] = ["RANDOM_RUIN", "WORST_PLACEMENT_RUIN", "CLUSTER_RUIN", "SHEET_RUIN", "LARGE_PART_RUIN", "PATTERN_RUIN"];
 
 /** PART D — bounded ruin-size tiers, expressed as a fraction of total placed instances (not magic numbers inline in the algorithm). */
 export const RUIN_SIZE_TIERS: Record<"small" | "medium" | "large", [number, number]> = {
@@ -2095,6 +2450,53 @@ export function selectRuinTargets(
         return a.sheetIdx !== b.sheetIdx ? a.sheetIdx - b.sheetIdx : a.placementIdx - b.placementIdx;
       });
       return ranked.slice(0, size);
+    }
+
+    case "PATTERN_RUIN": {
+      // PART H — group current placements by takeoffPartId, keep only
+      // groups with >=2 members (a lone instance isn't a "pattern"), and
+      // pick the group whose members are most spatially COMPACT — the
+      // smallest ratio of (their combined bounding-box area) to (the sum
+      // of their own bbox areas). A tight grid block scores close to 1
+      // (little wasted space in its own envelope); a group scattered
+      // across the sheet scores much higher. Deterministic tie-break by
+      // takeoffPartId. Bounded by MAX_PATTERN_PARTS members per group so
+      // one ruin never destabilizes more than a small block's worth of
+      // the layout. Falls back to RANDOM_RUIN's behavior if no repeated
+      // group exists, so this operator can never become a permanent no-op
+      // that stalls the adaptive search on jobs with no repeated parts.
+      const byPart = new Map<string, FlatPlacementRef[]>();
+      for (const ref of flat) {
+        const p = sheets[ref.sheetIdx].placements[ref.placementIdx];
+        const arr = byPart.get(p.takeoffPartId);
+        if (arr) arr.push(ref);
+        else byPart.set(p.takeoffPartId, [ref]);
+      }
+      const groups = [...byPart.entries()].filter(([, refs]) => refs.length >= 2);
+      if (groups.length === 0) return seededShuffle(flat, rng).slice(0, size);
+
+      let bestGroup: FlatPlacementRef[] | null = null;
+      let bestRatio = Infinity;
+      for (const [, refs] of groups.sort((a, b) => a[0].localeCompare(b[0]))) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        let ownArea = 0;
+        for (const ref of refs) {
+          const p = sheets[ref.sheetIdx].placements[ref.placementIdx];
+          minX = Math.min(minX, p.xMm);
+          minY = Math.min(minY, p.yMm);
+          maxX = Math.max(maxX, p.xMm + p.widthMm);
+          maxY = Math.max(maxY, p.yMm + p.heightMm);
+          ownArea += p.widthMm * p.heightMm;
+        }
+        const envelopeArea = Math.max(1e-6, (maxX - minX) * (maxY - minY));
+        const ratio = envelopeArea / Math.max(1e-6, ownArea);
+        if (ratio < bestRatio - 1e-9) {
+          bestRatio = ratio;
+          bestGroup = refs;
+        }
+      }
+      const chosen = (bestGroup ?? []).slice(0, Math.min(size, MAX_PATTERN_PARTS, (bestGroup ?? []).length));
+      return chosen;
     }
 
     default: {
@@ -2306,6 +2708,45 @@ export function shouldAcceptCandidate(candidate: LayoutQuality, current: LayoutQ
 }
 
 /**
+ * PART H — attempts to place every instance in `removed` (all of the same
+ * takeoffPartId, PART H's caller already guarantees this) back onto `trial`
+ * as ONE atomic PatternBlockCandidate whose slot count EXACTLY matches
+ * `removed.length` (an exact-count grid shape, e.g. 6 removed -> 2x3/3x2/
+ * 1x6/6x1 — never a partial reconstruction that would leave some of
+ * `removed` unplaced and silently short-change PART C/PART L's "required
+ * quantity can never drop"). Bounded and deterministic: buildPatternCandidates
+ * is already bounded (Phase 5 constants), and the candidate order is a
+ * single seeded shuffle of that already-small list. Tries every sheet in
+ * `trial`, sheet order first (mirrors the generic reinsertion loop's own
+ * "first sheet that fits wins" rule). Mutates `trial` in place ONLY on
+ * success (attemptPlacePatternBlock() itself is all-or-nothing); returns
+ * false and leaves `trial` untouched on failure, so the caller's existing
+ * generic per-instance fallback remains a fully correct safety net.
+ */
+function tryReconstructRemovedAsPattern(
+  removed: { instance: OptimizerPartInstance; polygon: Point[] }[],
+  trial: WorkingSheet[],
+  config: EngineConfig,
+  maxCandidates: number,
+  packingPreference: PackingPreference,
+  rng: () => number,
+): boolean {
+  const groupInstances = removed.map((r) => r.instance);
+  const candidates = buildPatternCandidates(groupInstances, config).filter((b) => b.slots.length === groupInstances.length);
+  if (candidates.length === 0) return false;
+
+  const blockRotationCache = new RotationCandidateCache(0, 1);
+  const shuffled = seededShuffle(candidates, rng);
+  for (const block of shuffled) {
+    for (const sheet of trial) {
+      const placed = attemptPlacePatternBlock(block, groupInstances, sheet, config, maxCandidates, blockRotationCache, packingPreference);
+      if (placed) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Phase 3 — the ALNS-style adaptive search loop. Replaces the old fixed
  * single-operator ruin-and-recreate with:
  *   pick operator (PART G, adaptive+deterministic)
@@ -2449,24 +2890,42 @@ export function adaptiveRuinAndRecreate(
     const reconStrategy = RECONSTRUCTION_STRATEGY_NAMES[Math.floor(rng() * RECONSTRUCTION_STRATEGY_NAMES.length) % RECONSTRUCTION_STRATEGY_NAMES.length];
     const ordered = orderForReconstruction(reconStrategy, removed, rng);
 
+    // PART H — PATTERN_RUIN: before falling back to the generic one-at-a-
+    // time reinsertion below, try reconstructing the whole removed group as
+    // ONE alternate pattern-block variant (bounded: only attempted when the
+    // entire removed batch is a single repeated-part group, size >= 2 and
+    // <= MAX_PATTERN_PARTS — see PART M). This is what lets the search
+    // escape "row" <-> "block" local optima for a repeated group instead of
+    // only ever being able to relocate its members one at a time. If no
+    // block variant fits anywhere, `patternReconstructed` stays false and
+    // the existing generic reinsertion path below runs exactly as before —
+    // PATTERN_RUIN can never place FEWER of the removed instances than the
+    // other operators would (PART I/L).
+    let patternReconstructed = false;
+    if (operator === "PATTERN_RUIN" && removed.length >= 2 && removed.length <= MAX_PATTERN_PARTS && removed.every((r) => r.instance.takeoffPartId === removed[0].instance.takeoffPartId)) {
+      patternReconstructed = tryReconstructRemovedAsPattern(removed, trial, config, maxCandidates, packingPreference, rng);
+    }
+
     // PART E — every single reinsertion goes through findBestPlacement(),
     // the SAME exact bounds/overlap/gap-validated search used everywhere
     // else in this file. If any removed instance can't be placed anywhere,
     // the ENTIRE trial is discarded (required quantity can never drop).
     let allReinserted = true;
-    for (const r of ordered) {
-      let placedSomewhere = false;
-      for (const sheet of trial) {
-        const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations, packingPreference);
-        if (attempt) {
-          commitPlacement(sheet, r.instance, attempt);
-          placedSomewhere = true;
+    if (!patternReconstructed) {
+      for (const r of ordered) {
+        let placedSomewhere = false;
+        for (const sheet of trial) {
+          const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations, packingPreference);
+          if (attempt) {
+            commitPlacement(sheet, r.instance, attempt);
+            placedSomewhere = true;
+            break;
+          }
+        }
+        if (!placedSomewhere) {
+          allReinserted = false;
           break;
         }
-      }
-      if (!placedSomewhere) {
-        allReinserted = false;
-        break;
       }
     }
     if (!allReinserted) continue;
@@ -2723,7 +3182,21 @@ export function optimizeGroupPlacement(
   // instances always wins regardless of raw score (spec item 5).
   const baseStrategies = buildStrategies(instances, opts.randomSeed);
   const extraStrategies = buildExtraStartStrategies(instances, baseStrategies, opts.randomSeed, opts.maxExtraRandomStarts);
-  const strategies = [...baseStrategies, ...extraStrategies];
+
+  // Phase 5, PART D/E — a bounded set of additional COMPACT_BLOCK_FIRST
+  // multi-start seeds, one per generated pattern-block candidate. Each is
+  // a genuinely different CONSTRUCTION STRATEGY (not just a different part
+  // order) — see constructBlockFirstLayout — so it's kept as its own
+  // discriminated seed kind rather than an `order` array.
+  const patternBlocks = opts.disablePatternBlockSearch ? [] : buildPatternCandidates(instances, config);
+  const blockRotationCache = new RotationCandidateCache(0, 1);
+
+  type SeedStrategy = { kind: "order"; name: string; order: OptimizerPartInstance[] } | { kind: "block"; name: string; block: PatternBlockCandidate };
+  const strategies: SeedStrategy[] = [
+    ...baseStrategies.map((s): SeedStrategy => ({ kind: "order", name: s.name, order: s.order })),
+    ...extraStrategies.map((s): SeedStrategy => ({ kind: "order", name: s.name, order: s.order })),
+    ...patternBlocks.map((block): SeedStrategy => ({ kind: "block", name: `compact-block-first-${block.name}`, block })),
+  ];
 
   // Reserve a portion of the total time budget for construction (multi-start
   // search); the remainder is left for local improvement + ruin/recreate on
@@ -2740,7 +3213,11 @@ export function optimizeGroupPlacement(
   for (let i = 0; i < strategies.length; i++) {
     if (Date.now() > constructionDeadline) break;
     const strat = strategies[i];
-    const result = constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+    const result =
+      strat.kind === "block"
+        ? constructBlockFirstLayout(strat.block, instances, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, blockRotationCache)
+        : constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+    if (!result) continue; // PART E — an invalid/non-fitting block seed simply drops out (PART I: can never regress the comparison below).
     strategiesEvaluated++;
     const quality: LayoutQuality = {
       placedTotal: totalPlaced(result.sheets),
@@ -2756,10 +3233,13 @@ export function optimizeGroupPlacement(
     // Deadline was already exhausted before even the first start — fall
     // back to a single guaranteed construction so a valid result is always
     // returned (spec item 3 / TEST D: very small timeLimitMs must still
-    // terminate safely).
-    best = constructLayout(strategies[0].order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+    // terminate safely). Always the first fixed order-based strategy —
+    // never a block seed — so this guaranteed fallback never depends on
+    // whether a pattern block happens to fit.
+    const fallback = baseStrategies[0];
+    best = constructLayout(fallback.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
     bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId, remainingParts) };
-    bestStartName = strategies[0].name;
+    bestStartName = fallback.name;
     strategiesEvaluated++;
   }
 
