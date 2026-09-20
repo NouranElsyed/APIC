@@ -1,173 +1,190 @@
-import { FAMILIES } from "./steel-pricing-data";
-import { DEFAULT_PROFILES } from "./steel-pricing-data";
-import type { BoqItem, InstallProfiles, InstallRateKey, ItemRateMap, PricingResult, PricingScope, PricingSettings, ProfileId, ProfileKey } from "./types";
-
-export const PER_TON_KEYS: InstallRateKey[] = [
-  "transportRate", "handlingPerTon", "packingPerTon", "cranePerTon", "scaffoldPerTon", "manHourPerTon",
-  "safetyPerTon", "toolsPerTon", "ppePerTon", "touchUpPerTon", "weldSurveyorPerTon",
-];
-const SUPPLY_KEYS: InstallRateKey[] = ["transportRate", "handlingPerTon", "packingPerTon"];
-
-/** Value of one cost line under a given profile. "A" is the standard rate card (settings). */
-export function profileValue(id: ProfileId, key: ProfileKey, S: PricingSettings, profiles: InstallProfiles): number {
-  return id === "A" ? S[key] : profiles[id][key];
-}
-
-/** Default rate map when no per-item map exists (e.g. the quick calculator): every line on one profile. */
-export function defaultRateMap(scope: PricingScope, profile: ProfileId = "A"): ItemRateMap {
-  const keys = scope === "Supply" ? SUPPLY_KEYS : PER_TON_KEYS;
-  const m: ItemRateMap = { installIndirectPct: profile, installMarginPct: profile };
-  keys.forEach((k) => { m[k] = profile; });
-  return m;
-}
-
-/** Resolve a rate map into actual numbers. Unmapped per-ton lines are 0; unmapped % lines use the standard rate. */
-export function resolveRates(
-  S: PricingSettings, profiles: InstallProfiles, map: ItemRateMap,
-): Record<ProfileKey, number> {
-  const out = {} as Record<ProfileKey, number>;
-  PER_TON_KEYS.forEach((k) => { out[k] = map[k] ? profileValue(map[k] as ProfileId, k, S, profiles) : 0; });
-  (["installIndirectPct", "installMarginPct"] as const).forEach((k) => {
-    out[k] = profileValue(map[k] || "A", k, S, profiles);
-  });
-  return out;
-}
+import type {
+  BoqItem, BoqResult, BoqTotals, CalcResult, CalcSpec, InstallLineResult, ItemOverride, ItemResult,
+  MaterialTable, Overrides, Profile, ProfileRates, RateBook,
+} from "./types";
+import { INSTALL_KEYS } from "./types";
 
 /**
- * Recreates the original pricing sheet's logic in one place:
- * material cost -> fabrication cost -> install cost -> overheads -> tax & insurance.
+ * Single source of truth for pricing. Formula order follows the workbook column by column:
+ * Material (K–P) → Fabrication (Q–X) → Supply sale (Y) → Installation (AC–AP) → Additional (AR–AV)
+ * → Tax (AX) → Insurance (AY) → Final (AZ) / Cost (BB) / Profit (BC).
  */
+const rate = (r: ProfileRates, p: Profile | null | undefined): number => (p ? r[p] ?? 0 : 0);
+
+export function applyOverride(item: BoqItem, ov?: ItemOverride): BoqItem {
+  if (!ov) return item;
+  const qty = ov.qty ?? item.qty;
+  if (item.mode !== "calc") return { ...item, qty };
+  const install = { ...item.spec.install };
+  for (const [k, p] of Object.entries(ov.install ?? {})) {
+    const line = install[k as keyof typeof install];
+    if (line && p) install[k as keyof typeof install] = { ...line, p };
+  }
+  const matRow = ov.matRow === undefined ? item.spec.matRow : ov.matRow;
+  return { ...item, qty, spec: { ...item.spec, matRow, install } };
+}
+
+export function materialPriceOf(spec: CalcSpec, qty: number, mats: MaterialTable): number {
+  return spec.matRow ? qty * (mats[spec.matRow]?.price ?? 0) : 0;
+}
+
 export function calcItem(
-  qtyRaw: number, famKey: string, scope: PricingScope, S: PricingSettings,
-  rateMap?: ItemRateMap, profiles: InstallProfiles = DEFAULT_PROFILES,
-): PricingResult {
-  const fam = FAMILIES[famKey] || FAMILIES.st37;
-  const qty = Number(qtyRaw) || 0;
+  item: Extract<BoqItem, { mode: "calc" }>,
+  R: RateBook,
+  mats: MaterialTable,
+  /** Resolves another item (for "charged on another item's material" links). */
+  lookup?: (no: string) => BoqItem | undefined,
+): CalcResult {
+  const s = item.spec;
+  const qty = Number(item.qty) || 0;
+  const weight = qty;
 
-  if (fam.flag) {
-    return {
-      flag: true, materialPrice: 0, handling: 0, scrap: 0, materialCost: 0,
-      welding: 0, painting: 0, ndt: 0, totalFabricationCost: 0, fabIndirect: 0,
-      supplySalePrice: 0, installDirect: 0, installIndirect: 0, installSale: 0,
-      mobDemob: 0, thirdParty: 0, heightFactor: 0, commissioning: 0,
-      finalSalePrice: 0, unitPrice: 0, total: 0, totalCost: 0, profit: 0, profitPct: 0,
-    };
+  // 1. Material
+  const materialRate = s.matRow ? mats[s.matRow]?.price ?? 0 : 0;
+  const materialPrice = weight * materialRate;
+  const handling = s.handling ? materialPrice * rate(R.handling, "A") : 0;
+  let scrap = s.scrap ? materialPrice * rate(R.scrap, s.scrap) : 0;
+  if (s.scrapLink) {
+    const src = lookup?.(s.scrapLink.item);
+    if (src && src.mode === "calc") scrap = materialPriceOf(src.spec, src.qty, mats) * rate(R.scrap, s.scrapLink.profile);
   }
-
-  const isSupply = scope === "Supply";
-  // Rates named "per ton" only make sense against the item's actual steel weight;
-  // for area/piece-based items (cladding, grating, poly sheet...) we convert qty
-  // to an equivalent tonnage before applying those rates. Ton/LM-based families pass through as-is.
-  const wQty = qty * (fam.weightFactor || 1);
-
-  let materialPrice = 0, handling = 0, scrap = 0, materialCost = 0;
-  let welding = 0, painting = 0, ndt = 0, totalFabricationCost = 0, fabIndirect = 0, supplySalePrice = 0;
-
-  if (isSupply) {
-    materialPrice = qty * fam.materialPrice;
-    handling = materialPrice * (S.handlingPct / 100);
-    scrap = materialPrice * (fam.scrapPct / 100);
-    materialCost = materialPrice + handling + scrap;
-
-    welding = wQty * fam.weldingRate;
-    painting = wQty * fam.paintingRate;
-    ndt = welding * (S.ndtPct / 100);
-    totalFabricationCost = materialCost + welding + ndt + painting;
-    fabIndirect = totalFabricationCost * (S.fabIndirectPct / 100);
-
-    supplySalePrice =
-      materialCost * (1 + S.materialMargin / 100) +
-      welding * (1 + S.fabMargin / 100) +
-      ndt * (1 + S.ndtMargin / 100) +
-      painting * (1 + S.paintMargin / 100);
+  let accessories = s.accessories ? materialPrice * rate(R.accessories, s.accessories) : 0;
+  if (s.accessoriesLink) {
+    const src = lookup?.(s.accessoriesLink.item);
+    if (src && src.mode === "calc") accessories = materialPriceOf(src.spec, src.qty, mats) * s.accessoriesLink.k;
   }
+  const materialCost = materialPrice + handling + scrap + accessories;
 
-  const rates = resolveRates(S, profiles, rateMap || defaultRateMap(scope));
-  const installDirect = wQty * PER_TON_KEYS.reduce((sum, k) => sum + rates[k], 0);
-  const installIndirect = installDirect * (rates.installIndirectPct / 100);
-  const installSale = (installDirect + installIndirect) * (1 + rates.installMarginPct / 100);
+  // 2. Fabrication
+  const cutting = s.cutting ? weight * rate(R.cutting, s.cutting) : 0;
+  const welding = s.welding ? weight * rate(R.welding, s.welding) : 0;
+  const fabricationCost = cutting + welding; // rolling is 0 for every workbook item
+  const ndt = s.ndt ? fabricationCost * rate(R.ndt, "A") : 0;
+  const paintRate = s.paintingRate ?? (s.painting ? rate(R.painting, s.painting) : 0);
+  const painting = weight * paintRate;
+  const totalFabricationCost = materialCost + fabricationCost + ndt + painting;
+  const fabIndirect = totalFabricationCost * rate(R.fabIndirect, s.fabIndirect);
+  const supplySalePrice =
+    materialCost * R.margins.material +
+    fabricationCost * R.margins.fabrication +
+    ndt * R.margins.ndt +
+    painting * (s.paintingMargin ?? R.margins.painting);
 
-  let mobDemob = 0, thirdParty = 0, heightFactor = 0;
-  const baseForOverhead = supplySalePrice + installSale;
-  if (!isSupply) {
-    mobDemob = baseForOverhead * (S.mobDemobPct / 100);
-    thirdParty = baseForOverhead * (S.thirdPartyCertPct / 100);
-    heightFactor = baseForOverhead * (S.heightFactorPct / 100);
+  // 3. Installation
+  const installLines: InstallLineResult[] = [];
+  let installDirect = 0;
+  for (const key of INSTALL_KEYS) {
+    const line = s.install[key];
+    if (!line) continue;
+    const r = rate(R.install[key], line.p);
+    const factor = line.k * (line.wt ? s.unitWt : 1);
+    const amount = weight * r * factor;
+    installLines.push({ key, profile: line.p, rate: r, factor, weight, amount });
+    installDirect += amount;
   }
-  const beforeCommission = baseForOverhead + mobDemob + thirdParty + heightFactor;
-  const commissioning = beforeCommission * (S.commissioningPct / 100);
-  const beforeTax = beforeCommission + commissioning;
+  const installIndirect = installDirect * rate(R.installIndirect, s.installIndirect);
+  const installSale = (installDirect + installIndirect) * rate(R.installMargin, s.installMargin);
+  const supplyAndInstall = supplySalePrice + installSale;
 
-  const finalSalePrice = beforeTax * (1 + S.taxPct / 100) * (1 + S.insurancePct / 100);
-  const unitPrice = qty > 0 ? finalSalePrice / qty : 0;
+  // 4. Additional
+  const mobDemob = s.mob ? supplyAndInstall * R.mobDemob : 0;
+  const heightFactor = s.height ? supplyAndInstall * R.heightFactor : 0;
+  const thirdParty = s.thirdParty ? supplyAndInstall * R.thirdParty : 0;
+  const beforeCommissioning = supplyAndInstall + mobDemob + heightFactor + thirdParty;
+  const commissioning = s.commissioning ? beforeCommissioning * R.commissioning : 0;
+  const totalSale = beforeCommissioning + commissioning;
+
+  // 5. Tax & insurance (workbook divides by a factor, e.g. 0.99 → +1.01%)
+  const taxDiv = rate(R.tax, s.tax) || 1;
+  const insDiv = rate(R.insurance, s.insurance) || 1;
+  const afterTax = totalSale / taxDiv;
+  const finalPrice = afterTax / insDiv;
+  const tax = afterTax - totalSale;
+  const insurance = finalPrice - afterTax;
 
   const totalCost =
-    materialCost + welding + ndt + painting + fabIndirect +
-    installDirect + installIndirect + mobDemob + thirdParty + heightFactor + commissioning;
-  const profit = finalSalePrice - totalCost;
-  const profitPct = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+    totalFabricationCost + fabIndirect + installDirect + installIndirect +
+    mobDemob + heightFactor + thirdParty + (finalPrice - totalSale);
+  const profit = finalPrice - totalCost;
 
   return {
-    flag: false, materialPrice, handling, scrap, materialCost,
-    welding, painting, ndt, totalFabricationCost, fabIndirect,
-    supplySalePrice, installDirect, installIndirect, installSale,
-    mobDemob, thirdParty, heightFactor, commissioning,
-    finalSalePrice, unitPrice, total: finalSalePrice, totalCost, profit, profitPct,
+    mode: "calc", qty, weight, matRow: s.matRow, materialRate, materialPrice, handling, scrap, accessories, materialCost,
+    cutting, welding, fabricationCost, ndt, painting, totalFabricationCost, fabIndirect, supplySalePrice,
+    installLines, installDirect, installIndirect, installSale, supplyAndInstall,
+    mobDemob, heightFactor, thirdParty, beforeCommissioning, commissioning, totalSale,
+    tax, insurance, finalPrice, unitPrice: weight > 0 ? finalPrice / weight : 0,
+    totalCost, profit, profitPct: totalCost > 0 ? profit / totalCost : 0,
   };
 }
 
-/**
- * Prices the whole BOQ. Items with a fixed unit price or a "priced like item X" link take their unit price
- * from there (exactly like the original sheet); everything else runs through calcItem.
- */
-export function calcBoq(
-  items: BoqItem[], S: PricingSettings, profiles: InstallProfiles,
-): Record<number, PricingResult> {
-  const byNo = new Map(items.map((it) => [it.no, it]));
-  const own = new Map<number, PricingResult>();
-  const out: Record<number, PricingResult> = {};
+/** Prices the whole BOQ, resolving "priced like" chains so source-item edits propagate. */
+export function calcBoq(baseItems: BoqItem[], R: RateBook, mats: MaterialTable, overrides: Overrides = {}): BoqResult {
+  const items = baseItems.map((i) => applyOverride(i, overrides[i.no]));
+  const byNo = new Map(items.map((i) => [i.no, i]));
+  const lookup = (no: string) => byNo.get(no);
+  const memo = new Map<string, ItemResult>();
+  const visiting = new Set<string>();
 
-  function ownResult(it: BoqItem): PricingResult {
-    let r = own.get(it.id);
-    if (!r) { r = calcItem(it.qty, it.fam, it.scope, S, it.rates, profiles); own.set(it.id, r); }
-    return r;
-  }
-  function unitOf(it: BoqItem, depth: number): { unit: number; profitPct: number } {
-    if (it.fixedUnitPrice !== undefined) return { unit: it.fixedUnitPrice, profitPct: 0 };
-    if (it.priceLike && depth < 10) {
-      const src = byNo.get(it.priceLike.no);
-      if (src) {
-        const s = unitOf(src, depth + 1);
-        return { unit: s.unit * it.priceLike.factor, profitPct: s.profitPct };
+  const price = (item: BoqItem): ItemResult => {
+    const hit = memo.get(item.no);
+    if (hit) return hit;
+    const qty = Number(item.qty) || 0;
+    let res: ItemResult;
+    if (item.mode === "calc") res = calcItem(item, R, mats, lookup);
+    else if (item.mode === "fixed") res = { mode: "fixed", qty, unitPrice: item.fixed, finalPrice: qty * item.fixed, totalCost: null, profit: null, profitPct: null };
+    else if (item.mode === "unpriced") res = { mode: "unpriced", qty, unitPrice: 0, finalPrice: 0, totalCost: null, profit: null, profitPct: null };
+    else {
+      const src = byNo.get(item.like.src);
+      if (!src || visiting.has(item.no)) {
+        res = { mode: "pricedLike", qty, src: item.like.src, mult: item.like.mult, srcUnitPrice: 0, unitPrice: 0, finalPrice: 0, totalCost: null, profit: null, profitPct: null };
+      } else {
+        visiting.add(item.no);
+        const sr = price(src);
+        visiting.delete(item.no);
+        const unitPrice = sr.unitPrice * item.like.mult;
+        const finalPrice = qty * unitPrice;
+        // The workbook gives no cost for derived items; we scale the source's unit cost so
+        // profit totals stay meaningful. Only when the source has a cost.
+        const srcUnitCost = sr.totalCost != null && sr.qty > 0 ? sr.totalCost / sr.qty : null;
+        const totalCost = srcUnitCost != null ? srcUnitCost * qty : null;
+        const profit = totalCost != null ? finalPrice - totalCost : null;
+        res = {
+          mode: "pricedLike", qty, src: item.like.src, mult: item.like.mult, srcUnitPrice: sr.unitPrice, unitPrice, finalPrice,
+          totalCost, profit, profitPct: totalCost ? (profit as number) / totalCost : null,
+        };
       }
     }
-    const r = ownResult(it);
-    return { unit: r.flag ? 0 : r.unitPrice, profitPct: r.profitPct };
-  }
+    memo.set(item.no, res);
+    return res;
+  };
 
-  items.forEach((it) => {
-    if (it.fixedUnitPrice !== undefined || it.priceLike) {
-      const { unit, profitPct } = unitOf(it, 0);
-      const total = unit * (Number(it.qty) || 0);
-      const base = ownResult({ ...it, fam: it.fam === "unpriced" ? "st37" : it.fam });
-      out[it.id] = {
-        ...base, flag: false, linkedTo: it.priceLike?.no ?? "fixed",
-        finalSalePrice: total, total, unitPrice: unit, profitPct,
-        profit: total - total / (1 + profitPct / 100), totalCost: total / (1 + profitPct / 100),
-      };
-    } else {
-      out[it.id] = ownResult(it);
+  const out: Record<string, ItemResult> = {};
+  const t: BoqTotals = { supply: 0, install: 0, grand: 0, totalCost: 0, profit: 0, profitPct: 0, pricedItems: 0, costedItems: 0, additional: 0, taxInsurance: 0, weight: 0 };
+  for (const item of items) {
+    const r = price(item);
+    out[item.no] = r;
+    if (item.sec === "supply") t.supply += r.finalPrice; else t.install += r.finalPrice;
+    t.grand += r.finalPrice;
+    if (r.finalPrice > 0) t.pricedItems++;
+    if (r.totalCost != null && r.profit != null) { t.totalCost += r.totalCost; t.profit += r.profit; t.costedItems++; }
+    if (r.mode === "calc") {
+      t.additional += r.mobDemob + r.heightFactor + r.thirdParty + r.commissioning;
+      t.taxInsurance += r.tax + r.insurance;
+      t.weight += r.weight;
     }
-  });
-  return out;
+  }
+  t.profitPct = t.totalCost > 0 ? t.profit / t.totalCost : 0;
+  return { items: out, totals: t };
 }
 
 export function fmt(n: number): string {
   if (!isFinite(n)) n = 0;
   return Math.round(n).toLocaleString("en-US");
 }
-
 export function fmt2(n: number): string {
   if (!isFinite(n)) n = 0;
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+export function pct(n: number | null, digits = 1): string {
+  return n == null || !isFinite(n) ? "—" : `${(n * 100).toFixed(digits)}%`;
 }

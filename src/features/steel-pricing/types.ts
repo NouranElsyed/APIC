@@ -1,114 +1,189 @@
-export type PricingScope = "Supply" | "Site Activity";
-
-/** The 11 per-ton install cost items. */
-export type InstallRateKey =
-  | "transportRate" | "handlingPerTon" | "packingPerTon" | "cranePerTon"
-  | "scaffoldPerTon" | "manHourPerTon" | "safetyPerTon" | "toolsPerTon"
-  | "ppePerTon" | "touchUpPerTon" | "weldSurveyorPerTon";
-
-/** Everything a rate profile controls: the 11 per-ton rates + install indirect % + install margin %. */
-export type ProfileKey = InstallRateKey | "installIndirectPct" | "installMarginPct";
-
 /**
- * Rate profiles. The original sheet keeps 5 rows of install rates (crane, scaffolding, man-hours...)
- * and every BOQ item points at one of them per cost line. "A" = the standard rates edited in the
- * Rate Card (group 2); B–E are the extra sets.
+ * Steel Pricing model — mirrors the "BOQ - Full" sheet of `Cost Estimation- Steel Structure.xlsx`.
+ *
+ * Rate profiles: the workbook keeps five alternative rates per activity (rate-card rows 15…11).
+ * They are exposed as Profile A (row 15, the default) … Profile E (row 11). The workbook does not
+ * name B–E, so neither do we.
  */
-export type ProfileId = "A" | "B" | "C" | "D" | "E";
-export type InstallProfiles = Record<Exclude<ProfileId, "A">, Record<ProfileKey, number>>;
-/** Which profile each cost line of one BOQ item uses. Missing key = that cost line is not charged. */
-export type ItemRateMap = Partial<Record<ProfileKey, ProfileId>>;
+export type Profile = "A" | "B" | "C" | "D" | "E";
+export const PROFILES: Profile[] = ["A", "B", "C", "D", "E"];
 
-export interface MaterialFamily {
-  name: string;
+export type PricingScope = "Supply" | "Site Activity";
+export type ProfileRates = Partial<Record<Profile, number>>;
+
+export type InstallKey =
+  | "transport" | "handling" | "packing" | "crane" | "scaffolding" | "manHour"
+  | "safety" | "tools" | "ppe" | "touchUp" | "weldSurveyor";
+
+export const INSTALL_KEYS: InstallKey[] = [
+  "transport", "handling", "packing", "crane", "scaffolding", "manHour",
+  "safety", "tools", "ppe", "touchUp", "weldSurveyor",
+];
+
+/** Rate card. Percent-like values are stored as fractions (0.07 = 7%); tax & insurance as divisors (0.99). */
+export interface RateBook {
+  handling: ProfileRates;
+  scrap: ProfileRates;
+  accessories: ProfileRates;
+  cutting: ProfileRates;
+  welding: ProfileRates;
+  painting: ProfileRates;
+  ndt: ProfileRates;
+  fabIndirect: ProfileRates;
+  margins: { material: number; fabrication: number; ndt: number; painting: number };
+  install: Record<InstallKey, ProfileRates>;
+  installIndirect: ProfileRates;
+  installMargin: ProfileRates;
+  mobDemob: number;
+  heightFactor: number;
+  thirdParty: number;
+  commissioning: number;
+  tax: ProfileRates;
+  insurance: ProfileRates;
+}
+
+export interface MaterialRow {
+  label: string;
   unit: string;
-  materialPrice: number;
-  weldingRate: number;
-  paintingRate: number;
-  scrapPct: number;
-  /** Converts a piece/area quantity into an equivalent tonnage for per-ton install rates. */
-  weightFactor?: number;
-  /** True for placeholder families that had no price in the source sheet. */
-  flag?: boolean;
+  price: number;
+}
+/** Keyed by the material's row number in the workbook's rate card (1–15). */
+export type MaterialTable = Record<number, MaterialRow>;
+
+export interface InstallLineSpec {
+  p: Profile;
+  /** Constant factor from the workbook formula (e.g. 0.05). */
+  k: number;
+  /** Multiplied by the item's unit weight (tons per unit) when true. */
+  wt: boolean;
 }
 
-export interface PricingSettings {
-  // Group 1 — material & fabrication cost
-  handlingPct: number;
-  ndtPct: number;
-  fabIndirectPct: number;
-  materialMargin: number;
-  fabMargin: number;
-  ndtMargin: number;
-  paintMargin: number;
-  // Group 2 — installation cost (per ton)
-  transportRate: number;
-  handlingPerTon: number;
-  packingPerTon: number;
-  cranePerTon: number;
-  scaffoldPerTon: number;
-  manHourPerTon: number;
-  safetyPerTon: number;
-  toolsPerTon: number;
-  ppePerTon: number;
-  touchUpPerTon: number;
-  weldSurveyorPerTon: number;
-  installIndirectPct: number;
-  installMarginPct: number;
-  // Group 3 — additional costs (installation items only)
-  mobDemobPct: number;
-  thirdPartyCertPct: number;
-  heightFactorPct: number;
-  commissioningPct: number;
-  // Group 4 — tax & insurance (all items)
-  taxPct: number;
-  insurancePct: number;
+export interface CalcSpec {
+  unitWt: number;
+  matRow: number | null;
+  handling: boolean;
+  scrap: Profile | null;
+  accessories: Profile | null;
+  scrapLink?: { item: string; profile: Profile };
+  accessoriesLink?: { item: string; k: number };
+  cutting: Profile | null;
+  welding: Profile | null;
+  painting: Profile | null;
+  paintingRate?: number;
+  paintingMargin?: number;
+  ndt: boolean;
+  fabIndirect: Profile | null;
+  install: Partial<Record<InstallKey, InstallLineSpec>>;
+  installIndirect: Profile;
+  installMargin: Profile;
+  mob: boolean;
+  height: boolean;
+  thirdParty: boolean;
+  commissioning: boolean;
+  tax: Profile;
+  insurance: Profile;
 }
 
-export interface BoqItem {
-  id: number;
+interface BoqBase {
+  no: string;
   sec: "supply" | "install";
   sub: string;
-  no: string;
   scope: PricingScope;
   desc: string;
   grade: string;
   unit: string;
   qty: number;
-  fam: string;
-  /** Per-item install rate profile picks (from the original sheet). */
-  rates?: ItemRateMap;
-  /** Priced "like" another item (the sheet reuses unit prices: G = G<other row> × factor). */
-  priceLike?: { no: string; factor: number };
-  /** Hard-coded unit price from the sheet (overrides the calculation). */
-  fixedUnitPrice?: number;
+}
+export type BoqItem =
+  | (BoqBase & { mode: "calc"; spec: CalcSpec })
+  | (BoqBase & { mode: "pricedLike"; like: { src: string; mult: number } })
+  | (BoqBase & { mode: "fixed"; fixed: number })
+  | (BoqBase & { mode: "unpriced" });
+
+/** User edits kept on top of the workbook defaults. */
+export interface ItemOverride {
+  qty?: number;
+  matRow?: number | null;
+  /** Per-activity install profile overrides. */
+  install?: Partial<Record<InstallKey, Profile>>;
+}
+export type Overrides = Record<string, ItemOverride>;
+
+export interface InstallLineResult {
+  key: InstallKey;
+  profile: Profile;
+  rate: number;
+  factor: number;
+  weight: number;
+  amount: number;
 }
 
-export interface PricingResult {
-  /** Set when this item takes its unit price from another item. */
-  linkedTo?: string;
-  flag: boolean;
+export interface CalcResult {
+  mode: "calc";
+  qty: number;
+  weight: number;
+  // 1. material
+  matRow: number | null;
+  materialRate: number;
   materialPrice: number;
   handling: number;
   scrap: number;
+  accessories: number;
   materialCost: number;
+  // 2. fabrication
+  cutting: number;
   welding: number;
-  painting: number;
+  fabricationCost: number; // cutting + rolling + fit-up & welding
   ndt: number;
+  painting: number;
   totalFabricationCost: number;
   fabIndirect: number;
   supplySalePrice: number;
+  // 3. installation
+  installLines: InstallLineResult[];
   installDirect: number;
   installIndirect: number;
   installSale: number;
+  supplyAndInstall: number;
+  // 4. additional
   mobDemob: number;
-  thirdParty: number;
   heightFactor: number;
+  thirdParty: number;
+  beforeCommissioning: number;
   commissioning: number;
-  finalSalePrice: number;
+  totalSale: number;
+  // 5. tax & insurance
+  tax: number;
+  insurance: number;
+  // final
+  finalPrice: number;
   unitPrice: number;
-  total: number;
   totalCost: number;
   profit: number;
   profitPct: number;
+}
+
+export type ItemResult =
+  | CalcResult
+  | { mode: "pricedLike"; qty: number; src: string; mult: number; srcUnitPrice: number; unitPrice: number; finalPrice: number; totalCost: number | null; profit: number | null; profitPct: number | null }
+  | { mode: "fixed"; qty: number; unitPrice: number; finalPrice: number; totalCost: null; profit: null; profitPct: null }
+  | { mode: "unpriced"; qty: number; unitPrice: 0; finalPrice: 0; totalCost: null; profit: null; profitPct: null };
+
+export interface BoqTotals {
+  supply: number;
+  install: number;
+  grand: number;
+  /** Cost/profit cover only items the workbook gives a cost for (calculated + priced-like). */
+  totalCost: number;
+  profit: number;
+  profitPct: number;
+  pricedItems: number;
+  costedItems: number;
+  additional: number; // mob + height + third party + commissioning across calculated items
+  taxInsurance: number;
+  weight: number;
+}
+export interface BoqResult {
+  items: Record<string, ItemResult>;
+  totals: BoqTotals;
 }
