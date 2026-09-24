@@ -19,6 +19,9 @@ export function componentOn(s: CalcSpec, id: string): boolean {
     case "accessories": return !!(s.accessories || s.accessoriesLink);
     case "cutting": return !!s.cutting;
     case "welding": return !!s.welding;
+    case "inflation": return !!s.inflation;
+    case "rolling": return !!s.rolling;
+    case "subcontract": return !!s.subcontract;
     case "painting": return !!(s.painting || s.paintingRate);
     case "ndt": return s.ndt;
     case "fabIndirect": return !!s.fabIndirect;
@@ -41,6 +44,9 @@ function applyToggle(s: CalcSpec, id: string, on: boolean) {
     case "welding": s.welding = on ? "A" : null; break;
     case "fabIndirect": s.fabIndirect = on ? "A" : null; break;
     case "painting": if (on) s.painting = "A"; else { s.painting = null; delete s.paintingRate; } break;
+    case "inflation": s.inflation = on; break;
+    case "rolling": s.rolling = on; break;
+    case "subcontract": s.subcontract = on; break;
     case "ndt": s.ndt = on; break;
     case "mob": s.mob = on; break;
     case "height": s.height = on; break;
@@ -110,12 +116,14 @@ export function calcItem(
   const customMaterial = customSum("material");
   const customFabrication = customSum("fabrication");
   const customInstall = customSum("installation");
-  const materialCost = materialPrice + handling + scrap + accessories + customMaterial;
+  const inflation = s.inflation ? materialPrice * rate(R.inflation, "A") : 0;
+  const materialCost = materialPrice + handling + scrap + accessories + inflation + customMaterial;
 
   // 2. Fabrication
   const cutting = s.cutting ? weight * rate(R.cutting, s.cutting) : 0;
   const welding = s.welding ? weight * rate(R.welding, s.welding) : 0;
-  const fabricationCost = cutting + welding + customFabrication; // rolling is 0 for every workbook item
+  const rolling = s.rolling ? weight * rate(R.rolling, "A") : 0; // 0 for every workbook item unless ticked
+  const fabricationCost = cutting + welding + rolling + customFabrication;
   const ndt = s.ndt ? fabricationCost * rate(R.ndt, "A") : 0;
   // Painting: per ton of steel (workbook) or, when the painted area is known, per m².
   const paintBasis = s.paintBasis ?? "ton";
@@ -133,6 +141,10 @@ export function calcItem(
     ndt * R.margins.ndt +
     painting * (s.paintingMargin ?? R.margins.painting);
 
+  // Subcontractor: cost per unit × quantity, sold at cost × subcontract margin, added to supply + installation.
+  const subcontract = s.subcontract ? weight * rate(R.subcontract, "A") : 0;
+  const subcontractSale = subcontract * R.subcontractMargin;
+
   // 3. Installation
   const installLines: InstallLineResult[] = [];
   let installDirect = customInstall;
@@ -147,7 +159,7 @@ export function calcItem(
   }
   const installIndirect = installDirect * rate(R.installIndirect, s.installIndirect);
   const installSale = (installDirect + installIndirect) * rate(R.installMargin, s.installMargin);
-  const supplyAndInstall = supplySalePrice + installSale;
+  const supplyAndInstall = supplySalePrice + subcontractSale + installSale;
 
   // 4. Additional
   const mobDemob = s.mob ? supplyAndInstall * R.mobDemob : 0;
@@ -166,13 +178,13 @@ export function calcItem(
   const insurance = finalPrice - afterTax;
 
   const totalCost =
-    totalFabricationCost + fabIndirect + installDirect + installIndirect +
+    totalFabricationCost + fabIndirect + subcontract + installDirect + installIndirect +
     mobDemob + heightFactor + thirdParty + (finalPrice - totalSale);
   const profit = finalPrice - totalCost;
 
   return {
-    mode: "calc", qty, weight, matRow: s.matRow, materialRate, materialPrice, handling, scrap, accessories, customMaterial, materialCost,
-    cutting, welding, customFabrication, fabricationCost, ndt, painting, paintBasis, paintArea, paintRate, totalFabricationCost, fabIndirect, supplySalePrice,
+    mode: "calc", qty, weight, matRow: s.matRow, materialRate, materialPrice, handling, scrap, accessories, inflation, customMaterial, materialCost,
+    cutting, welding, rolling, customFabrication, fabricationCost, ndt, painting, paintBasis, paintArea, paintRate, totalFabricationCost, fabIndirect, supplySalePrice, subcontract, subcontractSale,
     installLines, customInstall, customLines, installDirect, installIndirect, installSale, supplyAndInstall,
     mobDemob, heightFactor, thirdParty, beforeCommissioning, commissioning, totalSale,
     tax, insurance, finalPrice, unitPrice: weight > 0 ? finalPrice / weight : 0,

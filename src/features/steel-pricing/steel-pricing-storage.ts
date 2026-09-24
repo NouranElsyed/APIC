@@ -43,7 +43,7 @@ function mergeRates(saved: unknown): RateBook {
   const base = structuredClone(DEFAULT_RATES);
   if (!saved || typeof saved !== "object") return base;
   const s = saved as Record<string, unknown>;
-  for (const k of ["handling", "scrap", "accessories", "cutting", "welding", "painting", "paintingArea", "ndt", "fabIndirect", "installIndirect", "installMargin", "tax", "insurance"] as const) {
+  for (const k of ["handling", "scrap", "accessories", "inflation", "cutting", "rolling", "subcontract", "welding", "painting", "paintingArea", "ndt", "fabIndirect", "installIndirect", "installMargin", "tax", "insurance"] as const) {
     base[k] = mergeProfiles(base[k], s[k]);
   }
   for (const k of Object.keys(base.install) as (keyof RateBook["install"])[]) {
@@ -53,7 +53,7 @@ function mergeRates(saved: unknown): RateBook {
     const v = (s.margins as Record<string, unknown> | undefined)?.[k];
     if (isNum(v)) base.margins[k] = v;
   }
-  for (const k of ["mobDemob", "heightFactor", "thirdParty", "commissioning"] as const) {
+  for (const k of ["mobDemob", "heightFactor", "thirdParty", "commissioning", "subcontractMargin"] as const) {
     if (isNum(s[k])) base[k] = s[k] as number;
   }
   return base;

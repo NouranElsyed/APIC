@@ -26,13 +26,21 @@ export interface RateBook {
   handling: ProfileRates;
   scrap: ProfileRates;
   accessories: ProfileRates;
+  /** Inflation allowance on material price (workbook "Inflation" column). 0 unless the user sets it. */
+  inflation: ProfileRates;
   cutting: ProfileRates;
+  /** Rolling, EGP per ton (workbook "Rolling" column; 0 for every workbook item). */
+  rolling: ProfileRates;
   welding: ProfileRates;
   painting: ProfileRates;
   /** Painting per m² (EGP/m²). Not in the workbook, so it starts empty and is entered by the user. */
   paintingArea: ProfileRates;
   ndt: ProfileRates;
   fabIndirect: ProfileRates;
+  /** Subcontractor cost, EGP per item unit (workbook "Subcontractor" column). 0 unless the user sets it. */
+  subcontract: ProfileRates;
+  /** Multiplier applied to the subcontractor cost to get its sale price (workbook "Subcontract Sale Price"). */
+  subcontractMargin: number;
   margins: { material: number; fabrication: number; ndt: number; painting: number };
   install: Record<InstallKey, ProfileRates>;
   installIndirect: ProfileRates;
@@ -102,6 +110,10 @@ export interface CalcSpec {
   paintArea?: number;
   ndt: boolean;
   fabIndirect: Profile | null;
+  /** Optional components: off unless the user ticks them (not part of the workbook items). */
+  inflation?: boolean;
+  rolling?: boolean;
+  subcontract?: boolean;
   install: Partial<Record<InstallKey, InstallLineSpec>>;
   /** User-added lines (only present through an override). */
   custom?: CustomLine[];
@@ -171,11 +183,13 @@ export interface CalcResult {
   handling: number;
   scrap: number;
   accessories: number;
+  inflation: number;
   customMaterial: number;
   materialCost: number;
   // 2. fabrication
   cutting: number;
   welding: number;
+  rolling: number;
   customFabrication: number;
   fabricationCost: number; // cutting + rolling + fit-up & welding + custom fabrication lines
   ndt: number;
@@ -186,6 +200,9 @@ export interface CalcResult {
   totalFabricationCost: number;
   fabIndirect: number;
   supplySalePrice: number;
+  /** Subcontractor cost and its sale price (cost × subcontract margin). */
+  subcontract: number;
+  subcontractSale: number;
   // 3. installation
   installLines: InstallLineResult[];
   customInstall: number;

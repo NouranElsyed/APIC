@@ -26,7 +26,7 @@ export interface BreakdownEditor {
   removeCustom: (id: string) => void;
 }
 
-function Sub({ n, title, total, totalLabel }: { n: number; title: string; total?: number; totalLabel?: string }) {
+function Sub({ n, title, total, totalLabel }: { n: number | string; title: string; total?: number; totalLabel?: string }) {
   return (
     <div className="flex items-baseline justify-between border-b border-border pb-1">
       <h4 className="text-xs font-semibold">{n}. {title}</h4>
@@ -169,7 +169,7 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
   const P = (p: Profile | null | undefined): Profile => p ?? "A";
   const canMatExtras = !!s.matRow;
 
-  const showMaterial = ed || r.materialPrice > 0 || r.accessories > 0 || r.scrap > 0 || r.customMaterial > 0;
+  const showMaterial = ed || r.materialPrice > 0 || r.accessories > 0 || r.scrap > 0 || r.inflation > 0 || r.customMaterial > 0;
   const showFab = ed || r.totalFabricationCost - r.materialCost > 0;
 
   return (
@@ -185,6 +185,7 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
               {show("handling") && (canMatExtras || on("handling")) && <Row check={chk("handling")} off={off("handling")} label="Handling" rate={pctOf(R.handling.A ?? 0)} amount={r.handling} />}
               {show("scrap") && (canMatExtras || !!s.scrapLink) && <Row check={chk("scrap")} off={off("scrap")} label="Scrap" rate={s.scrapLink ? `${pctOf(R.scrap[s.scrapLink.profile] ?? 0)} of ${s.scrapLink.item} material` : `${pctOf(R.scrap[P(s.scrap)] ?? 0)} (profile ${P(s.scrap)})`} amount={r.scrap} />}
               {show("accessories") && (canMatExtras || !!s.accessoriesLink) && <Row check={chk("accessories")} off={off("accessories")} label="Accessories" rate={s.accessoriesLink ? `${pctOf(s.accessoriesLink.k)} of ${s.accessoriesLink.item} material` : `${pctOf(R.accessories[P(s.accessories)] ?? 0)} (profile ${P(s.accessories)})`} amount={r.accessories} />}
+              {show("inflation") && canMatExtras && <Row check={chk("inflation")} off={off("inflation")} label="Inflation" rate={`${pctOf(R.inflation.A ?? 0)} of material price`} amount={r.inflation} />}
               <CustomRows group="material" lines={lines} r={r} ed={ed} unit={item.unit} />
               {ed && <AddLineRow group="material" unit={item.unit} colSpan={3} onAdd={ed.addCustom} />}
               <Row bold label="Material cost" amount={r.materialCost} />
@@ -204,6 +205,7 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
             <TableBody>
               {show("cutting") && <Row check={chk("cutting")} off={off("cutting")} label="Cutting" rate={fmt(R.cutting[P(s.cutting)] ?? 0)} amount={r.cutting} />}
               {show("welding") && <Row check={chk("welding")} off={off("welding")} label="Fit-up & welding" rate={`${fmt(R.welding[P(s.welding)] ?? 0)} (profile ${P(s.welding)})`} amount={r.welding} />}
+              {show("rolling") && <Row check={chk("rolling")} off={off("rolling")} label="Rolling" rate={`${fmt(R.rolling.A ?? 0)} EGP/t`} amount={r.rolling} />}
               <CustomRows group="fabrication" lines={lines} r={r} ed={ed} unit={item.unit} />
               {show("ndt") && <Row check={chk("ndt")} off={off("ndt")} label="NDT" rate={`${pctOf(R.ndt.A ?? 0)} of fabrication`} amount={r.ndt} />}
               {show("painting") && <Row check={chk("painting")} off={off("painting")} label={r.paintBasis === "area" ? "Painting (per m²)" : "Painting (per ton)"}
@@ -219,6 +221,20 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">2. Fabrication — none for this item.</p>
+      )}
+
+      {/* 2b. Subcontractor (workbook columns "Subcontractor" / "Subcontract Sale Price") */}
+      {(ed || on("subcontract")) && (
+        <div className="space-y-1.5">
+          <Sub n="2b" title="Subcontractor" total={r.subcontractSale} totalLabel="Subcontract sale price" />
+          <Table>
+            <TableHeader><TableRow><TableHead className="h-7 text-[11px]">Component</TableHead><TableHead className="h-7 text-right text-[11px]">Rate</TableHead><TableHead className="h-7 text-right text-[11px]">Amount (EGP)</TableHead></TableRow></TableHeader>
+            <TableBody>
+              <Row check={chk("subcontract")} off={off("subcontract")} label="Subcontractor cost" rate={`${fmt2(R.subcontract.A ?? 0)} EGP / ${item.unit} × ${fmt2(r.weight)}`} amount={r.subcontract} />
+              <Row muted label="Subcontract sale price" rate={`cost × ${R.subcontractMargin}`} amount={r.subcontractSale} />
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       {/* 3. Installation */}

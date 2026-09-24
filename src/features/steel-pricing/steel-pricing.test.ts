@@ -111,6 +111,25 @@ for (const item of DEFAULT_ITEMS) { const r = boq.items[item.no]; if (r.mode ===
   }
 }
 
+// Workbook columns that are 0 for every item: Inflation, Rolling, Subcontractor. Off by default; ticking them charges the rate.
+{
+  const base = boq.items["S1.1"];
+  const rates = { ...DEFAULT_RATES, inflation: { A: 0.02 }, rolling: { A: 500 }, subcontract: { A: 100 } };
+  const run = (toggles: Record<string, boolean>) => calcBoq(DEFAULT_ITEMS, rates, DEFAULT_MATERIALS, { "S1.1": { toggles } }).items["S1.1"];
+  const off = calcBoq(DEFAULT_ITEMS, rates, DEFAULT_MATERIALS).items["S1.1"];
+  check("non-zero inflation/rolling/subcontract rates change nothing until ticked", off.finalPrice, base.finalPrice);
+  const all = run({ inflation: true, rolling: true, subcontract: true });
+  if (base.mode !== "calc" || all.mode !== "calc") { failures++; console.error("FAIL: S1.1 should be calculated"); }
+  else {
+    check("inflation = 2% of material price", all.inflation, base.materialPrice * 0.02);
+    check("rolling = 25 t x 500", all.rolling, 12500);
+    check("subcontract cost = 25 x 100", all.subcontract, 2500);
+    check("subcontract sale = cost x 1.2", all.subcontractSale, 3000);
+    check("subcontract sale joins supply + installation", all.supplyAndInstall, base.supplyAndInstall + 3000 + all.supplySalePrice - base.supplySalePrice);
+    check("cost + profit = final with the new components", all.totalCost + all.profit, all.finalPrice);
+  }
+}
+
 console.log(`${DEFAULT_ITEMS.length} items compared, grand total ${Math.round(boq.totals.grand).toLocaleString("en-US")} (Excel ${Math.round(xlTotal).toLocaleString("en-US")})`);
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
 console.log("All parity checks passed.");
