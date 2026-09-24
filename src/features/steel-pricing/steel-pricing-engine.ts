@@ -2,14 +2,39 @@ import type {
   BoqItem, BoqResult, BoqTotals, CalcResult, CalcSpec, CustomGroup, CustomLineResult, InstallKey, InstallLineResult, ItemOverride, ItemResult,
   MaterialTable, Overrides, Profile, ProfileRates, RateBook,
 } from "./types";
-import { INSTALL_KEYS } from "./types";
+import { INSTALL_KEYS, PROFILES } from "./types";
 
 /**
  * Single source of truth for pricing. Formula order follows the workbook column by column:
  * Material (K–P) → Fabrication (Q–X) → Supply sale (Y) → Installation (AC–AP) → Additional (AR–AV)
  * → Tax (AX) → Insurance (AY) → Final (AZ) / Cost (BB) / Profit (BC).
  */
-const rate = (r: ProfileRates, p: Profile | null | undefined): number => (p ? r[p] ?? 0 : 0);
+const BUILTIN = new Set<string>(PROFILES);
+/**
+ * Rate of one option. A built-in profile without a value is charged as 0 (as in the workbook);
+ * a user-added option that no longer exists (deleted) falls back to profile A instead of silently costing 0.
+ */
+const rate = (r: ProfileRates, p: Profile | null | undefined): number => {
+  if (!p) return 0;
+  const v = r[p];
+  if (v !== undefined) return v;
+  return BUILTIN.has(p) ? 0 : r.A ?? 0;
+};
+export const rateValue = rate;
+
+/** The rate option a component currently uses (null when it has no per-component choice). */
+export function profileOf(s: CalcSpec, id: string): Profile | "item" | null {
+  switch (id) {
+    case "handling": case "ndt": case "inflation": case "rolling": case "subcontract": return s.rateSel?.[id] ?? "A";
+    case "scrap": return s.scrapLink?.profile ?? s.scrap ?? "A";
+    case "accessories": return s.accessoriesLink ? null : s.accessories ?? "A";
+    case "cutting": return s.cutting ?? "A";
+    case "welding": return s.welding ?? "A";
+    case "fabIndirect": return s.fabIndirect ?? "A";
+    case "painting": return s.paintingRate ? "item" : s.painting ?? "A";
+    default: return id.startsWith("install.") ? s.install[id.slice(8) as InstallKey]?.p ?? "A" : null;
+  }
+}
 
 /** Is this checkbox component currently included in the item's price? */
 export function componentOn(s: CalcSpec, id: string): boolean {
@@ -71,6 +96,17 @@ export function applyOverride(item: BoqItem, ov?: ItemOverride): BoqItem {
     const line = spec.install[k as keyof typeof spec.install];
     if (line && p) spec.install[k as keyof typeof spec.install] = { ...line, p };
   }
+  for (const [id, p] of Object.entries(ov.rates ?? {})) {
+    switch (id) {
+      case "scrap": if (spec.scrapLink) spec.scrapLink = { ...spec.scrapLink, profile: p }; else if (spec.scrap) spec.scrap = p; break;
+      case "accessories": if (spec.accessories) spec.accessories = p; break;
+      case "cutting": if (spec.cutting) spec.cutting = p; break;
+      case "welding": if (spec.welding) spec.welding = p; break;
+      case "fabIndirect": if (spec.fabIndirect) spec.fabIndirect = p; break;
+      case "painting": if (spec.painting || spec.paintingRate) { spec.painting = p; delete spec.paintingRate; } break;
+      case "handling": case "ndt": case "inflation": case "rolling": case "subcontract": spec.rateSel = { ...spec.rateSel, [id]: p }; break;
+    }
+  }
   spec.matRow = ov.matRow === undefined ? item.spec.matRow : ov.matRow;
   spec.paintBasis = ov.paintBasis ?? item.spec.paintBasis;
   spec.paintArea = ov.paintArea ?? item.spec.paintArea;
@@ -96,7 +132,8 @@ export function calcItem(
   // 1. Material
   const materialRate = s.matRow ? mats[s.matRow]?.price ?? 0 : 0;
   const materialPrice = weight * materialRate;
-  const handling = s.handling ? materialPrice * rate(R.handling, "A") : 0;
+  const pf = (id: string): Profile => s.rateSel?.[id] ?? "A";
+  const handling = s.handling ? materialPrice * rate(R.handling, pf("handling")) : 0;
   let scrap = s.scrap ? materialPrice * rate(R.scrap, s.scrap) : 0;
   if (s.scrapLink) {
     const src = lookup?.(s.scrapLink.item);
@@ -116,15 +153,15 @@ export function calcItem(
   const customMaterial = customSum("material");
   const customFabrication = customSum("fabrication");
   const customInstall = customSum("installation");
-  const inflation = s.inflation ? materialPrice * rate(R.inflation, "A") : 0;
+  const inflation = s.inflation ? materialPrice * rate(R.inflation, pf("inflation")) : 0;
   const materialCost = materialPrice + handling + scrap + accessories + inflation + customMaterial;
 
   // 2. Fabrication
   const cutting = s.cutting ? weight * rate(R.cutting, s.cutting) : 0;
   const welding = s.welding ? weight * rate(R.welding, s.welding) : 0;
-  const rolling = s.rolling ? weight * rate(R.rolling, "A") : 0; // 0 for every workbook item unless ticked
+  const rolling = s.rolling ? weight * rate(R.rolling, pf("rolling")) : 0; // 0 for every workbook item unless ticked
   const fabricationCost = cutting + welding + rolling + customFabrication;
-  const ndt = s.ndt ? fabricationCost * rate(R.ndt, "A") : 0;
+  const ndt = s.ndt ? fabricationCost * rate(R.ndt, pf("ndt")) : 0;
   // Painting: per ton of steel (workbook) or, when the painted area is known, per m².
   const paintBasis = s.paintBasis ?? "ton";
   const paintArea = Number(s.paintArea) || 0;
@@ -142,7 +179,7 @@ export function calcItem(
     painting * (s.paintingMargin ?? R.margins.painting);
 
   // Subcontractor: cost per unit × quantity, sold at cost × subcontract margin, added to supply + installation.
-  const subcontract = s.subcontract ? weight * rate(R.subcontract, "A") : 0;
+  const subcontract = s.subcontract ? weight * rate(R.subcontract, pf("subcontract")) : 0;
   const subcontractSale = subcontract * R.subcontractMargin;
 
   // 3. Installation

@@ -9,9 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { RateInput } from "./pricing-inputs";
+import { RatePicker } from "./rate-picker";
 import { INSTALL_LABEL } from "./steel-pricing-data";
-import { componentOn, fmt, fmt2, pct } from "./steel-pricing-engine";
-import type { BoqItem, CalcResult, CustomBasis, CustomGroup, CustomLine, ItemResult, MaterialTable, Profile, RateBook } from "./types";
+import { componentOn, fmt, fmt2, pct, profileOf, rateValue } from "./steel-pricing-engine";
+import type { BoqItem, CalcResult, CustomBasis, CustomGroup, CustomLine, ItemResult, MaterialTable, ProfileRates, RateBook } from "./types";
 import { INSTALL_KEYS } from "./types";
 
 const PROFILE_HINT = "Rate profile (A is the workbook default)";
@@ -19,6 +20,10 @@ const PROFILE_HINT = "Rate profile (A is the workbook default)";
 /** Makes the breakdown editable: every component gets a checkbox and each section gets an "Add line" row. */
 export interface BreakdownEditor {
   toggle: (id: string, on: boolean) => void;
+  /** Picks the price a component uses (a built-in profile or a price the user added). */
+  selectRate: (id: string, optionId: string) => void;
+  /** Edits the shared rate book (adds / edits / deletes prices in the library). */
+  onRates: (fn: (r: RateBook) => RateBook) => void;
   /** All user-added lines of this item (including unchecked ones). */
   custom: CustomLine[];
   addCustom: (line: Omit<CustomLine, "id" | "enabled">) => void;
@@ -39,17 +44,22 @@ function Sub({ n, title, total, totalLabel }: { n: number | string; title: strin
 
 interface RowCheck { on: boolean; onChange: (on: boolean) => void }
 
-function Row({ label, rate, amount, bold, muted, extra, check, off }: {
+function Row({ label, rate, amount, bold, muted, extra, check, off, picker }: {
   label: string; rate?: React.ReactNode; amount: number; bold?: boolean; muted?: boolean; extra?: React.ReactNode; check?: RowCheck; off?: boolean;
+  /** Price dropdown shown next to the checkbox label. */
+  picker?: React.ReactNode;
 }) {
   return (
     <TableRow className={cn(bold && "bg-muted/40 font-semibold", (muted || off) && "text-muted-foreground")}>
       <TableCell className="py-1.5 text-xs">
         {check ? (
-          <label className="flex cursor-pointer items-center gap-2">
-            <Checkbox checked={check.on} onCheckedChange={(v) => check.onChange(v === true)} className="h-3.5 w-3.5" aria-label={label} />
-            <span className={cn(off && "line-through decoration-muted-foreground/40")}>{label}</span>
-          </label>
+          <div className="flex items-center gap-2">
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox checked={check.on} onCheckedChange={(v) => check.onChange(v === true)} className="h-3.5 w-3.5" aria-label={label} />
+              <span className={cn(off && "line-through decoration-muted-foreground/40")}>{label}</span>
+            </label>
+            {picker}
+          </div>
         ) : label}
       </TableCell>
       {extra !== undefined && <TableCell className="py-1.5 text-xs">{extra}</TableCell>}
@@ -166,8 +176,13 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
   const show = (id: string) => !!ed || on(id);
   const off = (id: string) => !!ed && !on(id);
   const chk = (id: string): RowCheck | undefined => ed ? { on: on(id), onChange: (v) => ed.toggle(id, v) } : undefined;
-  const P = (p: Profile | null | undefined): Profile => p ?? "A";
-  const canMatExtras = !!s.matRow;
+    const canMatExtras = !!s.matRow;
+  // Rate of the option each component currently uses, and the dropdown that changes it (only for ticked components).
+  const pv = (g: ProfileRates, id: string) => rateValue(g, (profileOf(s, id) === "item" ? "A" : profileOf(s, id)) ?? "A");
+  const pick = (id: string, groupId: string = id) => {
+    const cur = profileOf(s, id);
+    return ed && on(id) && cur ? <RatePicker R={R} componentId={id} groupId={groupId} current={cur} onSelect={(p) => ed.selectRate(id, p)} onRates={ed.onRates} /> : undefined;
+  };
 
   const showMaterial = ed || r.materialPrice > 0 || r.accessories > 0 || r.scrap > 0 || r.inflation > 0 || r.customMaterial > 0;
   const showFab = ed || r.totalFabricationCost - r.materialCost > 0;
@@ -182,10 +197,10 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
             <TableHeader><TableRow><TableHead className="h-7 text-[11px]">Component</TableHead><TableHead className="h-7 text-right text-[11px]">Rate / value</TableHead><TableHead className="h-7 text-right text-[11px]">Amount (EGP)</TableHead></TableRow></TableHeader>
             <TableBody>
               {(s.matRow || r.materialPrice > 0) && <Row label={`Material price — ${mat?.label ?? "n/a"}`} rate={`${fmt2(r.materialRate)} / ${mat?.unit ?? "unit"}`} amount={r.materialPrice} />}
-              {show("handling") && (canMatExtras || on("handling")) && <Row check={chk("handling")} off={off("handling")} label="Handling" rate={pctOf(R.handling.A ?? 0)} amount={r.handling} />}
-              {show("scrap") && (canMatExtras || !!s.scrapLink) && <Row check={chk("scrap")} off={off("scrap")} label="Scrap" rate={s.scrapLink ? `${pctOf(R.scrap[s.scrapLink.profile] ?? 0)} of ${s.scrapLink.item} material` : `${pctOf(R.scrap[P(s.scrap)] ?? 0)} (profile ${P(s.scrap)})`} amount={r.scrap} />}
-              {show("accessories") && (canMatExtras || !!s.accessoriesLink) && <Row check={chk("accessories")} off={off("accessories")} label="Accessories" rate={s.accessoriesLink ? `${pctOf(s.accessoriesLink.k)} of ${s.accessoriesLink.item} material` : `${pctOf(R.accessories[P(s.accessories)] ?? 0)} (profile ${P(s.accessories)})`} amount={r.accessories} />}
-              {show("inflation") && canMatExtras && <Row check={chk("inflation")} off={off("inflation")} label="Inflation" rate={`${pctOf(R.inflation.A ?? 0)} of material price`} amount={r.inflation} />}
+              {show("handling") && (canMatExtras || on("handling")) && <Row check={chk("handling")} off={off("handling")} picker={pick("handling")} label="Handling" rate={pctOf(pv(R.handling, "handling"))} amount={r.handling} />}
+              {show("scrap") && (canMatExtras || !!s.scrapLink) && <Row check={chk("scrap")} off={off("scrap")} picker={pick("scrap")} label="Scrap" rate={s.scrapLink ? `${pctOf(pv(R.scrap, "scrap"))} of ${s.scrapLink.item} material` : pctOf(pv(R.scrap, "scrap"))} amount={r.scrap} />}
+              {show("accessories") && (canMatExtras || !!s.accessoriesLink) && <Row check={chk("accessories")} off={off("accessories")} picker={pick("accessories")} label="Accessories" rate={s.accessoriesLink ? `${pctOf(s.accessoriesLink.k)} of ${s.accessoriesLink.item} material` : pctOf(pv(R.accessories, "accessories"))} amount={r.accessories} />}
+              {show("inflation") && canMatExtras && <Row check={chk("inflation")} off={off("inflation")} picker={pick("inflation")} label="Inflation" rate={`${pctOf(pv(R.inflation, "inflation"))} of material price`} amount={r.inflation} />}
               <CustomRows group="material" lines={lines} r={r} ed={ed} unit={item.unit} />
               {ed && <AddLineRow group="material" unit={item.unit} colSpan={3} onAdd={ed.addCustom} />}
               <Row bold label="Material cost" amount={r.materialCost} />
@@ -203,16 +218,16 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
           <Table>
             <TableHeader><TableRow><TableHead className="h-7 text-[11px]">Component</TableHead><TableHead className="h-7 text-right text-[11px]">Rate</TableHead><TableHead className="h-7 text-right text-[11px]">Amount (EGP)</TableHead></TableRow></TableHeader>
             <TableBody>
-              {show("cutting") && <Row check={chk("cutting")} off={off("cutting")} label="Cutting" rate={fmt(R.cutting[P(s.cutting)] ?? 0)} amount={r.cutting} />}
-              {show("welding") && <Row check={chk("welding")} off={off("welding")} label="Fit-up & welding" rate={`${fmt(R.welding[P(s.welding)] ?? 0)} (profile ${P(s.welding)})`} amount={r.welding} />}
-              {show("rolling") && <Row check={chk("rolling")} off={off("rolling")} label="Rolling" rate={`${fmt(R.rolling.A ?? 0)} EGP/t`} amount={r.rolling} />}
+              {show("cutting") && <Row check={chk("cutting")} off={off("cutting")} picker={pick("cutting")} label="Cutting" rate={fmt(pv(R.cutting, "cutting"))} amount={r.cutting} />}
+              {show("welding") && <Row check={chk("welding")} off={off("welding")} picker={pick("welding")} label="Fit-up & welding" rate={fmt(pv(R.welding, "welding"))} amount={r.welding} />}
+              {show("rolling") && <Row check={chk("rolling")} off={off("rolling")} picker={pick("rolling")} label="Rolling" rate={`${fmt(pv(R.rolling, "rolling"))} EGP/t`} amount={r.rolling} />}
               <CustomRows group="fabrication" lines={lines} r={r} ed={ed} unit={item.unit} />
-              {show("ndt") && <Row check={chk("ndt")} off={off("ndt")} label="NDT" rate={`${pctOf(R.ndt.A ?? 0)} of fabrication`} amount={r.ndt} />}
-              {show("painting") && <Row check={chk("painting")} off={off("painting")} label={r.paintBasis === "area" ? "Painting (per m²)" : "Painting (per ton)"}
+              {show("ndt") && <Row check={chk("ndt")} off={off("ndt")} picker={pick("ndt")} label="NDT" rate={`${pctOf(pv(R.ndt, "ndt"))} of fabrication`} amount={r.ndt} />}
+              {show("painting") && <Row check={chk("painting")} off={off("painting")} picker={pick("painting", r.paintBasis === "area" ? "paintingArea" : "painting")} label={r.paintBasis === "area" ? "Painting (per m²)" : "Painting (per ton)"}
                 rate={r.paintBasis === "area"
-                  ? `${fmt2(r.paintRate)} EGP/m² × ${fmt2(r.paintArea)} m² (profile ${P(s.painting)})`
-                  : s.paintingRate ? `${fmt(s.paintingRate)} (item rate)` : `${fmt(R.painting[P(s.painting)] ?? 0)} EGP/t (profile ${P(s.painting)})`} amount={r.painting} />}
-              {show("fabIndirect") && <Row check={chk("fabIndirect")} off={off("fabIndirect")} label="Fabrication indirect" rate={`${pctOf(R.fabIndirect[P(s.fabIndirect)] ?? 0)} of (material + fabrication)`} amount={r.fabIndirect} />}
+                  ? `${fmt2(r.paintRate)} EGP/m² × ${fmt2(r.paintArea)} m²`
+                  : s.paintingRate ? `${fmt(s.paintingRate)} (item rate)` : `${fmt(pv(R.painting, "painting"))} EGP/t`} amount={r.painting} />}
+              {show("fabIndirect") && <Row check={chk("fabIndirect")} off={off("fabIndirect")} picker={pick("fabIndirect")} label="Fabrication indirect" rate={`${pctOf(pv(R.fabIndirect, "fabIndirect"))} of (material + fabrication)`} amount={r.fabIndirect} />}
               {ed && <AddLineRow group="fabrication" unit={item.unit} colSpan={3} onAdd={ed.addCustom} />}
               <Row bold label="Fabrication cost" amount={r.totalFabricationCost - r.materialCost + r.fabIndirect} />
               <Row muted label="Supply & fabrication sale price (with margins)" rate={<span title="Margin multipliers on material, fabrication, NDT and painting">×{R.margins.material} / {R.margins.fabrication} / {R.margins.ndt} / {s.paintingMargin ?? R.margins.painting}</span>} amount={r.supplySalePrice} />
@@ -230,7 +245,7 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
           <Table>
             <TableHeader><TableRow><TableHead className="h-7 text-[11px]">Component</TableHead><TableHead className="h-7 text-right text-[11px]">Rate</TableHead><TableHead className="h-7 text-right text-[11px]">Amount (EGP)</TableHead></TableRow></TableHeader>
             <TableBody>
-              <Row check={chk("subcontract")} off={off("subcontract")} label="Subcontractor cost" rate={`${fmt2(R.subcontract.A ?? 0)} EGP / ${item.unit} × ${fmt2(r.weight)}`} amount={r.subcontract} />
+              <Row check={chk("subcontract")} off={off("subcontract")} picker={pick("subcontract")} label="Subcontractor cost" rate={`${fmt2(pv(R.subcontract, "subcontract"))} EGP / ${item.unit} × ${fmt2(r.weight)}`} amount={r.subcontract} />
               <Row muted label="Subcontract sale price" rate={`cost × ${R.subcontractMargin}`} amount={r.subcontractSale} />
             </TableBody>
           </Table>
@@ -253,7 +268,7 @@ export function CalcBreakdown({ item, r, R, mats, editor }: {
                   const l = r.installLines.find((x) => x.key === k);
                   const id = `install.${k}`;
                   return l
-                    ? <Row key={k} check={chk(id)} label={INSTALL_LABEL[k]} extra={l.profile} rate={`${fmt2(l.rate)} × ${fmt2(l.weight * l.factor)}`} amount={l.amount} />
+                    ? <Row key={k} check={chk(id)} label={INSTALL_LABEL[k]} extra={pick(id) ?? l.profile} rate={`${fmt2(l.rate)} × ${fmt2(l.weight * l.factor)}`} amount={l.amount} />
                     : <Row key={k} check={chk(id)} off label={INSTALL_LABEL[k]} extra="—" rate={`${fmt2(R.install[k].A ?? 0)} (profile A)`} amount={0} />;
                 })
               : r.installLines.map((l) => (

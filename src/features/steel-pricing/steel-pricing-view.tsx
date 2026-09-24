@@ -77,7 +77,7 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
 
       <PricingSetup rates={state.rates} materials={state.materials} onRates={onRates} onMaterialPrice={onMaterialPrice} />
       <ItemCalculator rates={state.rates} materials={state.materials} />
-      <BoqSection items={DEFAULT_ITEMS} result={boq} rates={state.rates} materials={state.materials} overrides={state.overrides} onOverride={onOverride} />
+      <BoqSection items={DEFAULT_ITEMS} result={boq} rates={state.rates} materials={state.materials} overrides={state.overrides} onOverride={onOverride} onRates={onRates} />
 
       <div className="max-w-4xl space-y-1 text-[11px] leading-relaxed text-muted-foreground">
         <p>* Included within the grand total; summed over calculated items. † Cost and profit cover the {t.costedItems} items with a cost build-up ({DEFAULT_ITEMS.length - t.costedItems} fixed-price and unpriced items have none).</p>

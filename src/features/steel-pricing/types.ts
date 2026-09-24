@@ -5,8 +5,13 @@
  * They are exposed as Profile A (row 15, the default) … Profile E (row 11). The workbook does not
  * name B–E, so neither do we.
  */
-export type Profile = "A" | "B" | "C" | "D" | "E";
-export const PROFILES: Profile[] = ["A", "B", "C", "D", "E"];
+export type BuiltinProfile = "A" | "B" | "C" | "D" | "E";
+/**
+ * A rate option id: one of the workbook's built-in profiles A–E, or the id of a price the user added
+ * (a "custom rate option", stored next to the built-in values in the same rate group).
+ */
+export type Profile = string;
+export const PROFILES: BuiltinProfile[] = ["A", "B", "C", "D", "E"];
 
 export type PaintBasis = "ton" | "area";
 export type PricingScope = "Supply" | "Site Activity";
@@ -23,6 +28,8 @@ export const INSTALL_KEYS: InstallKey[] = [
 
 /** Rate card. Percent-like values are stored as fractions (0.07 = 7%); tax & insurance as divisors (0.99). */
 export interface RateBook {
+  /** Display names of the rate options the user added (option id → name). Their values live in the rate groups below. */
+  rateLabels: Record<string, string>;
   handling: ProfileRates;
   scrap: ProfileRates;
   accessories: ProfileRates;
@@ -110,6 +117,8 @@ export interface CalcSpec {
   paintArea?: number;
   ndt: boolean;
   fabIndirect: Profile | null;
+  /** Rate option chosen for components whose rate is otherwise fixed to profile A (handling, ndt, inflation, rolling, subcontract). */
+  rateSel?: Record<string, Profile>;
   /** Optional components: off unless the user ticks them (not part of the workbook items). */
   inflation?: boolean;
   rolling?: boolean;
@@ -155,6 +164,8 @@ export interface ItemOverride {
   toggles?: Record<ComponentId, boolean>;
   /** Lines the user added to this item. */
   custom?: CustomLine[];
+  /** Rate option picked per component (componentId → profile or custom option id), for non-installation components. */
+  rates?: Record<ComponentId, Profile>;
 }
 export type Overrides = Record<string, ItemOverride>;
 

@@ -130,6 +130,35 @@ for (const item of DEFAULT_ITEMS) { const r = boq.items[item.no]; if (r.mode ===
   }
 }
 
+// Rate options: pick a price per component; add your own named price and reuse it on other items.
+{
+  const withOpt = structuredClone(DEFAULT_RATES);
+  withOpt.install.transport.xsup = 1500; // "Supplier X" transport price added by the user
+  withOpt.scrap.xsup = 0.1;
+  withOpt.rateLabels.xsup = "Supplier X";
+  const run = (rates: typeof withOpt, no: string, ov: object) => calcBoq(DEFAULT_ITEMS, rates, DEFAULT_MATERIALS, { [no]: ov }).items[no];
+  const s11 = boq.items["S1.1"];
+  const a = run(withOpt, "S1.1", { install: { transport: "xsup" }, rates: { scrap: "xsup" } });
+  if (s11.mode !== "calc" || a.mode !== "calc") { failures++; console.error("FAIL: S1.1 should be calculated"); }
+  else {
+    const tr = a.installLines.find((l) => l.key === "transport");
+    check("custom transport price used (25 t x 1,500)", tr?.amount ?? -1, 25 * 1500);
+    check("custom scrap % used (10% of material price)", a.scrap, s11.materialPrice * 0.1);
+    // Same price reused on another item (S1.2 has transport too).
+    const b = run(withOpt, "S1.2", { install: { transport: "xsup" } });
+    const b0 = boq.items["S1.2"];
+    if (b.mode === "calc" && b0.mode === "calc") check("custom price reusable on another item", (b.installLines.find((l) => l.key === "transport")?.rate ?? -1), 1500);
+    // Editing the shared price changes every item that uses it.
+    const edited = structuredClone(withOpt); edited.install.transport.xsup = 2000;
+    const c = run(edited, "S1.1", { install: { transport: "xsup" } });
+    if (c.mode === "calc") check("editing the price updates the item", c.installLines.find((l) => l.key === "transport")?.amount ?? -1, 25 * 2000);
+    // Deleted price falls back to profile A instead of 0.
+    const del = structuredClone(withOpt); delete del.install.transport.xsup;
+    const d = run(del, "S1.1", { install: { transport: "xsup" } });
+    if (d.mode === "calc") check("deleted price falls back to profile A", d.installLines.find((l) => l.key === "transport")?.amount ?? -1, 25 * 1000);
+  }
+}
+
 console.log(`${DEFAULT_ITEMS.length} items compared, grand total ${Math.round(boq.totals.grand).toLocaleString("en-US")} (Excel ${Math.round(xlTotal).toLocaleString("en-US")})`);
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
 console.log("All parity checks passed.");
