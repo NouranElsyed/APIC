@@ -5,13 +5,8 @@
  * They are exposed as Profile A (row 15, the default) … Profile E (row 11). The workbook does not
  * name B–E, so neither do we.
  */
-export type BuiltinProfile = "A" | "B" | "C" | "D" | "E";
-/**
- * A rate option id: one of the workbook's built-in profiles A–E, or the id of a price the user added
- * (a "custom rate option", stored next to the built-in values in the same rate group).
- */
-export type Profile = string;
-export const PROFILES: BuiltinProfile[] = ["A", "B", "C", "D", "E"];
+export type Profile = "A" | "B" | "C" | "D" | "E";
+export const PROFILES: Profile[] = ["A", "B", "C", "D", "E"];
 
 export type PaintBasis = "ton" | "area";
 export type PricingScope = "Supply" | "Site Activity";
@@ -28,26 +23,16 @@ export const INSTALL_KEYS: InstallKey[] = [
 
 /** Rate card. Percent-like values are stored as fractions (0.07 = 7%); tax & insurance as divisors (0.99). */
 export interface RateBook {
-  /** Display names of the rate options the user added (option id → name). Their values live in the rate groups below. */
-  rateLabels: Record<string, string>;
   handling: ProfileRates;
   scrap: ProfileRates;
   accessories: ProfileRates;
-  /** Inflation allowance on material price (workbook "Inflation" column). 0 unless the user sets it. */
-  inflation: ProfileRates;
   cutting: ProfileRates;
-  /** Rolling, EGP per ton (workbook "Rolling" column; 0 for every workbook item). */
-  rolling: ProfileRates;
   welding: ProfileRates;
   painting: ProfileRates;
   /** Painting per m² (EGP/m²). Not in the workbook, so it starts empty and is entered by the user. */
   paintingArea: ProfileRates;
   ndt: ProfileRates;
   fabIndirect: ProfileRates;
-  /** Subcontractor cost, EGP per item unit (workbook "Subcontractor" column). 0 unless the user sets it. */
-  subcontract: ProfileRates;
-  /** Multiplier applied to the subcontractor cost to get its sale price (workbook "Subcontract Sale Price"). */
-  subcontractMargin: number;
   margins: { material: number; fabrication: number; ndt: number; painting: number };
   install: Record<InstallKey, ProfileRates>;
   installIndirect: ProfileRates;
@@ -76,28 +61,6 @@ export interface InstallLineSpec {
   wt: boolean;
 }
 
-/** Where a user-added line lands in the cost build-up (and which margin it picks up). */
-export type CustomGroup = "material" | "fabrication" | "installation";
-/** "perUnit" = rate × item quantity; "fixed" = lump sum for the whole item. */
-export type CustomBasis = "perUnit" | "fixed";
-
-/** A line the user adds to one item (e.g. "Hot rolled"), with its own on/off checkbox. */
-export interface CustomLine {
-  id: string;
-  label: string;
-  group: CustomGroup;
-  basis: CustomBasis;
-  rate: number;
-  enabled: boolean;
-}
-
-/**
- * Ids of the components that can be ticked on/off per item:
- * handling · scrap · accessories · cutting · welding · ndt · painting · fabIndirect ·
- * mob · height · thirdParty · commissioning · install.<InstallKey>
- */
-export type ComponentId = string;
-
 export interface CalcSpec {
   unitWt: number;
   matRow: number | null;
@@ -117,15 +80,7 @@ export interface CalcSpec {
   paintArea?: number;
   ndt: boolean;
   fabIndirect: Profile | null;
-  /** Rate option chosen for components whose rate is otherwise fixed to profile A (handling, ndt, inflation, rolling, subcontract). */
-  rateSel?: Record<string, Profile>;
-  /** Optional components: off unless the user ticks them (not part of the workbook items). */
-  inflation?: boolean;
-  rolling?: boolean;
-  subcontract?: boolean;
   install: Partial<Record<InstallKey, InstallLineSpec>>;
-  /** User-added lines (only present through an override). */
-  custom?: CustomLine[];
   installIndirect: Profile;
   installMargin: Profile;
   mob: boolean;
@@ -160,12 +115,6 @@ export interface ItemOverride {
   paintArea?: number;
   /** Per-activity install profile overrides. */
   install?: Partial<Record<InstallKey, Profile>>;
-  /** Checkbox choices that differ from the workbook default: componentId → on/off. */
-  toggles?: Record<ComponentId, boolean>;
-  /** Lines the user added to this item. */
-  custom?: CustomLine[];
-  /** Rate option picked per component (componentId → profile or custom option id), for non-installation components. */
-  rates?: Record<ComponentId, Profile>;
 }
 export type Overrides = Record<string, ItemOverride>;
 
@@ -175,11 +124,6 @@ export interface InstallLineResult {
   rate: number;
   factor: number;
   weight: number;
-  amount: number;
-}
-
-export interface CustomLineResult extends CustomLine {
-  /** 0 when the line is unchecked. */
   amount: number;
 }
 
@@ -194,15 +138,11 @@ export interface CalcResult {
   handling: number;
   scrap: number;
   accessories: number;
-  inflation: number;
-  customMaterial: number;
   materialCost: number;
   // 2. fabrication
   cutting: number;
   welding: number;
-  rolling: number;
-  customFabrication: number;
-  fabricationCost: number; // cutting + rolling + fit-up & welding + custom fabrication lines
+  fabricationCost: number; // cutting + rolling + fit-up & welding
   ndt: number;
   painting: number;
   paintBasis: PaintBasis;
@@ -211,14 +151,8 @@ export interface CalcResult {
   totalFabricationCost: number;
   fabIndirect: number;
   supplySalePrice: number;
-  /** Subcontractor cost and its sale price (cost × subcontract margin). */
-  subcontract: number;
-  subcontractSale: number;
   // 3. installation
   installLines: InstallLineResult[];
-  customInstall: number;
-  /** Every user-added line (all groups), in the order the user added them. */
-  customLines: CustomLineResult[];
   installDirect: number;
   installIndirect: number;
   installSale: number;

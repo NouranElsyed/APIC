@@ -6,20 +6,19 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { CalcBreakdown, SpecialBreakdown, type BreakdownEditor } from "./item-breakdown";
+import { CalcBreakdown, SpecialBreakdown } from "./item-breakdown";
 import { SectionTitle } from "./pricing-inputs";
-import { MATERIAL_ORDER, SECTION_LABEL } from "./steel-pricing-data";
-import { applyOverride, componentOn, fmt, fmt2, pct } from "./steel-pricing-engine";
-import type { BoqItem, BoqResult, CustomLine, InstallKey, ItemOverride, MaterialTable, Overrides, PaintBasis, Profile, RateBook } from "./types";
+import { INSTALL_LABEL, MATERIAL_ORDER, SECTION_LABEL } from "./steel-pricing-data";
+import { applyOverride, fmt, fmt2, pct } from "./steel-pricing-engine";
+import type { BoqItem, BoqResult, InstallKey, ItemOverride, MaterialTable, Overrides, PaintBasis, Profile, RateBook } from "./types";
 import { PROFILES } from "./types";
 
 type Filter = "all" | "supply" | "install";
 const HEAD = ["Item", "Description", "Material", "Unit", "Quantity", "Unit price", "Total (EGP)", "Profit %", "Scope", "Install profile", "Painting price"];
 
-export function BoqSection({ items, result, rates, materials, overrides, onOverride, onRates }: {
+export function BoqSection({ items, result, rates, materials, overrides, onOverride }: {
   items: BoqItem[]; result: BoqResult; rates: RateBook; materials: MaterialTable; overrides: Overrides;
   onOverride: (no: string, patch: ItemOverride | null) => void;
-  onRates: (fn: (r: RateBook) => RateBook) => void;
 }) {
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState<Filter>("all");
@@ -38,7 +37,7 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
 
   return (
     <section>
-      <SectionTitle n={3} title={`Full BOQ (${items.length} items)`} hint="Edit quantity, material or installation profile on any row. Click a row to see how its price is built — tick or untick any component, or add your own line (e.g. Hot rolled)." />
+      <SectionTitle n={3} title={`Full BOQ (${items.length} items)`} hint="Edit quantity, material or installation profile on any row. Click a row to see exactly how its price is built." />
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="relative min-w-[220px] flex-1">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -108,7 +107,7 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
                               <td className="px-2 py-1.5"><Badge variant={it.scope === "Supply" ? "success" : "warning"} className="px-1.5 py-0 text-[10px]">{it.scope === "Supply" ? "Supply" : "Install"}</Badge></td>
                               <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
                                 {it.mode === "calc" && Object.keys(it.spec.install).length > 0 ? (
-                                  <Select value={profileValue(base, it)} onValueChange={(v) => setAllProfiles(base, it, v, onOverride, overrides[base.no])}>
+                                  <Select value={profileValue(base, it)} onValueChange={(v) => setAllProfiles(base, v, onOverride, overrides[base.no])}>
                                     <SelectTrigger className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="default">Workbook</SelectItem>
@@ -134,8 +133,10 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
                                     {edited && <button className="text-xs text-primary hover:underline" onClick={() => onOverride(it.no, null)}>Reset to workbook values</button>}
                                   </div>
                                   {it.mode === "calc" && result.items[it.no].mode === "calc" ? (
-                                    <CalcBreakdown item={it} r={result.items[it.no] as Extract<typeof r, { mode: "calc" }>} R={rates} mats={materials}
-                                      editor={makeEditor(base, overrides[it.no], onOverride, onRates)} />
+                                    <div className="grid gap-6 xl:grid-cols-[1fr_260px]">
+                                      <CalcBreakdown item={it} r={result.items[it.no] as Extract<typeof r, { mode: "calc" }>} R={rates} mats={materials} />
+                                      <ActivityProfiles item={it} base={base} override={overrides[it.no]} onOverride={onOverride} />
+                                    </div>
                                   ) : <SpecialBreakdown item={it} r={r} />}
                                 </td>
                               </tr>
@@ -159,43 +160,41 @@ export function BoqSection({ items, result, rates, materials, overrides, onOverr
 /** "default" if no per-item profile override; a letter if every overridden activity uses the same profile. */
 function profileValue(base: BoqItem, cur: BoqItem): string {
   if (base.mode !== "calc" || cur.mode !== "calc") return "default";
-  // Activities ticked on by the user are not in the workbook spec, so they count as profile A.
-  const diffs = (Object.keys(cur.spec.install) as InstallKey[]).filter((k) => cur.spec.install[k]!.p !== (base.spec.install[k]?.p ?? "A"));
+  const diffs = (Object.keys(cur.spec.install) as InstallKey[]).filter((k) => cur.spec.install[k]!.p !== base.spec.install[k]!.p);
   if (diffs.length === 0) return "default";
   const all = Object.values(cur.spec.install).map((l) => l!.p);
   return all.every((p) => p === all[0]) ? all[0] : "default";
 }
 
-function setAllProfiles(base: BoqItem, cur: BoqItem, v: string, onOverride: (no: string, patch: ItemOverride | null) => void, existing?: ItemOverride) {
-  if (base.mode !== "calc" || cur.mode !== "calc") return;
+function setAllProfiles(base: BoqItem, v: string, onOverride: (no: string, patch: ItemOverride | null) => void, existing?: ItemOverride) {
+  if (base.mode !== "calc") return;
   const rest: ItemOverride = { ...existing };
   if (v === "default") delete rest.install;
-  else rest.install = Object.fromEntries((Object.keys(cur.spec.install) as InstallKey[]).map((k) => [k, v as Profile]));
+  else rest.install = Object.fromEntries((Object.keys(base.spec.install) as InstallKey[]).map((k) => [k, v as Profile]));
   onOverride(base.no, Object.keys(rest).length ? { ...rest, install: rest.install ?? undefined } : null);
 }
 
-/** Wires the breakdown's checkboxes and "Add line" rows to this item's override. */
-function makeEditor(base: BoqItem, override: ItemOverride | undefined, onOverride: (no: string, patch: ItemOverride | null) => void, onRates: (fn: (r: RateBook) => RateBook) => void): BreakdownEditor {
-  const custom = override?.custom ?? [];
-  const setCustom = (list: CustomLine[]) => onOverride(base.no, { custom: list });
-  return {
-    custom,
-    onRates,
-    selectRate: (id, optionId) => {
-      if (id.startsWith("install.")) onOverride(base.no, { install: { ...override?.install, [id.slice(8) as InstallKey]: optionId } });
-      else onOverride(base.no, { rates: { ...override?.rates, [id]: optionId } });
-    },
-    toggle: (id, on) => {
-      if (base.mode !== "calc") return;
-      const toggles = { ...override?.toggles };
-      // Ticking a component back to the workbook default just drops the override.
-      if (on === componentOn(base.spec, id)) delete toggles[id]; else toggles[id] = on;
-      onOverride(base.no, { toggles });
-    },
-    addCustom: (line) => setCustom([...custom, { ...line, id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, enabled: true }]),
-    updateCustom: (id, patch) => setCustom(custom.map((c) => (c.id === id ? { ...c, ...patch } : c))),
-    removeCustom: (id) => setCustom(custom.filter((c) => c.id !== id)),
-  };
+function ActivityProfiles({ item, base, override, onOverride }: {
+  item: Extract<BoqItem, { mode: "calc" }>; base: BoqItem; override?: ItemOverride;
+  onOverride: (no: string, patch: ItemOverride | null) => void;
+}) {
+  const keys = Object.keys(item.spec.install) as InstallKey[];
+  if (keys.length === 0) return null;
+  return (
+    <div className="space-y-2 self-start rounded-lg border border-border p-3">
+      <h4 className="text-xs font-semibold">Rate profile per activity</h4>
+      <p className="text-[11px] text-muted-foreground">Each activity uses the profile the workbook assigns to this item. Change one to see its effect.</p>
+      {keys.map((k) => (
+        <div key={k} className="flex items-center justify-between gap-2 text-xs">
+          <span>{INSTALL_LABEL[k]}</span>
+          <Select value={item.spec.install[k]!.p} onValueChange={(v) => onOverride(base.no, { install: { ...override?.install, [k]: v as Profile } })}>
+            <SelectTrigger className="h-7 w-20 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>{PROFILES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Per-item choice: price the painting per ton of steel, or per m² when the painted area is known. */

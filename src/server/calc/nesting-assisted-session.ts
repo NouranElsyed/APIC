@@ -50,12 +50,20 @@ export interface OptimizeRemainingResult {
 
 const MAX_NEW_SHEETS_SAFETY_CAP = 25;
 
+// Axis convention (project-wide — optimizer's makeWorkingSheet(), the DXF
+// export's MARGIN layer and the sheet preview all agree): the sheet's
+// X axis spans its physical LENGTH (lengthMm) and its Y axis spans its
+// physical WIDTH (widthMm). Margins map as: left/right → X, bottom/top → Y.
+//
+// This used to be swapped (maxX from widthMm, maxY from lengthMm), which
+// made validateSessionForExport() reject valid placements and accept
+// out-of-bounds ones on every non-square sheet (e.g. 1250 × 2500).
 function usableBoundsFor(sheet: { widthMm: number; lengthMm: number }, config: EngineConfig) {
   return {
     minX: config.marginLeftMm,
     minY: config.marginBottomMm,
-    maxX: sheet.widthMm - config.marginRightMm,
-    maxY: sheet.lengthMm - config.marginTopMm,
+    maxX: sheet.lengthMm - config.marginRightMm,
+    maxY: sheet.widthMm - config.marginTopMm,
   };
 }
 

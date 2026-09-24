@@ -6,7 +6,6 @@ import type { BoqItem, InstallKey, MaterialTable, RateBook } from "./types";
  * Values are the workbook's evaluated numbers (e.g. ST-37 = 46000/1.14).
  */
 export const DEFAULT_RATES: RateBook = {
-  "rateLabels": {},
   "handling": {
     "A": 0.015
   },
@@ -20,14 +19,8 @@ export const DEFAULT_RATES: RateBook = {
     "A": 0.03,
     "B": 0.01
   },
-  "inflation": {
-    "A": 0
-  },
   "cutting": {
     "A": 6000
-  },
-  "rolling": {
-    "A": 0
   },
   "welding": {
     "A": 16000,
@@ -130,10 +123,6 @@ export const DEFAULT_RATES: RateBook = {
     "B": 1.2,
     "C": 1.2
   },
-  "subcontract": {
-    "A": 0
-  },
-  "subcontractMargin": 1.2,
   "mobDemob": 0.08,
   "heightFactor": 0,
   "thirdParty": 0.002,

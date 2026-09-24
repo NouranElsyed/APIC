@@ -51,7 +51,6 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
               <label className="flex items-center gap-2">Material handling <RateInput value={rates.handling.A} scale={100} suffix="%" className="w-20" onChange={(v) => setProfile((r) => r.handling, "A", v)} /></label>
-              <label className="flex items-center gap-2">Inflation (% of material) <RateInput value={rates.inflation.A} scale={100} suffix="%" className="w-20" onChange={(v) => setProfile((r) => r.inflation, "A", v)} /></label>
               <label className="flex items-center gap-2">Accessories (profile A) <RateInput value={rates.accessories.A} scale={100} suffix="%" className="w-20" onChange={(v) => setProfile((r) => r.accessories, "A", v)} /></label>
               <label className="flex items-center gap-2">Accessories (profile B) <RateInput value={rates.accessories.B} scale={100} suffix="%" className="w-20" onChange={(v) => setProfile((r) => r.accessories, "B", v)} /></label>
             </div>
@@ -96,16 +95,14 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
                 <TableHeader><TableRow><TableHead className="text-[11px]">Activity</TableHead>{PROFILES.map((p) => <TableHead key={p} className="text-right text-[11px]">{p}</TableHead>)}</TableRow></TableHeader>
                 <TableBody>
                   <ProfileRow label="Cutting (EGP/t)" rates={rates.cutting} decimals={0} onChange={(p, v) => setProfile((r) => r.cutting, p, v)} only={["A"]} />
-                  <ProfileRow label="Rolling (EGP/t)" rates={rates.rolling} decimals={0} onChange={(p, v) => setProfile((r) => r.rolling, p, v)} only={["A"]} />
                   <ProfileRow label="Fit-up & welding (EGP/t)" rates={rates.welding} decimals={0} onChange={(p, v) => setProfile((r) => r.welding, p, v)} />
                   <ProfileRow label="Painting per ton (EGP/t)" rates={rates.painting} decimals={0} onChange={(p, v) => setProfile((r) => r.painting, p, v)} />
                   <ProfileRow label="Painting per m² (EGP/m²)" rates={rates.paintingArea} decimals={2} onChange={(p, v) => setProfile((r) => r.paintingArea, p, v)} />
                   <ProfileRow label="NDT (% of fabrication)" rates={rates.ndt} scale={100} suffix="%" onChange={(p, v) => setProfile((r) => r.ndt, p, v)} only={["A"]} />
                   <ProfileRow label="Fabrication indirect (%)" rates={rates.fabIndirect} scale={100} suffix="%" onChange={(p, v) => setProfile((r) => r.fabIndirect, p, v)} only={["A", "B"]} />
-                  <ProfileRow label="Subcontractor (EGP per item unit)" rates={rates.subcontract} decimals={2} onChange={(p, v) => setProfile((r) => r.subcontract, p, v)} only={["A"]} />
                 </TableBody>
               </Table>
-              <p className="text-[11px] text-muted-foreground">Rolling, Inflation and Subcontractor are columns in the workbook that are 0 for every item. They start at 0 and are only charged on items where you tick them (open an item in the BOQ).</p>
+              <p className="text-[11px] text-muted-foreground">Rolling exists as a column in the workbook but is not priced for any item (0), so it is not charged here.</p>
             </div>
             <div className="space-y-2">
               <h4 className="text-xs font-semibold">Supply &amp; fabrication margins (multipliers)</h4>
@@ -118,11 +115,6 @@ export function PricingSetup({ rates, materials, onRates, onMaterialPrice }: {
                       <TableCell className="py-1 text-right text-[11px] text-muted-foreground">{`+${((rates.margins[k] - 1) * 100).toFixed(1)}% markup`}</TableCell>
                     </TableRow>
                   ))}
-                  <TableRow>
-                    <TableCell className="py-1 text-xs">Subcontract sale price</TableCell>
-                    <TableCell className="py-1 text-right"><RateInput value={rates.subcontractMargin} decimals={3} suffix="×" className="w-24" onChange={(v) => onRates((r) => ({ ...r, subcontractMargin: v }))} /></TableCell>
-                    <TableCell className="py-1 text-right text-[11px] text-muted-foreground">{`+${((rates.subcontractMargin - 1) * 100).toFixed(1)}% markup`}</TableCell>
-                  </TableRow>
                 </TableBody>
               </Table>
             </div>

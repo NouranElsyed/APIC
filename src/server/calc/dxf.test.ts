@@ -178,20 +178,21 @@ describe("parseDxf — LINE-based closed contour reconstruction", () => {
         ],
         true
       ),
-      // A separate closed LINE loop elsewhere — should also be picked up,
-      // and since it's smaller than the LWPOLYLINE square it becomes a hole
-      // under the existing largest-area-outer classification. To keep this
-      // purely about "LWPOLYLINE still works", make it non-overlapping and
-      // smaller so it's classified as the (test-irrelevant) hole slot.
-      line(1000, 0, 1010, 0),
-      line(1010, 0, 1010, 10),
-      line(1010, 10, 1000, 10),
-      line(1000, 10, 1000, 0),
+      // A closed LINE loop INSIDE the square — it must still be picked up
+      // alongside the LWPOLYLINE, and (being contained by it) is a hole.
+      // (Phase 0: this loop used to sit 1000 mm away from the square and
+      // was still called a "hole" purely because it was smaller; loops that
+      // are not contained are now independent parts — see
+      // dxf-geometry.test.ts.)
+      line(10, 10, 20, 10),
+      line(20, 10, 20, 20),
+      line(20, 20, 10, 20),
+      line(10, 20, 10, 10),
     ]);
     const result = parseDxf(dxf);
     expect(result.valid).toBe(true);
     expect(result.outerContourCount).toBe(1);
-    expect(result.holeCount).toBe(1); // the small LINE loop, per existing largest=outer/rest=hole rule
+    expect(result.holeCount).toBe(1); // the contained LINE loop
   });
 
   it("zero-length and duplicate LINE segments do not create malformed polygons", () => {
