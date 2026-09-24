@@ -31,8 +31,14 @@ export function SteelPricingView({ canExport }: { canExport: boolean }) {
   const onOverride = React.useCallback((no: string, patch: ItemOverride | null) =>
     setState((s) => {
       const overrides = { ...s.overrides };
-      if (patch === null) delete overrides[no];
-      else overrides[no] = { ...overrides[no], ...patch };
+      if (patch === null) { delete overrides[no]; return { ...s, overrides }; }
+      const merged: ItemOverride = { ...overrides[no], ...patch };
+      // Drop empty leftovers (e.g. every checkbox back at the workbook default) so the row no longer counts as edited.
+      for (const k of Object.keys(merged) as (keyof ItemOverride)[]) {
+        const v = merged[k];
+        if (v === undefined || (typeof v === "object" && v !== null && Object.keys(v).length === 0)) delete merged[k];
+      }
+      if (Object.keys(merged).length === 0) delete overrides[no]; else overrides[no] = merged;
       return { ...s, overrides };
     }), []);
 

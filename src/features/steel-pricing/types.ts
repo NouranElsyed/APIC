@@ -61,6 +61,28 @@ export interface InstallLineSpec {
   wt: boolean;
 }
 
+/** Where a user-added line lands in the cost build-up (and which margin it picks up). */
+export type CustomGroup = "material" | "fabrication" | "installation";
+/** "perUnit" = rate × item quantity; "fixed" = lump sum for the whole item. */
+export type CustomBasis = "perUnit" | "fixed";
+
+/** A line the user adds to one item (e.g. "Hot rolled"), with its own on/off checkbox. */
+export interface CustomLine {
+  id: string;
+  label: string;
+  group: CustomGroup;
+  basis: CustomBasis;
+  rate: number;
+  enabled: boolean;
+}
+
+/**
+ * Ids of the components that can be ticked on/off per item:
+ * handling · scrap · accessories · cutting · welding · ndt · painting · fabIndirect ·
+ * mob · height · thirdParty · commissioning · install.<InstallKey>
+ */
+export type ComponentId = string;
+
 export interface CalcSpec {
   unitWt: number;
   matRow: number | null;
@@ -81,6 +103,8 @@ export interface CalcSpec {
   ndt: boolean;
   fabIndirect: Profile | null;
   install: Partial<Record<InstallKey, InstallLineSpec>>;
+  /** User-added lines (only present through an override). */
+  custom?: CustomLine[];
   installIndirect: Profile;
   installMargin: Profile;
   mob: boolean;
@@ -115,6 +139,10 @@ export interface ItemOverride {
   paintArea?: number;
   /** Per-activity install profile overrides. */
   install?: Partial<Record<InstallKey, Profile>>;
+  /** Checkbox choices that differ from the workbook default: componentId → on/off. */
+  toggles?: Record<ComponentId, boolean>;
+  /** Lines the user added to this item. */
+  custom?: CustomLine[];
 }
 export type Overrides = Record<string, ItemOverride>;
 
@@ -124,6 +152,11 @@ export interface InstallLineResult {
   rate: number;
   factor: number;
   weight: number;
+  amount: number;
+}
+
+export interface CustomLineResult extends CustomLine {
+  /** 0 when the line is unchecked. */
   amount: number;
 }
 
@@ -138,11 +171,13 @@ export interface CalcResult {
   handling: number;
   scrap: number;
   accessories: number;
+  customMaterial: number;
   materialCost: number;
   // 2. fabrication
   cutting: number;
   welding: number;
-  fabricationCost: number; // cutting + rolling + fit-up & welding
+  customFabrication: number;
+  fabricationCost: number; // cutting + rolling + fit-up & welding + custom fabrication lines
   ndt: number;
   painting: number;
   paintBasis: PaintBasis;
@@ -153,6 +188,9 @@ export interface CalcResult {
   supplySalePrice: number;
   // 3. installation
   installLines: InstallLineResult[];
+  customInstall: number;
+  /** Every user-added line (all groups), in the order the user added them. */
+  customLines: CustomLineResult[];
   installDirect: number;
   installIndirect: number;
   installSale: number;

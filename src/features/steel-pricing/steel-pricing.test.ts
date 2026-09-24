@@ -68,6 +68,49 @@ if (boq.items["S3.1"].mode !== "pricedLike") { failures++; console.error("FAIL: 
 // Reconciliation: final price = total cost + profit for every calculated item.
 for (const item of DEFAULT_ITEMS) { const r = boq.items[item.no]; if (r.mode === "calc") check(`${item.no} cost+profit=final`, r.totalCost + r.profit, r.finalPrice); }
 
+// Per-item checkboxes: unticking a component removes its cost; ticking one the workbook leaves out adds it.
+{
+  const base = boq.items["S1.1"];
+  const run = (ov: object) => calcBoq(DEFAULT_ITEMS, DEFAULT_RATES, DEFAULT_MATERIALS, { "S1.1": ov }).items["S1.1"];
+  if (base.mode !== "calc") { failures++; console.error("FAIL: S1.1 should be a calculated item"); }
+  else {
+    const noTransport = run({ toggles: { "install.transport": false } });
+    const noNdt = run({ toggles: { ndt: false, handling: false } });
+    const crane = run({ toggles: { "install.crane": true } });
+    if (noTransport.mode !== "calc" || noNdt.mode !== "calc" || crane.mode !== "calc") { failures++; console.error("FAIL: toggled S1.1 should stay calculated"); }
+    else {
+      check("S1.1 transport off -> no transport line", noTransport.installLines.some((l) => l.key === "transport") ? 1 : 0, 0);
+      check("S1.1 transport off lowers install cost", noTransport.installDirect, base.installDirect - 25 * 1000);
+      check("S1.1 ndt off", noNdt.ndt, 0);
+      check("S1.1 handling off", noNdt.handling, 0);
+      check("S1.1 crane on adds 25 t x 2,800 (profile A)", crane.installDirect, base.installDirect + 25 * 2800);
+    }
+  }
+  // Ticking a component back to the default state must reproduce the workbook price exactly.
+  const same = run({ toggles: { ndt: true, "install.transport": true } });
+  check("S1.1 toggles equal to defaults = workbook price", same.finalPrice, base.finalPrice);
+}
+
+// User-added lines ("Hot rolled" etc.): per-unit and lump-sum, unchecked lines cost nothing, each group picks up its margin.
+{
+  const base = boq.items["S1.1"];
+  const line = (id: string, group: "material" | "fabrication" | "installation", basis: "perUnit" | "fixed", rate: number, enabled = true) => ({ id, label: id, group, basis, rate, enabled });
+  const run = (custom: ReturnType<typeof line>[]) => calcBoq(DEFAULT_ITEMS, DEFAULT_RATES, DEFAULT_MATERIALS, { "S1.1": { custom } }).items["S1.1"];
+  const r1 = run([line("hot", "material", "perUnit", 2000)]);
+  const r2 = run([line("hot", "material", "perUnit", 2000, false)]);
+  const r3 = run([line("fab", "fabrication", "fixed", 10000), line("inst", "installation", "perUnit", 100)]);
+  if (base.mode !== "calc" || r1.mode !== "calc" || r2.mode !== "calc" || r3.mode !== "calc") { failures++; console.error("FAIL: custom-line items should stay calculated"); }
+  else {
+    check("hot rolled 2,000 x 25 t added to material cost", r1.materialCost, base.materialCost + 50000);
+    check("material line carries the material margin (x1.1)", r1.supplySalePrice, base.supplySalePrice + 50000 * DEFAULT_RATES.margins.material);
+    check("unchecked custom line = workbook price", r2.finalPrice, base.finalPrice);
+    check("fixed fabrication line", r3.customFabrication, 10000);
+    check("per-unit installation line 100 x 25 t", r3.customInstall, 2500);
+    check("installation line raises install direct", r3.installDirect, base.installDirect + 2500);
+    check("custom lines keep cost + profit = final", r3.totalCost + r3.profit, r3.finalPrice);
+  }
+}
+
 console.log(`${DEFAULT_ITEMS.length} items compared, grand total ${Math.round(boq.totals.grand).toLocaleString("en-US")} (Excel ${Math.round(xlTotal).toLocaleString("en-US")})`);
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
 console.log("All parity checks passed.");

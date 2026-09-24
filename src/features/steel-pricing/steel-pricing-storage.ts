@@ -1,5 +1,5 @@
 import { DEFAULT_ITEMS, DEFAULT_MATERIALS, DEFAULT_RATES } from "./steel-pricing-data";
-import type { MaterialTable, Overrides, ProfileRates, RateBook } from "./types";
+import type { CustomLine, ItemOverride, MaterialTable, Overrides, ProfileRates, RateBook } from "./types";
 
 /**
  * Versioned persistence. Everything editable lives in one document:
@@ -70,12 +70,29 @@ function mergeMaterials(saved: unknown): MaterialTable {
   return base;
 }
 
+function isCustomLine(c: unknown): c is CustomLine {
+  const l = c as CustomLine;
+  return !!l && typeof l === "object" && typeof l.id === "string" && typeof l.label === "string" && isNum(l.rate) && typeof l.enabled === "boolean" &&
+    (l.group === "material" || l.group === "fabrication" || l.group === "installation") && (l.basis === "perUnit" || l.basis === "fixed");
+}
+
 function cleanOverrides(saved: unknown): Overrides {
   const out: Overrides = {};
   if (!saved || typeof saved !== "object") return out;
   const valid = new Set(DEFAULT_ITEMS.map((i) => i.no));
   for (const [no, ov] of Object.entries(saved as Overrides)) {
-    if (valid.has(no) && ov && typeof ov === "object") out[no] = ov;
+    if (!valid.has(no) || !ov || typeof ov !== "object") continue;
+    const clean: ItemOverride = { ...ov };
+    // User-added lines and checkbox choices come from localStorage, so never trust their shape.
+    if (clean.custom !== undefined) {
+      clean.custom = Array.isArray(clean.custom) ? clean.custom.filter(isCustomLine) : undefined;
+      if (!clean.custom?.length) delete clean.custom;
+    }
+    if (clean.toggles !== undefined) {
+      const t = clean.toggles && typeof clean.toggles === "object" ? Object.entries(clean.toggles).filter(([, v]) => typeof v === "boolean") : [];
+      if (t.length) clean.toggles = Object.fromEntries(t); else delete clean.toggles;
+    }
+    out[no] = clean;
   }
   return out;
 }
