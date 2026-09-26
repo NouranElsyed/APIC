@@ -44,6 +44,7 @@ import {
   type LayoutQuality,
   type PackingPreference,
   type TrueShapeDiagnostics,
+  type OptimizationMetrics,
 } from "./nesting-optimizer";
 import type { EnginePlacementResult } from "./nesting-engine";
 
@@ -930,11 +931,11 @@ describe("WIDTH-UTILIZATION AUDIT — computeWidthUtilization / computeLargestFr
 
   it("STEP 1 CONTRACT — these metrics are additive/optional on OptimizationMetrics and never required by existing literal constructions", () => {
     // A minimal OptimizationMetrics literal, exactly as an existing caller
-    // (pre-STEP-1) would construct one, must still type-check/behave with
-    // no width-audit fields present -- runtime-checked here via a plain
-    // object shape (the real guarantee is enforced by the TS optional `?`
-    // on the interface fields themselves, exercised by the compiler).
-    const minimal = {
+    // (pre-STEP-1) would construct one, typed explicitly as
+    // OptimizationMetrics so the compiler itself enforces the "optional
+    // field" contract -- this must still type-check with no width-audit
+    // fields present.
+    const minimal: OptimizationMetrics = {
       algorithm: "x",
       algorithmVersion: "1.0.0",
       strategiesEvaluated: 0,
@@ -953,6 +954,7 @@ describe("WIDTH-UTILIZATION AUDIT — computeWidthUtilization / computeLargestFr
       totalCandidateLayouts: 0,
     };
     expect(minimal.worstWidthUtilizationPercent).toBeUndefined();
+    expect(minimal.largestFreeRegion).toBeUndefined();
   });
 });
 
