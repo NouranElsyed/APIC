@@ -1481,13 +1481,31 @@ export interface LargestFreeRegionMetrics {
 
 /**
  * Pure, read-only: the largest single contiguous free (unoccupied) region
- * on this sheet, in mm, reusing the SAME occupancy grid / flood-fill
+ * on this sheet, reusing the SAME occupancy grid / flood-fill
  * (buildOccupancyGrid / findFreeRegions) already built for the
- * fragmentation score above -- no duplicated grid logic. Converts the
- * winning region's cell extent to mm using the grid's own
- * cellWidthMm/cellHeightMm, the same conversion pattern used by
- * computeFragmentationAreaSqm. Returns all zeros if the sheet has no
- * placements or no free space at all (fully packed) -- never NaN/Infinity.
+ * fragmentation score above -- no duplicated grid logic.
+ *
+ * areaSqm is the region's TRUE footprint area -- its actual free-cell
+ * count times the grid's cell area, exactly the same cell-counting
+ * pattern computeFragmentationAreaSqm uses -- NOT extentCols*extentRows.
+ * A connected free region is very often L-shaped or otherwise
+ * non-rectangular (e.g. the leftover space wrapping around a single
+ * corner placement touches both far edges of the sheet), in which case
+ * its bounding box can span the ENTIRE grid even though most of that
+ * box is occupied by other regions/placements. Using
+ * extentCols*extentRows as the area would then silently report the
+ * whole sheet as "free" regardless of how much is actually placed --
+ * exactly the bug this comment is here to prevent regressing back into.
+ *
+ * widthMm/heightMm remain the region's bounding-box EXTENT (converted
+ * via the grid's cellWidthMm/cellHeightMm, same conversion pattern used
+ * by computeFragmentationAreaSqm) -- useful as "how far this free zone
+ * spans" -- but callers should not assume widthMm*heightMm equals
+ * areaSqm for a non-rectangular region; areaSqm is the number that
+ * reflects real usable space and is safe to sum/compare.
+ *
+ * Returns all zeros if the sheet has no placements or no free space at
+ * all (fully packed) -- never NaN/Infinity.
  */
 export function computeLargestFreeRegion(sheet: {
   widthMm: number;
@@ -1511,7 +1529,8 @@ export function computeLargestFreeRegion(sheet: {
 
   const widthMm = largest.extentCols * grid.cellWidthMm;
   const heightMm = largest.extentRows * grid.cellHeightMm;
-  const areaSqm = (widthMm * heightMm) / 1_000_000;
+  const cellAreaMm2 = grid.cellWidthMm * grid.cellHeightMm;
+  const areaSqm = (largest.cells.length * cellAreaMm2) / 1_000_000;
   return { widthMm, heightMm, areaSqm };
 }
 

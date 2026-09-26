@@ -878,6 +878,39 @@ describe("WIDTH-UTILIZATION AUDIT — computeWidthUtilization / computeLargestFr
       expect(result.heightMm % cellHeightMm).toBeCloseTo(0, 6);
     });
 
+    // REGRESSION -- caught in review: a single corner placement leaves an
+    // L-shaped free region whose bounding box (extentCols*extentRows)
+    // touches BOTH far edges of the sheet, so extentCols*extentRows spans
+    // the ENTIRE grid even though real cells are occupied elsewhere.
+    // areaSqm must come from the region's actual free-CELL count (same
+    // cell-counting pattern computeFragmentationAreaSqm uses), never from
+    // widthMm*heightMm -- otherwise a sheet with a real placement on it
+    // would incorrectly report its ENTIRE area as "the largest free
+    // region", identical to a completely empty sheet.
+    it("REGRESSION — a corner placement's L-shaped free region reports its true (smaller) footprint area, not the full sheet's bounding-box area", () => {
+      // 400mm (length/X) x 500mm (width/Y) sheet, a placement in the
+      // corner spanning X:0-200mm, Y:0-300mm -- exactly the shape that
+      // exposed the bug: the leftover space wraps around two edges, so
+      // its bounding box is the full 400x500 sheet.
+      const sheet = { widthMm: 500, lengthMm: 400, placements: [p("a", 0, 0, 200, 300)] };
+      const result = computeLargestFreeRegion(sheet);
+
+      const totalAreaSqm = (sheet.widthMm * sheet.lengthMm) / 1_000_000; // 0.2
+      // The bounding-box ENVELOPE is legitimately the full sheet (the
+      // L-shape does touch both far edges) -- that part is fine to report.
+      expect(result.widthMm).toBe(sheet.lengthMm);
+      expect(result.heightMm).toBe(sheet.widthMm);
+      // But the ACTUAL free area must be strictly less than the full
+      // sheet area, since 0.06 sqm (200x300mm) is genuinely occupied.
+      expect(result.areaSqm).toBeLessThan(totalAreaSqm);
+      // Exact expected value: grid is 20x20 cells (cellWidthMm=20,
+      // cellHeightMm=25); the placement covers cols 0-9, rows 0-11 (120
+      // occupied cells out of 400), leaving 280 free cells = 0.14 sqm --
+      // matching this sheet's scrap area exactly, since the whole
+      // leftover here is one single connected region.
+      expect(result.areaSqm).toBeCloseTo(0.14, 6);
+    });
+
     it("is deterministic and never NaN/Infinity across empty, partial, and full sheets", () => {
       const sheets = [
         { widthMm: 800, lengthMm: 800, placements: [] as EnginePlacementResult[] },
