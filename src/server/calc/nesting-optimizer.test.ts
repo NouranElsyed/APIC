@@ -10,6 +10,8 @@ import {
   RotationCandidateCache,
   selectBoundedCandidateOrigins,
   computeFragmentationScore,
+  computeWidthUtilization,
+  computeLargestFreeRegion,
   computeCompactnessScore,
   computeFutureFitScore,
   scoreSheets,
@@ -765,6 +767,160 @@ describe("PHASE 2A — computeFragmentationScore / scoreSheets fragmentation com
   // adds a new scoring term but does not touch geometry validation,
   // candidate generation, or localImprovement/findBestPlacement's own
   // comparison logic.
+});
+
+// ----------------------------------------------------------------------------
+// WIDTH-UTILIZATION AUDIT — additive, read-only reporting metrics (STEP 1).
+// computeWidthUtilization / computeLargestFreeRegion do not participate in
+// scoring, candidate generation, or placement -- these tests only assert
+// their own output against hand-built sheets, exactly like the
+// computeFragmentationScore tests above.
+// ----------------------------------------------------------------------------
+describe("WIDTH-UTILIZATION AUDIT — computeWidthUtilization / computeLargestFreeRegion", () => {
+  function p(id: string, x: number, y: number, w: number, h: number): EnginePlacementResult {
+    return { takeoffPartId: id, instanceNumber: 1, xMm: x, yMm: y, rotationDeg: 0, widthMm: w, heightMm: h };
+  }
+
+  describe("computeWidthUtilization", () => {
+    it("returns all zeros for an empty sheet (no placements)", () => {
+      const emptySheet = { widthMm: 1500, lengthMm: 6000, placements: [] as EnginePlacementResult[] };
+      const result = computeWidthUtilization(emptySheet);
+      expect(result).toEqual({ usedWidthMm: 0, unusedWidthMm: 0, widthUtilizationPercent: 0 });
+      expect(Number.isFinite(result.usedWidthMm)).toBe(true);
+      expect(Number.isFinite(result.unusedWidthMm)).toBe(true);
+      expect(Number.isFinite(result.widthUtilizationPercent)).toBe(true);
+    });
+
+    it("returns 100% used / 0 unused for a sheet fully packed across its width", () => {
+      // Sheet width 500mm, one placement spanning the entire width.
+      const fullyPackedSheet = { widthMm: 500, lengthMm: 1000, placements: [p("a", 0, 0, 1000, 500)] };
+      const result = computeWidthUtilization(fullyPackedSheet);
+      expect(result.usedWidthMm).toBe(500);
+      expect(result.unusedWidthMm).toBe(0);
+      expect(result.widthUtilizationPercent).toBe(100);
+    });
+
+    it("computes usedWidthMm as the max(yMm + heightMm) across placements", () => {
+      // Sheet width 1000mm. Three placements at different Y-extents; the
+      // largest (y=200,h=300 => extent 500) determines usedWidthMm.
+      const sheet = {
+        widthMm: 1000,
+        lengthMm: 2000,
+        placements: [p("a", 0, 0, 100, 100), p("b", 100, 50, 100, 200), p("c", 300, 200, 100, 300)],
+      };
+      const result = computeWidthUtilization(sheet);
+      expect(result.usedWidthMm).toBe(500);
+      expect(result.unusedWidthMm).toBe(500);
+      expect(result.widthUtilizationPercent).toBe(50);
+    });
+
+    it("caps usedWidthMm at sheet.widthMm and never exceeds 100%", () => {
+      // Defensive case: a placement extent beyond the sheet's nominal
+      // width must not push usedWidthMm/percent past the sheet's bound.
+      const sheet = { widthMm: 300, lengthMm: 1000, placements: [p("a", 0, 0, 100, 400)] };
+      const result = computeWidthUtilization(sheet);
+      expect(result.usedWidthMm).toBe(300);
+      expect(result.unusedWidthMm).toBe(0);
+      expect(result.widthUtilizationPercent).toBe(100);
+    });
+
+    it("is deterministic and never NaN/Infinity across empty, partial, and full sheets", () => {
+      const sheets = [
+        { widthMm: 800, lengthMm: 800, placements: [] as EnginePlacementResult[] },
+        { widthMm: 800, lengthMm: 800, placements: [p("a", 0, 0, 200, 200)] },
+        { widthMm: 800, lengthMm: 800, placements: [p("a", 0, 0, 800, 800)] },
+      ];
+      for (const sheet of sheets) {
+        const first = computeWidthUtilization(sheet);
+        const second = computeWidthUtilization(sheet);
+        expect(second).toEqual(first);
+        expect(Number.isFinite(first.usedWidthMm)).toBe(true);
+        expect(Number.isFinite(first.unusedWidthMm)).toBe(true);
+        expect(Number.isFinite(first.widthUtilizationPercent)).toBe(true);
+        expect(Number.isNaN(first.widthUtilizationPercent)).toBe(false);
+      }
+    });
+  });
+
+  describe("computeLargestFreeRegion", () => {
+    it("returns all zeros for an empty sheet (no placements)", () => {
+      const emptySheet = { widthMm: 1500, lengthMm: 6000, placements: [] as EnginePlacementResult[] };
+      const result = computeLargestFreeRegion(emptySheet);
+      expect(result).toEqual({ widthMm: 0, heightMm: 0, areaSqm: 0 });
+    });
+
+    it("returns all zeros for a fully-packed sheet (no free space)", () => {
+      const fullyPackedSheet = { widthMm: 200, lengthMm: 200, placements: [p("a", 0, 0, 200, 200)] };
+      const result = computeLargestFreeRegion(fullyPackedSheet);
+      expect(result).toEqual({ widthMm: 0, heightMm: 0, areaSqm: 0 });
+    });
+
+    it("picks the single largest contiguous free region over a smaller scattered one", () => {
+      // Sheet 200x200, one placement in a corner leaving one big contiguous
+      // leftover region -- same construction as the fragmentation TEST A
+      // "layoutA" fixture above, so the grid/flood-fill behavior is already
+      // characterized there.
+      const sheet = { widthMm: 200, lengthMm: 200, placements: [p("a", 0, 0, 39, 100)] };
+      const result = computeLargestFreeRegion(sheet);
+      expect(result.widthMm).toBeGreaterThan(0);
+      expect(result.heightMm).toBeGreaterThan(0);
+      expect(result.areaSqm).toBeGreaterThan(0);
+      // Sanity bound: the free region can never exceed the sheet's own area.
+      expect(result.areaSqm).toBeLessThanOrEqual((sheet.widthMm * sheet.lengthMm) / 1_000_000);
+    });
+
+    it("reuses buildOccupancyGrid/findFreeRegions's cell resolution -- widthMm/heightMm are multiples of the grid cell size", () => {
+      const sheet = { widthMm: 400, lengthMm: 400, placements: [p("a", 0, 0, 40, 40)] };
+      const cellWidthMm = sheet.lengthMm / 20; // FRAGMENTATION_GRID_CELLS = 20, X = length
+      const cellHeightMm = sheet.widthMm / 20; // Y = width
+      const result = computeLargestFreeRegion(sheet);
+      expect(result.widthMm % cellWidthMm).toBeCloseTo(0, 6);
+      expect(result.heightMm % cellHeightMm).toBeCloseTo(0, 6);
+    });
+
+    it("is deterministic and never NaN/Infinity across empty, partial, and full sheets", () => {
+      const sheets = [
+        { widthMm: 800, lengthMm: 800, placements: [] as EnginePlacementResult[] },
+        { widthMm: 800, lengthMm: 800, placements: [p("a", 0, 0, 200, 200)] },
+        { widthMm: 800, lengthMm: 800, placements: [p("a", 0, 0, 800, 800)] },
+      ];
+      for (const sheet of sheets) {
+        const first = computeLargestFreeRegion(sheet);
+        const second = computeLargestFreeRegion(sheet);
+        expect(second).toEqual(first);
+        expect(Number.isFinite(first.widthMm)).toBe(true);
+        expect(Number.isFinite(first.heightMm)).toBe(true);
+        expect(Number.isFinite(first.areaSqm)).toBe(true);
+      }
+    });
+  });
+
+  it("STEP 1 CONTRACT — these metrics are additive/optional on OptimizationMetrics and never required by existing literal constructions", () => {
+    // A minimal OptimizationMetrics literal, exactly as an existing caller
+    // (pre-STEP-1) would construct one, must still type-check/behave with
+    // no width-audit fields present -- runtime-checked here via a plain
+    // object shape (the real guarantee is enforced by the TS optional `?`
+    // on the interface fields themselves, exercised by the compiler).
+    const minimal = {
+      algorithm: "x",
+      algorithmVersion: "1.0.0",
+      strategiesEvaluated: 0,
+      localImprovementMoves: 0,
+      ruinAndRecreateIterations: 0,
+      timeMs: 0,
+      finalScore: 0,
+      candidatesEvaluated: 0,
+      usedBaseline: false,
+      rotationStepDeg: 5,
+      sheetsUsed: 0,
+      utilizationPercent: 0,
+      scrapAreaSqm: 0,
+      startsEvaluated: 0,
+      bestStart: "none",
+      totalCandidateLayouts: 0,
+    };
+    expect(minimal.worstWidthUtilizationPercent).toBeUndefined();
+  });
 });
 
 // ----------------------------------------------------------------------------

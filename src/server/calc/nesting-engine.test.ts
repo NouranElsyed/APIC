@@ -216,6 +216,41 @@ describe("runNestingAlgorithm", () => {
     expect(result.overallUtilizationPercent).toBeCloseTo(expectedUtilization, 9);
   });
 
+  it("STEP 1 — width-utilization audit fields are wired through per-sheet and as an overall summary, without changing any existing result values", () => {
+    // Same fixture as Test 7 above -- this test only adds assertions about
+    // the NEW additive fields; it does not change any expected value
+    // already asserted there.
+    const parts = [part({ widthMm: 300, heightMm: 200 })];
+    const sources = [source({ widthMm: 500, lengthMm: 400 })];
+
+    const result = runNestingAlgorithm(parts, sources, DEFAULT_ENGINE_CONFIG);
+    const sheet = result.groups[0].sheets[0];
+
+    // Per-sheet fields present and internally consistent.
+    expect(sheet.widthUtilizationPercent).toBeDefined();
+    expect(sheet.usedWidthMm).toBeDefined();
+    expect(sheet.unusedWidthMm).toBeDefined();
+    expect(sheet.usedWidthMm! + sheet.unusedWidthMm!).toBeCloseTo(sheet.widthMm, 9);
+    expect(sheet.widthUtilizationPercent).toBeGreaterThan(0);
+    expect(sheet.widthUtilizationPercent).toBeLessThanOrEqual(100);
+    expect(sheet.largestFreeRegion).toBeDefined();
+    expect(sheet.largestFreeRegion!.areaSqm).toBeGreaterThanOrEqual(0);
+
+    // Group-level (OptimizationMetrics) aggregate carries the same audit.
+    expect(result.groups[0].optimization.worstWidthUtilizationPercent).toBeCloseTo(sheet.widthUtilizationPercent!, 9);
+    expect(result.groups[0].optimization.largestFreeRegion).toBeDefined();
+
+    // Run-level (NestingAlgorithmResult) overall summary matches the
+    // single sheet's own numbers for this one-sheet fixture.
+    expect(result.worstWidthUtilizationPercent).toBeCloseTo(sheet.widthUtilizationPercent!, 9);
+    expect(result.largestFreeRegion).toBeDefined();
+    expect(result.largestFreeRegion!.areaSqm).toBeCloseTo(sheet.largestFreeRegion!.areaSqm, 9);
+
+    // Existing (pre-STEP-1) fields are completely unchanged by this addition.
+    const expectedUsedAreaSqm = (300 * 200) / 1_000_000;
+    expect(sheet.usedAreaSqm).toBeCloseTo(expectedUsedAreaSqm, 9);
+  });
+
   it("reports NO_SOURCE_SHEET when a material/thickness group has no sources at all", () => {
     const parts = [part({ widthMm: 100, heightMm: 100 })];
     const result = runNestingAlgorithm(parts, []);

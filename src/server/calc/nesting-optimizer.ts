@@ -173,6 +173,21 @@ export interface OptimizationMetrics {
   /** Phase 3 — how many adaptive ruin-and-recreate iterations were accepted (score/threshold-accepted, not necessarily improving) vs strictly improved the running best. Optional/additive. */
   ruinAndRecreateAccepted?: number;
   ruinAndRecreateImprovements?: number;
+  /**
+   * Width-utilization audit (reporting-only, additive) — the WORST
+   * (smallest) per-sheet widthUtilizationPercent (see
+   * computeWidthUtilization) across every used sheet in finalSheets.
+   * Optional/additive — existing consumers of this interface are
+   * unaffected. Purely a report on the finished layout; never consulted by
+   * scoring or candidate generation.
+   */
+  worstWidthUtilizationPercent?: number;
+  /**
+   * Width-utilization audit (reporting-only, additive) — the single
+   * largest contiguous free region (see computeLargestFreeRegion) across
+   * every used sheet in finalSheets. Optional/additive.
+   */
+  largestFreeRegion?: LargestFreeRegionMetrics;
 }
 
 export const SCORE_WEIGHTS = {
@@ -1406,6 +1421,130 @@ function computeFragmentationAreaSqm(sheet: { widthMm: number; lengthMm: number;
 
   const cellAreaMm2 = grid.cellWidthMm * grid.cellHeightMm;
   return problematicCells * cellAreaMm2;
+}
+
+// ---------------------------------------------------------------------------
+// WIDTH-UTILIZATION AUDIT — additive, read-only reporting metrics.
+//
+// These two functions do not participate in scoring, candidate generation,
+// or placement in any way. They are pure "measure the finished layout"
+// helpers, added to quantify how much of the sheet's WIDTH (Y axis, per the
+// axis convention documented at the top of this file / in
+// buildOccupancyGrid) a completed layout actually uses, and how large the
+// single biggest leftover region is. Intended as a "before" baseline to
+// compare against once the actual scoring/sampling width bias is fixed in a
+// later step.
+// ---------------------------------------------------------------------------
+
+export interface WidthUtilizationMetrics {
+  usedWidthMm: number;
+  unusedWidthMm: number;
+  widthUtilizationPercent: number;
+}
+
+/**
+ * Pure, read-only: how far placements on this sheet reach across the
+ * sheet's WIDTH (Y axis). usedWidthMm is the max(placement.yMm +
+ * placement.heightMm) across all placements, capped at sheet.widthMm so a
+ * (theoretically impossible, but defensively handled) placement extending
+ * past the sheet edge never inflates the percentage past 100. Returns all
+ * zeros for a sheet with no placements or a non-positive widthMm — never
+ * NaN/Infinity.
+ */
+export function computeWidthUtilization(sheet: {
+  widthMm: number;
+  lengthMm: number;
+  placements: EnginePlacementResult[];
+}): WidthUtilizationMetrics {
+  const widthMm = sheet.widthMm;
+  if (!(widthMm > 0) || sheet.placements.length === 0) {
+    return { usedWidthMm: 0, unusedWidthMm: 0, widthUtilizationPercent: 0 };
+  }
+
+  let maxExtentMm = 0;
+  for (const p of sheet.placements) {
+    const extentMm = p.yMm + p.heightMm;
+    if (extentMm > maxExtentMm) maxExtentMm = extentMm;
+  }
+
+  const usedWidthMm = Math.min(Math.max(0, maxExtentMm), widthMm);
+  const unusedWidthMm = Math.max(0, widthMm - usedWidthMm);
+  const widthUtilizationPercent = (usedWidthMm / widthMm) * 100;
+  return { usedWidthMm, unusedWidthMm, widthUtilizationPercent };
+}
+
+export interface LargestFreeRegionMetrics {
+  widthMm: number;
+  heightMm: number;
+  areaSqm: number;
+}
+
+/**
+ * Pure, read-only: the largest single contiguous free (unoccupied) region
+ * on this sheet, in mm, reusing the SAME occupancy grid / flood-fill
+ * (buildOccupancyGrid / findFreeRegions) already built for the
+ * fragmentation score above -- no duplicated grid logic. Converts the
+ * winning region's cell extent to mm using the grid's own
+ * cellWidthMm/cellHeightMm, the same conversion pattern used by
+ * computeFragmentationAreaSqm. Returns all zeros if the sheet has no
+ * placements or no free space at all (fully packed) -- never NaN/Infinity.
+ */
+export function computeLargestFreeRegion(sheet: {
+  widthMm: number;
+  lengthMm: number;
+  placements: EnginePlacementResult[];
+}): LargestFreeRegionMetrics {
+  if (sheet.placements.length === 0) {
+    return { widthMm: 0, heightMm: 0, areaSqm: 0 };
+  }
+
+  const grid = buildOccupancyGrid(sheet);
+  if (!grid) return { widthMm: 0, heightMm: 0, areaSqm: 0 };
+
+  const regions = findFreeRegions(grid);
+  if (regions.length === 0) return { widthMm: 0, heightMm: 0, areaSqm: 0 };
+
+  let largest = regions[0];
+  for (const region of regions) {
+    if (region.cells.length > largest.cells.length) largest = region;
+  }
+
+  const widthMm = largest.extentCols * grid.cellWidthMm;
+  const heightMm = largest.extentRows * grid.cellHeightMm;
+  const areaSqm = (widthMm * heightMm) / 1_000_000;
+  return { widthMm, heightMm, areaSqm };
+}
+
+/**
+ * Additive summary used by optimizeGroupPlacement() to fold the two
+ * per-sheet metrics above into group-level OptimizationMetrics fields:
+ * the WORST (smallest) width-utilization percentage across every used
+ * sheet, and the single LARGEST free region across those same sheets.
+ * Pure "measure the finished layout" -- takes the already-computed
+ * finalSheets, computes nothing new about construction/scoring. Returns
+ * undefined for both when there are no used sheets (nothing to report).
+ */
+function summarizeWidthAudit(
+  sheets: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] }[],
+): { worstWidthUtilizationPercent?: number; largestFreeRegion?: LargestFreeRegionMetrics } {
+  const usedSheets = sheets.filter((s) => s.placements.length > 0);
+  if (usedSheets.length === 0) return {};
+
+  let worstWidthUtilizationPercent = Infinity;
+  let largestFreeRegion: LargestFreeRegionMetrics = { widthMm: 0, heightMm: 0, areaSqm: 0 };
+
+  for (const sheet of usedSheets) {
+    const width = computeWidthUtilization(sheet);
+    if (width.widthUtilizationPercent < worstWidthUtilizationPercent) {
+      worstWidthUtilizationPercent = width.widthUtilizationPercent;
+    }
+    const freeRegion = computeLargestFreeRegion(sheet);
+    if (freeRegion.areaSqm > largestFreeRegion.areaSqm) {
+      largestFreeRegion = freeRegion;
+    }
+  }
+
+  return { worstWidthUtilizationPercent, largestFreeRegion };
 }
 
 /**
@@ -3149,6 +3288,7 @@ export function optimizeGroupPlacement(
       opts.packingPreference,
     );
     const emptyMetrics = summarizeSheets(sheets, areaByPartId);
+    const emptyWidthAudit = summarizeWidthAudit(sheets);
     return {
       sheets: toOptimizedSheets(sheets),
       placedCountByPart,
@@ -3168,6 +3308,7 @@ export function optimizeGroupPlacement(
         bestStart: "none",
         totalCandidateLayouts: 0,
         ...emptyMetrics,
+        ...emptyWidthAudit,
       },
     };
   }
@@ -3271,6 +3412,7 @@ export function optimizeGroupPlacement(
 
   const finalScore = scoreLayout(finalSheets, areaByPartId, remainingParts);
   const finalSummary = summarizeSheets(finalSheets, areaByPartId);
+  const finalWidthAudit = summarizeWidthAudit(finalSheets);
 
   return {
     sheets: toOptimizedSheets(finalSheets),
@@ -3295,6 +3437,7 @@ export function optimizeGroupPlacement(
       ruinAndRecreateAccepted: recreated.accepted,
       ruinAndRecreateImprovements: recreated.improvements,
       ...finalSummary,
+      ...finalWidthAudit,
     },
   };
 }
