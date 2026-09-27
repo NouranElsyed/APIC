@@ -932,16 +932,57 @@ function candidateNetNewFootprintArea(candidateBBox: BoundingBox, obstacleBoxes:
  * meaningfully better-scored candidate on growth/contact alone, and it
  * never changes which candidate wins when only one valid placement exists.
  */
-const ELONGATION_TIE_BREAK_WEIGHT = 500;
-
-function occupiedCapacityImbalance(occupiedAfter: BoundingBox, sheet: WorkingSheet): number {
-  const uw = usableWidth(sheet);
-  const uh = usableHeight(sheet);
-  if (uw <= 0 || uh <= 0) return 0;
-  const widthFrac = occupiedAfter.width / uw;
-  const heightFrac = occupiedAfter.height / uh;
-  return Math.abs(widthFrac - heightFrac);
+/**
+ * EXPERIMENTAL (confirmed-root-cause fix, see diagnostic history) — replaces
+ * the old sheet-aspect-relative `occupiedCapacityImbalance` tie-break.
+ *
+ * The old term compared occupied width/height against the SOURCE SHEET's
+ * own usable width/height (`usableWidth(sheet)`/`usableHeight(sheet)`), i.e.
+ * it rewarded keeping the occupied footprint proportional to the SHEET's
+ * own aspect ratio. On a long, narrow sheet (e.g. 1500x6000mm) that
+ * structurally means "keep extending the long axis before the short one" —
+ * exactly backwards from this application's actual objective, which has no
+ * CNC/cutting-sequence constraint and only cares about minimizing the
+ * OCCUPIED region's own absolute area, regardless of the physical sheet's
+ * shape. Benchmarked: for 16x 350x300mm parts on a 1500x6000mm sheet, the
+ * old term converged to a 3050x600mm envelope (1,830,000 mm^2) when a
+ * 1400x1200mm envelope (1,680,000 mm^2, ~8% smaller and a clean, zero-waste
+ * grid) was valid and reachable with the SAME candidate generation.
+ *
+ * Fix: score candidates directly on the ABSOLUTE occupied-envelope area
+ * they would produce — `candidateOccupiedEnvelopeArea` — instead of on any
+ * fraction of the sheet's own dimensions. This is a cheap O(1) incremental
+ * read of the same `occupiedAfter` bounding box `computePlacementScore`
+ * already computes (via `unionBBox`) for every candidate; no new geometry,
+ * no per-candidate full-layout rescoring, no change to candidate
+ * generation/validity/rotation/collision.
+ */
+function candidateOccupiedEnvelopeArea(occupiedAfter: BoundingBox): number {
+  return occupiedAfter.width * occupiedAfter.height;
 }
+
+/**
+ * Weight for `candidateOccupiedEnvelopeArea` inside computePlacementScore.
+ *
+ * Chosen from the ACTUAL score ranges the other terms produce (not an
+ * arbitrary guess) — see computePlacementScore: `growth` is a raw mm^2
+ * footprint-area term (order ~1e4-1e6 for realistic sheet-metal parts) and
+ * `contact * contactScale` is order ~1e4-1e6 as well (contactScale itself
+ * is `sqrt(part area in mm^2)`, so contact*scale grows with the SAME
+ * area-ish magnitude as growth). `candidateOccupiedEnvelopeArea` is a whole
+ * OCCUPIED-BOUNDS area (order ~1e6-1e7 on realistic sheets) — already
+ * naturally 1-2 orders of magnitude larger than growth/contact per
+ * candidate, so a weight of 1 (used as-is, no rescaling) already makes a
+ * MATERIALLY smaller envelope the dominant factor whenever candidates
+ * genuinely differ in occupied envelope size, while candidates that
+ * produce the IDENTICAL occupied envelope (extremely common — most
+ * positions that fit within the current occupied bounds don't change it at
+ * all) still fall through to growth/contact/candidateIndex exactly as
+ * before, since this term contributes the same constant to both and cannot
+ * be the tie-break in that case. This deliberately does NOT introduce a
+ * large arbitrary multiplier on top of the raw mm^2 value.
+ */
+const ENVELOPE_AREA_WEIGHT = 1;
 
 function computePlacementScore(
   candidateBBox: BoundingBox,
@@ -966,8 +1007,8 @@ function computePlacementScore(
   // this balance term exists solely to fix AUTO's tie-breaking (see the
   // docstring on occupiedCapacityImbalance), so it must never compete with
   // or dilute an explicit WIDTH_FIRST/LENGTH_FIRST choice.
-  const elongationBias = packingPreference === "AUTO" ? ELONGATION_TIE_BREAK_WEIGHT * occupiedCapacityImbalance(occupiedAfter, sheet) : 0;
-  return growth - contact * contactScale + directionalBias + elongationBias;
+  const envelopeAreaBias = packingPreference === "AUTO" ? ENVELOPE_AREA_WEIGHT * candidateOccupiedEnvelopeArea(occupiedAfter) : 0;
+  return growth - contact * contactScale + directionalBias + envelopeAreaBias;
 }
 
 export function findBestPlacement(
@@ -3502,4 +3543,3 @@ function toOptimizedSheets(sheets: WorkingSheet[]): OptimizedSheet[] {
       placements: s.placements,
     }));
 }
- 
