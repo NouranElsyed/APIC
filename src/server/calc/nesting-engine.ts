@@ -53,9 +53,12 @@ import {
 } from "./nesting-geometry";
 import {
   optimizeGroupPlacement,
+  computeWidthUtilization,
+  computeLargestFreeRegion,
   type OptimizerPartInstance,
   type OptimizerOptions,
   type OptimizationMetrics,
+  type LargestFreeRegionMetrics,
 } from "./nesting-optimizer";
 
 export const ALGORITHM_NAME = "shelf-bottom-left-first-fit";
@@ -153,6 +156,22 @@ export interface EngineSheetResult {
   scrapAreaSqm: number;
   utilizationPercent: number;
   placements: EnginePlacementResult[];
+  /**
+   * Width-utilization audit (reporting-only, additive) — how far this
+   * sheet's placements reach across the sheet's WIDTH (Y axis), from
+   * computeWidthUtilization(). Optional/additive — existing consumers of
+   * this interface are unaffected. Purely a report on the finished
+   * layout; never consulted by scoring or placement.
+   */
+  usedWidthMm?: number;
+  unusedWidthMm?: number;
+  widthUtilizationPercent?: number;
+  /**
+   * Width-utilization audit (reporting-only, additive) — the largest
+   * single contiguous free region on this sheet, from
+   * computeLargestFreeRegion(). Optional/additive.
+   */
+  largestFreeRegion?: LargestFreeRegionMetrics;
 }
 
 export interface EngineGroupResult {
@@ -216,6 +235,19 @@ export interface NestingAlgorithmResult {
   optimizationScore: number;
   optimizationIterations: number;
   optimizationTimeMs: number;
+  /**
+   * Width-utilization audit (reporting-only, additive) — the WORST
+   * (smallest) per-sheet widthUtilizationPercent across every used sheet
+   * in the whole run. Optional/additive — existing consumers of this
+   * interface are unaffected.
+   */
+  worstWidthUtilizationPercent?: number;
+  /**
+   * Width-utilization audit (reporting-only, additive) — the single
+   * largest contiguous free region across every used sheet in the whole
+   * run. Optional/additive.
+   */
+  largestFreeRegion?: LargestFreeRegionMetrics;
 }
 
 function groupKey(material: string, thicknessMm: number): string {
@@ -625,6 +657,8 @@ function runGroup(
     }, 0);
     const scrapAreaSqm = Math.max(0, sheetAreaSqm - usedAreaSqm);
     const utilizationPercent = sheetAreaSqm > 0 ? (usedAreaSqm / sheetAreaSqm) * 100 : 0;
+    const widthAudit = computeWidthUtilization(sheet);
+    const largestFreeRegion = computeLargestFreeRegion(sheet);
 
     return {
       sheetNumber: nextSheetNumber(),
@@ -637,6 +671,10 @@ function runGroup(
       scrapAreaSqm,
       utilizationPercent,
       placements: sheet.placements,
+      usedWidthMm: widthAudit.usedWidthMm,
+      unusedWidthMm: widthAudit.unusedWidthMm,
+      widthUtilizationPercent: widthAudit.widthUtilizationPercent,
+      largestFreeRegion,
     };
   });
 
@@ -801,6 +839,25 @@ export function runNestingAlgorithm(
   );
   const optimizationTimeMs = groups.reduce((sum, g) => sum + g.optimization.timeMs, 0);
 
+  // Width-utilization audit (reporting-only, additive) — fold every
+  // group's already-computed per-sheet width-utilization/free-region
+  // fields (above) into a single overall summary across the whole run.
+  // Purely a report on the finished sheets array; no new computation on
+  // construction/scoring inputs.
+  let worstWidthUtilizationPercent: number | undefined;
+  let largestFreeRegion: LargestFreeRegionMetrics | undefined;
+  for (const group of groups) {
+    for (const sheet of group.sheets) {
+      if (sheet.widthUtilizationPercent === undefined) continue;
+      if (worstWidthUtilizationPercent === undefined || sheet.widthUtilizationPercent < worstWidthUtilizationPercent) {
+        worstWidthUtilizationPercent = sheet.widthUtilizationPercent;
+      }
+      if (sheet.largestFreeRegion && (largestFreeRegion === undefined || sheet.largestFreeRegion.areaSqm > largestFreeRegion.areaSqm)) {
+        largestFreeRegion = sheet.largestFreeRegion;
+      }
+    }
+  }
+
   return {
     algorithmName: ALGORITHM_NAME,
     algorithmVersion: ALGORITHM_VERSION,
@@ -819,5 +876,7 @@ export function runNestingAlgorithm(
     optimizationScore,
     optimizationIterations,
     optimizationTimeMs,
+    worstWidthUtilizationPercent,
+    largestFreeRegion,
   };
 }

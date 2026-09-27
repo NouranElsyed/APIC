@@ -10,15 +10,35 @@ export const PROFILES: Profile[] = ["A", "B", "C", "D", "E"];
 
 export type PaintBasis = "ton" | "area";
 export type PricingScope = "Supply" | "Site Activity";
-export type ProfileRates = Partial<Record<Profile, number>>;
-
+export type ProfileRates = Partial<Record<Profile, number>> & {
+  /** Custom (user-added) prices, keyed by an id from rate-options.ts's newOptionId(). */
+  [customId: string]: number | undefined;
+};
 export type InstallKey =
-  | "transport" | "handling" | "packing" | "crane" | "scaffolding" | "manHour"
-  | "safety" | "tools" | "ppe" | "touchUp" | "weldSurveyor";
+  | "transport"
+  | "handling"
+  | "packing"
+  | "crane"
+  | "scaffolding"
+  | "manHour"
+  | "safety"
+  | "tools"
+  | "ppe"
+  | "touchUp"
+  | "weldSurveyor";
 
 export const INSTALL_KEYS: InstallKey[] = [
-  "transport", "handling", "packing", "crane", "scaffolding", "manHour",
-  "safety", "tools", "ppe", "touchUp", "weldSurveyor",
+  "transport",
+  "handling",
+  "packing",
+  "crane",
+  "scaffolding",
+  "manHour",
+  "safety",
+  "tools",
+  "ppe",
+  "touchUp",
+  "weldSurveyor",
 ];
 
 /** Rate card. Percent-like values are stored as fractions (0.07 = 7%); tax & insurance as divisors (0.99). */
@@ -33,7 +53,12 @@ export interface RateBook {
   paintingArea: ProfileRates;
   ndt: ProfileRates;
   fabIndirect: ProfileRates;
-  margins: { material: number; fabrication: number; ndt: number; painting: number };
+  margins: {
+    material: number;
+    fabrication: number;
+    ndt: number;
+    painting: number;
+  };
   install: Record<InstallKey, ProfileRates>;
   installIndirect: ProfileRates;
   installMargin: ProfileRates;
@@ -43,6 +68,8 @@ export interface RateBook {
   commissioning: number;
   tax: ProfileRates;
   insurance: ProfileRates;
+  /** Display names for every custom price id used anywhere in this rate book (rate-options.ts). */
+  rateLabels: Record<string, string>;
 }
 
 export interface MaterialRow {
@@ -177,9 +204,36 @@ export interface CalcResult {
 
 export type ItemResult =
   | CalcResult
-  | { mode: "pricedLike"; qty: number; src: string; mult: number; srcUnitPrice: number; unitPrice: number; finalPrice: number; totalCost: number | null; profit: number | null; profitPct: number | null }
-  | { mode: "fixed"; qty: number; unitPrice: number; finalPrice: number; totalCost: null; profit: null; profitPct: null }
-  | { mode: "unpriced"; qty: number; unitPrice: 0; finalPrice: 0; totalCost: null; profit: null; profitPct: null };
+  | {
+      mode: "pricedLike";
+      qty: number;
+      src: string;
+      mult: number;
+      srcUnitPrice: number;
+      unitPrice: number;
+      finalPrice: number;
+      totalCost: number | null;
+      profit: number | null;
+      profitPct: number | null;
+    }
+  | {
+      mode: "fixed";
+      qty: number;
+      unitPrice: number;
+      finalPrice: number;
+      totalCost: null;
+      profit: null;
+      profitPct: null;
+    }
+  | {
+      mode: "unpriced";
+      qty: number;
+      unitPrice: 0;
+      finalPrice: 0;
+      totalCost: null;
+      profit: null;
+      profitPct: null;
+    };
 
 export interface BoqTotals {
   supply: number;

@@ -134,7 +134,8 @@ export const DEFAULT_RATES: RateBook = {
   "insurance": {
     "A": 0.9505,
     "B": 1
-  }
+  },
+  "rateLabels": {}
 };
 
 /** Materials keyed by their rate-card row in the workbook. */
