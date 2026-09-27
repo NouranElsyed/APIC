@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { computeOrientedShape, findNearestValidOrigin, polygonsOverlap, polygonsMinDistance, translatePoints } from "./nesting-geometry";
+import {
+  computeOrientedShape,
+  findNearestValidOrigin,
+  polygonsOverlap,
+  polygonsMinDistance,
+  translatePoints,
+  detectRotationalSymmetryOrder,
+  generateRotationCandidates,
+} from "./nesting-geometry";
 import type { Point } from "./dxf";
 
 function rect(w: number, h: number): Point[] {
@@ -8,6 +16,36 @@ function rect(w: number, h: number): Point[] {
     { x: w, y: 0 },
     { x: w, y: h },
     { x: 0, y: h },
+  ];
+}
+
+// Regular n-gon centered at the origin, radius r, vertex 0 on the +x axis —
+// the same kind of tessellated outline a CIRCLE entity is converted to.
+function regularPolygon(n: number, r: number): Point[] {
+  return Array.from({ length: n }, (_, i) => {
+    const angle = (2 * Math.PI * i) / n;
+    return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+  });
+}
+
+// A scalene (fully asymmetric) triangle — no rotation maps it onto itself.
+function scaleneTriangle(): Point[] {
+  return [
+    { x: 0, y: 0 },
+    { x: 130, y: 0 },
+    { x: 40, y: 77 },
+  ];
+}
+
+// An "L" bracket — asymmetric, and a realistic irregular nesting part.
+function lBracket(): Point[] {
+  return [
+    { x: 0, y: 0 },
+    { x: 200, y: 0 },
+    { x: 200, y: 60 },
+    { x: 60, y: 60 },
+    { x: 60, y: 200 },
+    { x: 0, y: 200 },
   ];
 }
 
@@ -329,5 +367,121 @@ describe("polygonsMinDistance — exact gap distance (not bounding-box)", () => 
     // must be larger than the naive bbox estimate would report.
     const exact = polygonsMinDistance(cutCornerSquare, farSquare);
     expect(exact).toBeGreaterThan(5);
+  });
+});
+
+// Phase 0, Item 1 — symmetry-aware rotation candidate generation. See
+// generateRotationCandidates()/detectRotationalSymmetryOrder() in
+// nesting-geometry.ts for the mechanism this exercises.
+describe("detectRotationalSymmetryOrder", () => {
+  it("detects order 4 for a square", () => {
+    expect(detectRotationalSymmetryOrder(rect(100, 100))).toBe(4);
+  });
+
+  it("detects order 2 for a non-square rectangle", () => {
+    expect(detectRotationalSymmetryOrder(rect(400, 200))).toBe(2);
+  });
+
+  it("detects order 6 for a regular hexagon", () => {
+    expect(detectRotationalSymmetryOrder(regularPolygon(6, 50))).toBe(6);
+  });
+
+  it("detects a high order for a finely tessellated circle", () => {
+    // A CIRCLE entity is typically tessellated into dozens of vertices;
+    // the true order equals the vertex count for a regular polygon.
+    expect(detectRotationalSymmetryOrder(regularPolygon(36, 50))).toBe(36);
+  });
+
+  it("returns order 1 (no symmetry) for a scalene triangle", () => {
+    expect(detectRotationalSymmetryOrder(scaleneTriangle())).toBe(1);
+  });
+
+  it("returns order 1 (no symmetry) for an L-bracket", () => {
+    expect(detectRotationalSymmetryOrder(lBracket())).toBe(1);
+  });
+
+  it("returns order 3 for an equilateral triangle", () => {
+    const side = 100;
+    const h = (side * Math.sqrt(3)) / 2;
+    const equilateral: Point[] = [
+      { x: 0, y: 0 },
+      { x: side, y: 0 },
+      { x: side / 2, y: h },
+    ];
+    expect(detectRotationalSymmetryOrder(equilateral)).toBe(3);
+  });
+});
+
+describe("generateRotationCandidates — symmetry-aware pruning", () => {
+  it("produces strictly fewer candidates for a symmetric square than for an asymmetric L-bracket, given the same generation budget", () => {
+    const squareCandidates = generateRotationCandidates(rect(100, 100), 15, 48);
+    const lBracketCandidates = generateRotationCandidates(lBracket(), 15, 48);
+    expect(squareCandidates.length).toBeLessThan(lBracketCandidates.length);
+  });
+
+  it("collapses a finely tessellated circle down to a small handful of meaningful rotations, not dozens", () => {
+    // Without symmetry-aware pruning this would evaluate up to
+    // maxCandidates distinct angles (48 here) even though almost all of
+    // them place a vertex-lattice-identical polygon. With pruning, only
+    // truly distinct residues within one symmetry period (here 360/48 =
+    // 7.5°) survive — vertex-lattice angles collapse to 0°, and any
+    // min-bounding-box hull angle that lands at a genuinely different
+    // sub-period offset (a half-step, from the hull edges' own geometry)
+    // is legitimately kept, since it is not a vertex-lattice duplicate.
+    const candidates = generateRotationCandidates(regularPolygon(48, 50), 15, 48);
+    expect(candidates).toContain(0);
+    expect(candidates.length).toBeLessThanOrEqual(3);
+    expect(candidates.length).toBeLessThan(48);
+  });
+
+  it("collapses an axis-aligned rectangle to its two meaningfully distinct orientations (0° and 90°)", () => {
+    const candidates = generateRotationCandidates(rect(400, 200), 90, 48);
+    const normalized = [...candidates].sort((a, b) => a - b);
+    expect(normalized).toEqual([0, 90]);
+  });
+
+  it("still retains a rectangle's off-axis candidates when a fine rotation step is requested (pruning only removes true duplicates, not the meaningful-orientation set)", () => {
+    // 180° and 270° are true footprint duplicates of 0°/90° for a
+    // rectangle and must be pruned, but 45°/135° are genuinely different
+    // (larger, worse) footprints and must still be offered as candidates
+    // so the optimizer — not the geometry layer — decides they score
+    // worse, rather than having them silently withheld.
+    const candidates = generateRotationCandidates(rect(400, 200), 45, 48);
+    expect(candidates).toContain(0);
+    expect(candidates).toContain(90);
+    expect(candidates).not.toContain(180);
+    expect(candidates).not.toContain(270);
+    expect(candidates.some((d) => d === 45 || d === 135)).toBe(true);
+  });
+
+  it("retains every requested rotation-step candidate for a genuinely asymmetric shape (no pruning applied)", () => {
+    const stepDeg = 30;
+    const maxCandidates = 40;
+    const candidates = generateRotationCandidates(scaleneTriangle(), stepDeg, maxCandidates);
+    const fallbackAngles = Array.from({ length: 360 / stepDeg }, (_, i) => i * stepDeg);
+    for (const angle of fallbackAngles) {
+      expect(candidates).toContain(angle);
+    }
+  });
+
+  it("never exceeds the requested maxCandidates bound, symmetric or not", () => {
+    expect(generateRotationCandidates(scaleneTriangle(), 5, 10).length).toBeLessThanOrEqual(10);
+    expect(generateRotationCandidates(regularPolygon(72, 50), 5, 10).length).toBeLessThanOrEqual(10);
+    expect(generateRotationCandidates(rect(400, 200), 5, 10).length).toBeLessThanOrEqual(10);
+  });
+
+  it("is deterministic across repeated calls with identical inputs", () => {
+    const a = generateRotationCandidates(lBracket(), 20, 24);
+    const b = generateRotationCandidates(lBracket(), 20, 24);
+    expect(b).toEqual(a);
+    const c = generateRotationCandidates(rect(400, 200), 20, 24);
+    const d = generateRotationCandidates(rect(400, 200), 20, 24);
+    expect(d).toEqual(c);
+  });
+
+  it("always includes rotation 0 regardless of symmetry", () => {
+    expect(generateRotationCandidates(rect(100, 100), 15, 48)).toContain(0);
+    expect(generateRotationCandidates(regularPolygon(20, 40), 15, 48)).toContain(0);
+    expect(generateRotationCandidates(lBracket(), 15, 48)).toContain(0);
   });
 });

@@ -465,6 +465,89 @@ export function computeMinBoundingBoxAngles(outer: Point[]): number[] {
   return angles.length > 0 ? angles : [0];
 }
 
+/**
+ * Bounded, deterministic divisor list of a positive integer, descending
+ * (largest first) so callers can try the finest symmetry first. O(sqrt(n)).
+ */
+function divisorsDesc(n: number): number[] {
+  const small: number[] = [];
+  const large: number[] = [];
+  for (let d = 1; d * d <= n; d++) {
+    if (n % d !== 0) continue;
+    small.push(d);
+    if (d !== n / d) large.push(n / d);
+  }
+  // `large` is built as d increases (1, 2, 3, ...), and n/d shrinks as d
+  // grows, so `large` is already largest-first (e.g. n=100 → [100, 50, 25,
+  // 20]) and must NOT be reversed. `small` is built smallest-first (e.g.
+  // [1, 2, 4, 5]) and needs reversing to also read largest-first. Getting
+  // this backwards (reversing `large` instead of leaving it alone) makes
+  // detectRotationalSymmetryOrder return the first, non-maximal, divisor
+  // it happens to try — under-pruning exactly the symmetric/circular case
+  // this function exists to detect precisely for.
+  return [...large, ...small.reverse()];
+}
+
+/**
+ * Exact rotational-symmetry order of a (already-tessellated) polygon: the
+ * largest k such that rotating the polygon by 360/k degrees about its
+ * centroid maps every vertex exactly onto another vertex of the SAME
+ * polygon (a pure index cyclic-shift of the vertex array by n/k, since
+ * outer/hole contours are wound consistently). Order 1 means no rotational
+ * symmetry was found (the general, and default, case).
+ *
+ * This is what lets rotation-candidate generation (below) prune rotations
+ * that are geometrically IDENTICAL to one already generated — e.g. an
+ * axis-aligned rectangle (order 2: 180° apart vertices coincide) only ever
+ * needs 0°/90°, and a regular n-gon tessellating a circle/CIRCLE entity
+ * (order n) collapses to a single meaningful rotation — without touching
+ * any angle that is genuinely a different orientation.
+ *
+ * Bounded: only divisors of the vertex count are tried (at most O(sqrt(n))
+ * candidates), each checked in O(n). Deterministic: no randomness, no
+ * wall-clock dependence.
+ */
+export function detectRotationalSymmetryOrder(outer: Point[], toleranceMm = 1e-3): number {
+  const n = outer.length;
+  if (n < 2) return 1;
+  let cx = 0;
+  let cy = 0;
+  for (const p of outer) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= n;
+  cy /= n;
+  // Scale the absolute tolerance to the shape's own size so a huge or tiny
+  // part isn't judged by a fixed millimeter threshold that no longer makes
+  // sense at its scale.
+  let maxR = 0;
+  for (const p of outer) maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy));
+  const tol = Math.max(toleranceMm, maxR * 1e-4);
+
+  for (const k of divisorsDesc(n)) {
+    if (k < 2) continue;
+    const shift = n / k;
+    const angle = (2 * Math.PI) / k;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    let matches = true;
+    for (let i = 0; i < n && matches; i++) {
+      const p = outer[i];
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      // Rotate vertex i by 360/k about the centroid; it must land on
+      // vertex (i + shift) mod n for every i, or k is not a valid order.
+      const rx = cx + dx * cos - dy * sin;
+      const ry = cy + dx * sin + dy * cos;
+      const target = outer[(i + shift) % n];
+      if (Math.hypot(rx - target.x, ry - target.y) > tol) matches = false;
+    }
+    if (matches) return k;
+  }
+  return 1;
+}
+
 export function generateRotationCandidates(outer: Point[], rotationStepDeg: number, maxCandidates: number): RotationDeg[] {
   const priority: number[] = [0, 90, 180, 270];
   const hullAngles = computeMinBoundingBoxAngles(outer);
@@ -473,6 +556,27 @@ export function generateRotationCandidates(outer: Point[], rotationStepDeg: numb
       priority.push(normalizeRotationDeg(base + add));
     }
   }
+  // Symmetry-aware pruning (Phase 0): two candidate angles that differ by
+  // an exact multiple of the shape's own rotational-symmetry period
+  // (360 / order) place an IDENTICAL polygon — same footprint, same fit
+  // against every obstacle — so only the first such angle is kept. order
+  // === 1 (no symmetry found) makes the period 360°, i.e. every angle is
+  // kept exactly as before: existing behavior for asymmetric parts is
+  // unchanged bit-for-bit.
+  const order = detectRotationalSymmetryOrder(outer);
+  const periodDeg = 360 / order;
+  // The arbitrary fixed-step fallback grid gives shapes rotation options
+  // the hull-angle heuristic might have missed. Symmetry detection must
+  // only remove angles that place a geometrically IDENTICAL polygon (a
+  // true duplicate) — it must not shrink the set of meaningful
+  // orientations otherwise. So the fallback grid stays available for every
+  // shape; `addUnique`'s modulo-by-period key below is what actually
+  // collapses symmetric duplicates (e.g. a regular tessellated circle,
+  // order = its vertex count, still collapses every fallback angle to the
+  // single meaningful rotation, since each one lands on an already-seen
+  // key). This keeps the "dozens of equivalent rotations" reduction for
+  // truly symmetric shapes while still letting a rectangle's or other
+  // low-order shape's off-axis angles be evaluated if genuinely distinct.
   const fallback: number[] = [];
   if (rotationStepDeg > 0 && rotationStepDeg < 360) {
     for (let d = 0; d < 360; d += rotationStepDeg) fallback.push(d);
@@ -481,7 +585,16 @@ export function generateRotationCandidates(outer: Point[], rotationStepDeg: numb
   const result: RotationDeg[] = [];
   const addUnique = (deg: number) => {
     const norm = normalizeRotationDeg(deg);
-    const key = norm.toFixed(2);
+    // Snap the remainder to 0 near either edge of the period before
+    // formatting: floating-point angle computations (atan2 on hull edges,
+    // trig-derived vertex coordinates) can land a hair under a period
+    // boundary (e.g. 86.24999999999999 instead of exactly 86.25 for a
+    // period of 7.5), which without snapping would produce a spuriously
+    // distinct dedup key instead of recognizing the true duplicate.
+    let mod = norm % periodDeg;
+    if (mod > periodDeg - 1e-6) mod -= periodDeg;
+    if (Math.abs(mod) < 1e-6) mod = 0;
+    const key = mod.toFixed(2);
     if (seen.has(key)) return false;
     seen.add(key);
     result.push(norm);

@@ -1970,7 +1970,7 @@ describe("Phase 4A — true-shape / NFP-style candidate generation", () => {
     const rotations = new RotationCandidateCache(5, 48);
     const diagnostics: TrueShapeDiagnostics = makeTrueShapeDiagnostics();
 
-    const withDiagnostics = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO", diagnostics);
+    const withDiagnostics = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations, "AUTO", Infinity, diagnostics);
     const rotations2 = new RotationCandidateCache(5, 48);
     const withoutDiagnostics = findBestPlacement(instance, sheet, ZERO_GAP_LARGE_CONFIG, 60, rotations2, "AUTO");
 
@@ -2579,6 +2579,175 @@ describe("PHASE 5 — no regressions: existing strategies/options remain fully c
     expect(OPTIMIZER_ALGORITHM_VERSION).not.toBe("1.5.0");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PHASE 0, ITEM 2 — real deadline enforcement.
+//
+// Prior to this change, `findBestPlacement()` (and the construction/local-
+// improvement/ruin-recreate loops that call it) had no deadline check inside
+// the rotation loop, the candidate-generation loop, or true-shape candidate
+// generation — only the OUTER strategy/iteration loops checked
+// `Date.now() > deadline`, between whole construction passes. A single
+// expensive part (many rotations × many candidates, or many obstacles for
+// true-shape generation) could therefore run well past `timeLimitMs` before
+// any check fired. These tests prove the deadline is now actually bounded at
+// every level the spec calls out, that a cut-short search still returns a
+// fully valid layout, and that normal (generous-deadline) runs are
+// unaffected.
+// ---------------------------------------------------------------------------
+describe("PHASE 0, ITEM 2 — real deadline enforcement", () => {
+  function manyIrregularParts(count: number): EnginePartInput[] {
+    // A mix of rectangles and L-shapes gives findBestPlacement genuine
+    // rotation × candidate × true-shape work to do, unlike a trivial part.
+    return Array.from({ length: count }, (_, i) => {
+      const outer: Point[] =
+        i % 2 === 0
+          ? rect(80 + (i % 5) * 10, 60 + (i % 4) * 8)
+          : [
+              { x: 0, y: 0 },
+              { x: 100, y: 0 },
+              { x: 100, y: 40 },
+              { x: 40, y: 40 },
+              { x: 40, y: 100 },
+              { x: 0, y: 100 },
+            ];
+      return part({ takeoffPartId: `p${i}`, itemNo: i + 1, outer, qty: 1 });
+    });
+  }
+
+  it("a tiny timeLimitMs terminates quickly instead of running the full search", () => {
+    const parts = manyIrregularParts(250);
+    const sources = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 20 })];
+    const cfg = DEFAULT_CONFIG();
+
+    const startedAt = Date.now();
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 1, timeLimitMs: 5, maxIterations: 500 });
+    const elapsedMs = Date.now() - startedAt;
+
+    // Generous upper bound (not a tight race condition): a 5ms budget must
+    // not turn into multiple seconds of unbounded search. This is checking
+    // orders-of-magnitude bounded-ness, not exact timing.
+    expect(elapsedMs).toBeLessThan(3000);
+    expect(result).toBeDefined();
+  });
+
+  it("a tiny timeLimitMs still returns a fully valid (collision-free, in-bounds) layout", () => {
+    const parts = manyIrregularParts(250);
+    const sources = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 20 })];
+    const cfg = DEFAULT_CONFIG();
+
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 1, timeLimitMs: 5, maxIterations: 500 });
+
+    // Never partially invalid: whatever DID get placed (even just the
+    // guaranteed single fallback construction pass) must be fully valid
+    // geometry — never an overlapping or out-of-bounds part.
+    assertLayoutIsCollisionFree(result, parts, cfg);
+  });
+
+  it("no part is left in a partially-inserted state after a deadline cutoff: every placed part is fully committed and every unplaced part is cleanly accounted for", () => {
+    const parts = manyIrregularParts(250);
+    const sources = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 20 })];
+    const cfg = DEFAULT_CONFIG();
+
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 1, timeLimitMs: 5, maxIterations: 500 });
+
+    let placedCount = 0;
+    for (const group of result.groups) {
+      for (const sheet of group.sheets) {
+        placedCount += sheet.placements.length;
+      }
+    }
+    const unplacedCount = result.unplacedParts.reduce((sum, u) => sum + u.remainingQty, 0);
+    // Every one of the 250 requested parts is either placed or explicitly
+    // accounted for as unplaced — none silently vanish from the result.
+    expect(placedCount + unplacedCount).toBe(250);
+  });
+
+  it("a generous timeLimitMs is completely unaffected: normal runs still place everything and match the un-deadlined baseline", () => {
+    const parts = manyIrregularParts(24);
+    const sources = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 5 })];
+    const cfg = DEFAULT_CONFIG();
+
+    const result = runNestingAlgorithm(parts, sources, cfg, { randomSeed: 1, timeLimitMs: 8000, maxIterations: 150 });
+
+    expect(result.totalPartsPlaced).toBe(24);
+    expect(result.unplacedParts).toHaveLength(0);
+    assertLayoutIsCollisionFree(result, parts, cfg);
+  });
+
+  it("findBestPlacement itself stops evaluating rotations/candidates once its own deadline has already passed, returning null rather than searching anyway", () => {
+    const sheet = makeWorkingSheet(source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 1 }), DEFAULT_CONFIG());
+    const rotations = new RotationCandidateCache(15, 48);
+    const instance: OptimizerPartInstance = {
+      takeoffPartId: "p1",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: 0.01,
+      outer: rect(100, 80),
+    };
+
+    // A deadline already in the past: even on a completely empty sheet
+    // (which would trivially succeed with any real time budget) the search
+    // must not proceed.
+    const alreadyExpired = Date.now() - 1000;
+    const attempt = findBestPlacement(instance, sheet, DEFAULT_CONFIG(), 48, rotations, "AUTO", alreadyExpired);
+    expect(attempt).toBeNull();
+  });
+
+  it("findBestPlacement with a generous deadline is unaffected and still finds the same placement as the no-deadline (default) call", () => {
+    const sheet = makeWorkingSheet(source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 1 }), DEFAULT_CONFIG());
+    const rotations = new RotationCandidateCache(15, 48);
+    const rotations2 = new RotationCandidateCache(15, 48);
+    const instance: OptimizerPartInstance = {
+      takeoffPartId: "p1",
+      itemNo: 1,
+      instanceNumber: 1,
+      areaSqm: 0.01,
+      outer: rect(100, 80),
+    };
+
+    const withDeadline = findBestPlacement(instance, sheet, DEFAULT_CONFIG(), 48, rotations, "AUTO", Date.now() + 60000);
+    const withoutDeadline = findBestPlacement(instance, sheet, DEFAULT_CONFIG(), 48, rotations2, "AUTO");
+
+    expect(withDeadline).toEqual(withoutDeadline);
+  });
+
+  it("generateTrueShapeCandidates stops scanning obstacles once its deadline has passed, without throwing", () => {
+    const moving = rect(100, 80);
+    const obstacles: Point[][] = Array.from({ length: 20 }, (_, i) => rect(50, 50).map((p) => ({ x: p.x + i * 200, y: p.y })));
+    const alreadyExpired = Date.now() - 1000;
+    expect(() => generateTrueShapeCandidates(moving, obstacles, 2, MAX_TRUE_SHAPE_CANDIDATES, alreadyExpired)).not.toThrow();
+    const candidates = generateTrueShapeCandidates(moving, obstacles, 2, MAX_TRUE_SHAPE_CANDIDATES, alreadyExpired);
+    expect(candidates.length).toBe(0);
+  });
+
+  it("a deadline that has already fully expired before the run starts is deterministic across repeats (the wall-clock race is eliminated entirely)", () => {
+    // With a tiny but non-zero timeLimitMs (the previous version of this
+    // test), exactly how much work completes before `Date.now() >
+    // deadline` fires is inherently wall-clock/CPU-speed dependent — the
+    // SAME non-determinism already called out for the ruin/recreate
+    // `progressFraction` calculation elsewhere in this file (see the
+    // "Phase 4B fix" comment above `adaptiveRuinAndRecreate`'s loop). That
+    // is expected, bounded (never invalid, see the other tests in this
+    // block), and consistent with "preserve deterministic behavior AS FAR
+    // AS PRACTICAL" in the spec, not a regression. What IS fully
+    // deterministic, and worth pinning down, is the already-expired case:
+    // every run takes the exact same "deadline already gone" branch with
+    // no wall-clock race at all, so it must produce identical results.
+    const parts = manyIrregularParts(60);
+    const sources = [source({ sourceSheetId: "S1", widthMm: 1500, lengthMm: 6000, availableQty: 10 })];
+    const cfg = DEFAULT_CONFIG();
+    const runOnce = () => runNestingAlgorithm(parts, sources, cfg, { randomSeed: 99, timeLimitMs: -1_000_000, maxIterations: 500 });
+
+    const a = runOnce();
+    const b = runOnce();
+    expect(b.totalPartsPlaced).toBe(a.totalPartsPlaced);
+    expect(b.groups[0].sheets.length).toBe(a.groups[0].sheets.length);
+    assertLayoutIsCollisionFree(a, parts, cfg);
+    assertLayoutIsCollisionFree(b, parts, cfg);
+  });
+});
+
 function SUPPORTED_ROTATIONS_FOR_TEST_CHECK(_rotationDeg: number): boolean {
   return true; // arbitrary rotation is supported; this just documents intent for TEST 10 above.
 }

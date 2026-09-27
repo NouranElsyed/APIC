@@ -535,6 +535,12 @@ export function generateTrueShapeCandidates(
   obstaclePolygons: Point[][],
   gapMm: number,
   cap: number = MAX_TRUE_SHAPE_CANDIDATES,
+  // Phase 0, Item 2 — see findBestPlacement's deadline doc comment. This is
+  // the single most expensive per-candidate loop in the file (O(obstacles
+  // × moving-vertices × obstacle-vertices), run fresh for every rotation
+  // of every part), so it gets its own check rather than relying solely on
+  // its caller's.
+  deadline: number = Infinity,
   diagnostics?: TrueShapeDiagnostics,
 ): Point[] {
   if (movingPoints.length < 3 || obstaclePolygons.length === 0) return [];
@@ -547,6 +553,7 @@ export function generateTrueShapeCandidates(
   const raw: Point[] = [];
 
   for (const obstacle of obstaclePolygons) {
+    if (Date.now() > deadline) break;
     if (obstacle.length < 3) continue;
 
     // Cheap spatial prefilter (Part H): an obstacle far outside any
@@ -665,14 +672,21 @@ function generateHybridCandidateOrigins(
   sheet: WorkingSheet,
   gapMm: number,
   maxCandidates: number,
+  // Phase 0, Item 2 — see findBestPlacement's deadline doc comment. If the
+  // deadline has already passed by the time this runs, the (cheap) bbox
+  // candidates are still returned as-is, but the (comparatively expensive,
+  // O(obstacles × vertices)) true-shape generation below is skipped
+  // entirely rather than started and then cut off mid-obstacle.
+  deadline: number = Infinity,
   diagnostics?: TrueShapeDiagnostics,
 ): Point[] {
   const existing = generateCandidateOrigins(shape.width, shape.height, sheet, gapMm, maxCandidates);
   if (diagnostics) diagnostics.existingCandidatesGenerated += existing.length;
 
   if (sheet.polygons.length === 0) return existing;
+  if (Date.now() > deadline) return existing;
 
-  const trueShapeRaw = generateTrueShapeCandidates(shape.points, sheet.polygons, gapMm, MAX_TRUE_SHAPE_CANDIDATES, diagnostics);
+  const trueShapeRaw = generateTrueShapeCandidates(shape.points, sheet.polygons, gapMm, MAX_TRUE_SHAPE_CANDIDATES, deadline, diagnostics);
   if (trueShapeRaw.length === 0) return existing;
 
   const seen = new Set<string>();
@@ -959,6 +973,22 @@ export function findBestPlacement(
   maxCandidates: number,
   rotations: RotationCandidateCache,
   packingPreference: PackingPreference = "AUTO",
+  /**
+   * Phase 0, Item 2 — real deadline enforcement. Defaults to `Infinity` so
+   * every existing call site (including every pre-Phase-0 test) that does
+   * not pass a deadline keeps EXACTLY its previous, unbounded-within-this-
+   * call behavior. Checked at the START of the rotation loop and at the
+   * START of the per-rotation candidate loop below — i.e. the same two
+   * loops the spec calls out ("rotation loop", "placement evaluation
+   * loop") — so a part with many rotations × many candidates can no
+   * longer blow through the deadline unnoticed between outer-loop checks.
+   * Breaking out here always still returns the BEST VALID candidate found
+   * so far (or null): every candidate that reaches `best` has already
+   * passed full exact geometry validation, so stopping early can only
+   * mean fewer candidates were considered, never a partially-validated or
+   * invalid placement being returned.
+   */
+  deadline: number = Infinity,
   diagnostics?: TrueShapeDiagnostics,
 ): PlacementAttempt | null {
   if (usableWidth(sheet) <= 0 || usableHeight(sheet) <= 0) return null;
@@ -996,12 +1026,14 @@ export function findBestPlacement(
   let best: ScoredCandidate | null = null;
 
   for (const rotation of rotations.get(instance)) {
+    if (Date.now() > deadline) break;
     const shape = computeOrientedShape(instance.outer, rotation);
     if (shape.width > usableWidth(sheet) + 1e-6 || shape.height > usableHeight(sheet) + 1e-6) continue;
 
-    const candidates = generateHybridCandidateOrigins(shape, sheet, config.partGapMm, maxCandidates, diagnostics);
+    const candidates = generateHybridCandidateOrigins(shape, sheet, config.partGapMm, maxCandidates, deadline, diagnostics);
 
     for (const c of candidates) {
+      if (Date.now() > deadline) break;
       rotations.recordEvaluation();
       if (diagnostics) diagnostics.candidatesValidated++;
       const polygon = translatePoints(shape.points, c.x, c.y);
@@ -1160,6 +1192,15 @@ function constructLayout(
    * correct.
    */
   initialSheets?: WorkingSheet[],
+  // Phase 0, Item 2 — real deadline enforcement. Previously this entire
+  // per-part × per-sheet construction loop had NO deadline check at all;
+  // only the caller's between-STRATEGIES check (constructionDeadline in
+  // runNestingAlgorithm) could stop it, meaning a single expensive
+  // construction pass (many parts, many already-open sheets, many
+  // rotations/candidates each) could run arbitrarily long before that
+  // outer check was even reached. Defaults to `Infinity` so every existing
+  // call site/test that doesn't pass one keeps its previous behavior.
+  deadline: number = Infinity,
 ): ConstructResult {
   const sheets: WorkingSheet[] = initialSheets ? [...initialSheets] : [];
   const openedCountBySourceId = new Map<string, number>();
@@ -1192,10 +1233,17 @@ function constructLayout(
   const failureReasonByPart = new Map<string, UnplacedReason>();
 
   for (const instance of orderedInstances) {
+    // A part not yet reached when the deadline passes is simply left out
+    // of both `placedCountByPart` and `failureReasonByPart` — every
+    // downstream reader already treats a missing entry as 0 placed /
+    // "NO_VALID_PLACEMENT" (see nesting-engine.ts), so no extra bookkeeping
+    // is needed here to keep the returned ConstructResult valid.
+    if (Date.now() > deadline) break;
     let placed = false;
 
     for (const sheet of sheets) {
-      const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference);
+      if (Date.now() > deadline) break;
+      const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference, deadline);
       if (attempt) {
         commitPlacement(sheet, instance, attempt);
         placed = true;
@@ -1203,19 +1251,28 @@ function constructLayout(
       }
     }
 
-    if (!placed) {
+    if (!placed && Date.now() <= deadline) {
       let freshAttempts = 0;
       while (!placed && freshAttempts < rankedSources.length) {
+        if (Date.now() > deadline) break;
         const sheet = openNextSheet();
         if (!sheet) break;
         freshAttempts++;
-        const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference);
+        const attempt = findBestPlacement(instance, sheet, config, maxCandidates, rotations, packingPreference, deadline);
         if (attempt) {
           commitPlacement(sheet, instance, attempt);
           placed = true;
         }
       }
     }
+
+    // If the deadline was crossed while working on THIS part (rather than
+    // before it started), the part may have been left in a genuine
+    // "search cut short" state rather than a real geometric failure. It's
+    // still safe to fall through to the ordinary reason-classification
+    // below (never a partially-committed placement — commitPlacement only
+    // ever runs after a fully-validated `attempt`), so no special case is
+    // needed beyond the loop-level breaks above.
 
     if (placed) {
       placedCountByPart.set(instance.takeoffPartId, (placedCountByPart.get(instance.takeoffPartId) ?? 0) + 1);
@@ -2020,6 +2077,7 @@ function attemptPlacePatternBlock(
   maxCandidates: number,
   blockRotationCache: RotationCandidateCache,
   packingPreference: PackingPreference,
+  deadline: number = Infinity,
 ): OptimizerPartInstance[] | null {
   if (groupInstances.length < block.slots.length) return null;
   if (usableWidth(sheet) <= 0 || usableHeight(sheet) <= 0) return null;
@@ -2038,13 +2096,14 @@ function attemptPlacePatternBlock(
     outer: blockOuter,
   };
 
-  const originAttempt = findBestPlacement(syntheticInstance, sheet, config, maxCandidates, blockRotationCache, packingPreference);
+  const originAttempt = findBestPlacement(syntheticInstance, sheet, config, maxCandidates, blockRotationCache, packingPreference, deadline);
   if (!originAttempt) return null;
 
   const staged: { instance: OptimizerPartInstance; x: number; y: number; rotationDeg: RotationDeg; width: number; height: number; polygon: Point[] }[] = [];
   const stagedPolygons: Point[][] = [];
 
   for (let i = 0; i < block.slots.length; i++) {
+    if (Date.now() > deadline) return null;
     const slot = block.slots[i];
     const memberInstance = groupInstances[i];
     const shape = computeOrientedShape(memberInstance.outer, slot.rotationDeg);
@@ -2097,14 +2156,16 @@ function constructBlockFirstLayout(
   rotations: RotationCandidateCache,
   packingPreference: PackingPreference,
   blockRotationCache: RotationCandidateCache,
+  deadline: number = Infinity,
 ): ConstructResult | null {
   if (rankedSources.length === 0) return null;
+  if (Date.now() > deadline) return null;
 
   const groupInstances = allInstances.filter((i) => i.takeoffPartId === block.takeoffPartId).slice(0, block.slots.length);
   if (groupInstances.length < block.slots.length) return null;
 
   const seedSheet = makeWorkingSheet(rankedSources[0], config);
-  const placedGroupInstances = attemptPlacePatternBlock(block, groupInstances, seedSheet, config, maxCandidates, blockRotationCache, packingPreference);
+  const placedGroupInstances = attemptPlacePatternBlock(block, groupInstances, seedSheet, config, maxCandidates, blockRotationCache, packingPreference, deadline);
   if (!placedGroupInstances) return null;
 
   const consumed = new Set(placedGroupInstances);
@@ -2115,7 +2176,7 @@ function constructBlockFirstLayout(
   // other strategy places its own full instance list.
   const remainingOrdered = [...remaining].sort((a, b) => b.areaSqm - a.areaSqm || stableTieBreak(a, b));
 
-  const rest = constructLayout(remainingOrdered, rankedSources, config, maxCandidates, rotations, packingPreference, [seedSheet]);
+  const rest = constructLayout(remainingOrdered, rankedSources, config, maxCandidates, rotations, packingPreference, [seedSheet], deadline);
 
   const placedCountByPart = new Map(rest.placedCountByPart);
   placedCountByPart.set(block.takeoffPartId, (placedCountByPart.get(block.takeoffPartId) ?? 0) + placedGroupInstances.length);
@@ -2215,13 +2276,15 @@ function localImprovementPass(
     // their fixed order — makes "first sheet evaluated wins a tie" the
     // deterministic tie-break, with no extra bookkeeping required.
     let relocated: { sheetIdx: number; attempt: PlacementAttempt } | null = null;
-    trial.forEach((candidateSheet, sIdx) => {
-      const attempt = findBestPlacement(asInstance, candidateSheet, config, maxCandidates, rotations, packingPreference);
-      if (!attempt) return;
+    for (let sIdx = 0; sIdx < trial.length; sIdx++) {
+      if (Date.now() > deadline) break;
+      const candidateSheet = trial[sIdx];
+      const attempt = findBestPlacement(asInstance, candidateSheet, config, maxCandidates, rotations, packingPreference, deadline);
+      if (!attempt) continue;
       if (!relocated || comparePlacementQuality(attempt, relocated.attempt) < 0) {
         relocated = { sheetIdx: sIdx, attempt };
       }
-    });
+    }
 
     if (!relocated) {
       originSheet.placements.splice(t.placementIdx, 0, removedPlacement);
@@ -2913,9 +2976,14 @@ export function adaptiveRuinAndRecreate(
     let allReinserted = true;
     if (!patternReconstructed) {
       for (const r of ordered) {
+        if (Date.now() > deadline) {
+          allReinserted = false;
+          break;
+        }
         let placedSomewhere = false;
         for (const sheet of trial) {
-          const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations, packingPreference);
+          if (Date.now() > deadline) break;
+          const attempt = findBestPlacement(r.instance, sheet, config, maxCandidates, rotations, packingPreference, deadline);
           if (attempt) {
             commitPlacement(sheet, r.instance, attempt);
             placedSomewhere = true;
@@ -3013,6 +3081,12 @@ export function packRemainingOntoSeededSheet(
 ): PackRemainingResult {
   const startedAt = Date.now();
   const opts: Required<OptimizerOptions> = { ...DEFAULT_OPTIONS, ...options };
+  // Phase 0, Item 2 — this entry point accepted `options.timeLimitMs` but
+  // never actually computed or checked a deadline anywhere in its own
+  // reinsertion loop below; a large `remainingInstances` list packed onto
+  // one already-busy seeded sheet could run unbounded. Now enforced the
+  // same way as every other entry point in this file.
+  const deadline = startedAt + opts.timeLimitMs;
   const rotations = new RotationCandidateCache(opts.rotationStepDeg, opts.maxRotationCandidatesPerPart);
 
   const areaByPartId = new Map<string, number>();
@@ -3044,7 +3118,11 @@ export function packRemainingOntoSeededSheet(
   const stillUnplaced: OptimizerPartInstance[] = [];
 
   for (const instance of ordered) {
-    const attempt = findBestPlacement(instance, sheet, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+    if (Date.now() > deadline) {
+      stillUnplaced.push(instance);
+      continue;
+    }
+    const attempt = findBestPlacement(instance, sheet, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, deadline);
     if (attempt) {
       commitPlacement(sheet, instance, attempt);
       newlyPlacedCountByPart.set(instance.takeoffPartId, (newlyPlacedCountByPart.get(instance.takeoffPartId) ?? 0) + 1);
@@ -3215,8 +3293,8 @@ export function optimizeGroupPlacement(
     const strat = strategies[i];
     const result =
       strat.kind === "block"
-        ? constructBlockFirstLayout(strat.block, instances, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, blockRotationCache)
-        : constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+        ? constructBlockFirstLayout(strat.block, instances, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, blockRotationCache, constructionDeadline)
+        : constructLayout(strat.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, undefined, constructionDeadline);
     if (!result) continue; // PART E — an invalid/non-fitting block seed simply drops out (PART I: can never regress the comparison below).
     strategiesEvaluated++;
     const quality: LayoutQuality = {
@@ -3237,7 +3315,17 @@ export function optimizeGroupPlacement(
     // never a block seed — so this guaranteed fallback never depends on
     // whether a pattern block happens to fit.
     const fallback = baseStrategies[0];
-    best = constructLayout(fallback.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference);
+    // This path only runs once `constructionDeadline` (the construction
+    // phase's slice of the overall time budget) is already exhausted. It
+    // still must return SOME valid ConstructResult (never null/undefined)
+    // for the rest of this function to have anything to improve/return —
+    // so it is deliberately given access to the full remaining overall
+    // `deadline` rather than the already-past `constructionDeadline`.
+    // This never exceeds the caller's own `opts.timeLimitMs` budget (it
+    // simply reallocates time that would otherwise have gone to the local-
+    // improvement/ruin-recreate phases below), and a truly tiny
+    // `timeLimitMs` still bounds it just as tightly as everything else.
+    best = constructLayout(fallback.order, rankedSources, config, opts.maxCandidatesPerPart, rotations, opts.packingPreference, undefined, deadline);
     bestQuality = { placedTotal: totalPlaced(best.sheets), score: scoreLayout(best.sheets, areaByPartId, remainingParts) };
     bestStartName = fallback.name;
     strategiesEvaluated++;
