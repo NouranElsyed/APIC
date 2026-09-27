@@ -1483,6 +1483,105 @@ export function computeFragmentationScore(
 }
 
 // ---------------------------------------------------------------------------
+// Width-utilization / largest-free-region reporting (additive, read-only).
+// ---------------------------------------------------------------------------
+// Neither of these two functions is consulted by scoring or placement — they
+// exist purely so nesting-engine.ts can report extra detail about a FINISHED
+// layout. computeLargestFreeRegion() deliberately reuses the same bounded,
+// deterministic occupancy grid + flood fill (buildOccupancyGrid /
+// findFreeRegions) that computeFragmentationScore() above already builds and
+// validates, rather than a second grid/flood-fill implementation — same cost
+// (O(FRAGMENTATION_GRID_CELLS^2), independent of part count), same
+// determinism guarantees, same bbox-only occupancy semantics.
+
+export interface WidthUtilizationMetrics {
+  usedWidthMm: number;
+  unusedWidthMm: number;
+  widthUtilizationPercent: number;
+}
+
+/**
+ * How far this sheet's placements reach across the sheet's WIDTH (Y axis —
+ * see makeWorkingSheet's axis convention). `usedWidthMm` is the farthest Y
+ * extent reached by any placement's bounding box; `unusedWidthMm` is
+ * whatever's left of the sheet's full widthMm beyond that. 0/0/0 for an
+ * empty sheet — never NaN.
+ */
+export function computeWidthUtilization(
+  sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] },
+): WidthUtilizationMetrics {
+  const totalWidthMm = Math.max(0, sheet.widthMm);
+  let usedWidthMm = 0;
+  for (const p of sheet.placements) {
+    const reach = p.yMm + p.heightMm;
+    if (reach > usedWidthMm) usedWidthMm = reach;
+  }
+  usedWidthMm = Math.min(usedWidthMm, totalWidthMm);
+  const unusedWidthMm = Math.max(0, totalWidthMm - usedWidthMm);
+  const widthUtilizationPercent = totalWidthMm > 0 ? (usedWidthMm / totalWidthMm) * 100 : 0;
+  return { usedWidthMm, unusedWidthMm, widthUtilizationPercent };
+}
+
+export interface LargestFreeRegionMetrics {
+  xMm: number;
+  yMm: number;
+  widthMm: number;
+  heightMm: number;
+  areaSqm: number;
+}
+
+/**
+ * The single largest contiguous free region on this sheet, as a bounding
+ * box in mm (same coordinate space as EnginePlacementResult.xMm/yMm) —
+ * i.e. the same "largest region" computeFragmentationAreaSqm() above
+ * already identifies internally, just reported out instead of only being
+ * used to compute a penalty. All-zero for an empty/degenerate sheet or a
+ * fully-packed one (no free cells at all) — never NaN.
+ */
+export function computeLargestFreeRegion(
+  sheet: { widthMm: number; lengthMm: number; placements: EnginePlacementResult[] },
+): LargestFreeRegionMetrics {
+  const empty: LargestFreeRegionMetrics = { xMm: 0, yMm: 0, widthMm: 0, heightMm: 0, areaSqm: 0 };
+  const grid = buildOccupancyGrid(sheet);
+  if (!grid) return empty;
+
+  const regions = findFreeRegions(grid);
+  if (regions.length === 0) return empty;
+
+  // Largest by cell count; findFreeRegions iterates cells in a fixed
+  // row-major order, so "first region reaching the max cell count" is
+  // already a deterministic tie-break — no extra bookkeeping needed.
+  let best = regions[0];
+  for (const r of regions) {
+    if (r.cells.length > best.cells.length) best = r;
+  }
+
+  let minC = grid.cols;
+  let minR = grid.rows;
+  for (const idx of best.cells) {
+    const r = Math.floor(idx / grid.cols);
+    const c = idx % grid.cols;
+    if (c < minC) minC = c;
+    if (r < minR) minR = r;
+  }
+
+  const widthMm = best.extentCols * grid.cellWidthMm;
+  const heightMm = best.extentRows * grid.cellHeightMm;
+  return {
+    xMm: minC * grid.cellWidthMm,
+    yMm: minR * grid.cellHeightMm,
+    widthMm,
+    heightMm,
+    // Actual free cell area (may be less than widthMm*heightMm for a
+    // non-rectangular/L-shaped region, since width/height above are the
+    // region's BOUNDING BOX, matching the extent semantics already used
+    // for the narrow-sliver check in computeFragmentationAreaSqm).
+    areaSqm: (best.cells.length * grid.cellWidthMm * grid.cellHeightMm) / 1_000_000,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // Phase 2B — PART A: COMPACTNESS.
 // ---------------------------------------------------------------------------
 // How tightly the placed parts on a sheet are grouped together, independent
