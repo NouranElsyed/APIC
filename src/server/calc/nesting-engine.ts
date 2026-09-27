@@ -701,6 +701,22 @@ function runGroup(
     }
   }
 
+  // Width-utilization audit (reporting-only, additive) — fold this
+  // group's already-computed per-sheet width-utilization/free-region
+  // fields (above) into a single per-group summary, mirroring the
+  // whole-run aggregation in runNestingAlgorithm.
+  let groupWorstWidthUtilizationPercent: number | undefined;
+  let groupLargestFreeRegion: LargestFreeRegionMetrics | undefined;
+  for (const sheet of sheets) {
+    if (sheet.widthUtilizationPercent === undefined) continue;
+    if (groupWorstWidthUtilizationPercent === undefined || sheet.widthUtilizationPercent < groupWorstWidthUtilizationPercent) {
+      groupWorstWidthUtilizationPercent = sheet.widthUtilizationPercent;
+    }
+    if (sheet.largestFreeRegion && (groupLargestFreeRegion === undefined || sheet.largestFreeRegion.areaSqm > groupLargestFreeRegion.areaSqm)) {
+      groupLargestFreeRegion = sheet.largestFreeRegion;
+    }
+  }
+
   return {
     group: {
       key: groupKey(material, thicknessMm),
@@ -710,7 +726,11 @@ function runGroup(
       partsPlaced,
       partsUnplaced: partsRequired - partsPlaced,
       sheets,
-      optimization: optResult.metrics,
+      optimization: {
+        ...optResult.metrics,
+        worstWidthUtilizationPercent: groupWorstWidthUtilizationPercent,
+        largestFreeRegion: groupLargestFreeRegion,
+      },
     },
     shortage,
     rankedSources,

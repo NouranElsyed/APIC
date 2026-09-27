@@ -173,6 +173,10 @@ export interface OptimizationMetrics {
   /** Phase 3 — how many adaptive ruin-and-recreate iterations were accepted (score/threshold-accepted, not necessarily improving) vs strictly improved the running best. Optional/additive. */
   ruinAndRecreateAccepted?: number;
   ruinAndRecreateImprovements?: number;
+  /** Width-utilization audit (reporting-only, additive) — the WORST (smallest) per-sheet widthUtilizationPercent across this group's used sheets. Optional/additive — existing consumers of this interface are unaffected. */
+  worstWidthUtilizationPercent?: number;
+  /** Width-utilization audit (reporting-only, additive) — the single largest contiguous free region across this group's used sheets. Optional/additive. */
+  largestFreeRegion?: LargestFreeRegionMetrics;
 }
 
 export const SCORE_WEIGHTS = {
