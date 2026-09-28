@@ -26,6 +26,7 @@ export interface Group {
 
 export interface Item {
   g: Group;
+  /** Rotation in degrees, counter-clockwise, 0 <= rot < 360 (any value, not only multiples of 90). */
   rot: number;
   x: number;
   y: number;
@@ -343,9 +344,57 @@ export function addFileParts(
 
 // ------------------------------------------------------------- transformations
 
+const normAngle = (a: number) => {
+  const r = Math.round((((a % 360) + 360) % 360) * 1000) / 1000;
+  return r >= 360 ? 0 : r;
+};
+
+interface RotBox {
+  w: number;
+  h: number;
+  mx: number;
+  my: number;
+}
+const rotBoxCache = new WeakMap<Group, Map<number, RotBox>>();
+
+/** Size of the part after rotating it by `rot` degrees (mx/my = offset that moves its bbox back to 0,0). */
+export function rotBox(g: Group, rot: number): RotBox {
+  if (rot % 90 === 0) return rot % 180 ? { w: g.h, h: g.w, mx: 0, my: 0 } : { w: g.w, h: g.h, mx: 0, my: 0 };
+  let m = rotBoxCache.get(g);
+  if (!m) rotBoxCache.set(g, (m = new Map()));
+  const hit = m.get(rot);
+  if (hit) return hit;
+  const t = (rot * Math.PI) / 180;
+  const c = Math.cos(t);
+  const sn = Math.sin(t);
+  let x0 = 1e18;
+  let y0 = 1e18;
+  let x1 = -1e18;
+  let y1 = -1e18;
+  for (const r of [g.outer, ...(g.extra || [])])
+    for (const [x, y] of r) {
+      const X = x * c - y * sn;
+      const Y = x * sn + y * c;
+      x0 = Math.min(x0, X);
+      y0 = Math.min(y0, Y);
+      x1 = Math.max(x1, X);
+      y1 = Math.max(y1, Y);
+    }
+  const b = { w: x1 - x0, h: y1 - y0, mx: x0, my: y0 };
+  m.set(rot, b);
+  return b;
+}
+
+/** Rotates a point of the part; the rotated part's bounding box always starts at (0, 0). */
 export function tp(g: Group, rot: number, p: Pt): Pt {
   const [x, y] = p;
-  return rot === 0 ? [x, y] : rot === 1 ? [g.h - y, x] : rot === 2 ? [g.w - x, g.h - y] : [y, g.w - x];
+  if (rot === 0) return [x, y];
+  if (rot === 90) return [g.h - y, x];
+  if (rot === 180) return [g.w - x, g.h - y];
+  if (rot === 270) return [y, g.w - x];
+  const t = (rot * Math.PI) / 180;
+  const b = rotBox(g, rot);
+  return [x * Math.cos(t) - y * Math.sin(t) - b.mx, x * Math.sin(t) + y * Math.cos(t) - b.my];
 }
 
 export function path(g: Group, rot: number, dx: number, dy: number): Path2D {
@@ -431,6 +480,14 @@ interface Slot {
   m: Mask;
 }
 
+/** Rotation angles the optimizer may try, for the "Rotation" setting (0 none, 1 = 0/180, 2 = 90 steps, 3 = 45 steps, 4 = 15 steps). */
+export function rotList(ro: number): number[] {
+  if (ro === 0) return [0];
+  if (ro === 1) return [0, 180];
+  const step = ro === 2 ? 90 : ro === 3 ? 45 : 15;
+  return Array.from({ length: 360 / step }, (_, i) => i * step);
+}
+
 export function makeSettings(v: { W: number; H: number; mg: number; gp: number; cell: number; ro: number }): Settings {
   const x0 = v.mg - v.gp / 2;
   return {
@@ -445,8 +502,7 @@ function mask(S: Settings, rc: MaskCache, g: Group, rot: number): Mask {
   const k = [g.id, rot, S.cell, S.gp].join();
   const hit = rc.get(k);
   if (hit) return hit;
-  const bw = rot % 2 ? g.h : g.w;
-  const bh = rot % 2 ? g.w : g.h;
+  const { w: bw, h: bh } = rotBox(g, rot);
   const pad = Math.ceil(S.gp / 2 / S.cell) + 1;
   const mw = Math.ceil(bw / S.cell) + 2 * pad;
   const mh = Math.ceil(bh / S.cell) + 2 * pad;
@@ -567,7 +623,7 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
   });
   if (!items.length) return null;
 
-  const R = [[0], [0, 2], [0, 1, 2, 3]][S.ro];
+  const R = rotList(S.ro);
   const key: ((g: Group) => number)[] = [
     (g) => g.area,
     (g) => Math.max(g.w, g.h),
@@ -593,7 +649,15 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
     while (!o.shouldStop() && (k === 0 || performance.now() - t0 < lim)) {
       const kf = k < 3 ? key[k] : key[3];
       const ord = sub.slice().sort((a, b) => kf(b) - kf(a));
-      const rr = k < 4 || R.length < 3 ? R : [R, [0, 2], [0, 1], [0, 3, 1, 2]][(Math.random() * 4) | 0];
+      let rr = R;
+      if (k >= 4 && R.length >= 3) {
+        if (S.ro === 2) rr = [R, [0, 180], [0, 90], [0, 270, 90, 180]][(Math.random() * 4) | 0];
+        else {
+          // finer rotation modes: vary the search order / the allowed set between iterations
+          const pick = (Math.random() * 3) | 0;
+          rr = pick === 0 ? R : pick === 1 ? R.filter((a) => a % 90 === 0) : R.slice().sort(() => Math.random() - 0.5);
+        }
+      }
       const r = await attempt(S, rc, ord, rr, o.shouldStop);
       k++;
       it++;
@@ -801,11 +865,12 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
   sh.items.push(it);
   return true;
 }
+/** Rotates the picked part by `d` degrees (any angle) around the centre of its bounding box. */
 export function rotate(sel: Sel, S: Settings, d: number) {
   const it = sel.it;
   const o = { r: it.rot, x: it.x, y: it.y };
   const b = bbox(sides(it).o);
-  it.rot = (it.rot + d + 4) & 3;
+  it.rot = normAngle(it.rot + d);
   const c = bbox(sides(it).o);
   it.x += (b[0] + b[2] - c[0] - c[2]) / 2;
   it.y += (b[1] + b[3] - c[1] - c[3]) / 2;
@@ -881,13 +946,17 @@ export function sheetStats(sh: Sheet, S: Settings) {
 export function whyNotNested(g: Group, S: Settings): string {
   const uw = S.W - 2 * S.mg;
   const uh = S.H - 2 * S.mg;
-  const R = [[0], [0, 2], [0, 1, 2, 3]][S.ro];
-  const fit = (rs: number[]) => rs.some((r) => (r % 2 ? g.h : g.w) <= uw && (r % 2 ? g.w : g.h) <= uh);
+  const R = rotList(S.ro);
+  const fit = (rs: number[]) =>
+    rs.some((r) => {
+      const b = rotBox(g, r);
+      return b.w <= uw && b.h <= uh;
+    });
   const pr = (g.n || 1) > 1;
   const sz = `${pr ? "pair of triangles " : "part "}${g.w.toFixed(1)} × ${g.h.toFixed(1)} mm`;
   const us = `${uw} × ${uh} mm`;
   if (!fit(R)) {
-    if (fit([0, 1]))
+    if (fit([0, 90]))
       return `${sz} does not fit the usable sheet area ${us} with the current rotation setting — enable "90° steps" rotation`;
     return (
       `${sz} is larger than the usable sheet area ${us} (sheet size minus edge margins) — use a bigger sheet or a smaller margin` +

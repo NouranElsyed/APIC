@@ -96,9 +96,11 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, onChang
       if (!s) return;
       e.preventDefault();
       const t = performance.now();
-      if (t - (s.lw || 0) < 150) return;
+      if (t - (s.lw || 0) < 30) return;
       s.lw = t;
-      rotate(s, S, e.deltaY > 0 ? 1 : -1);
+      // free rotation: 5° per notch, hold Shift for 1° fine steps (Shift+wheel may arrive as deltaX)
+      const dy = e.deltaY || e.deltaX;
+      rotate(s, S, (dy > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5));
       onChange();
     };
     cv.addEventListener("wheel", onWheel, { passive: false });
@@ -405,7 +407,7 @@ export function NestBoost() {
         moveTo(sel, resS, sel.it.x + m[0], sel.it.y + m[1]);
         bump();
       } else if (e.key === "r" || e.key === "R") {
-        rotate(sel, resS, 1);
+        rotate(sel, resS, 90);
         bump();
       }
     };
@@ -491,6 +493,8 @@ export function NestBoost() {
                 <option value="0">None</option>
                 <option value="1">0° / 180°</option>
                 <option value="2">90° steps</option>
+                <option value="3">45° steps</option>
+                <option value="4">15° steps (slower)</option>
               </select>
             </Field>
             <Field label="Optimize time (s)">
@@ -622,12 +626,12 @@ export function NestBoost() {
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Nesting result</h3>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
-            transfer it), scroll the wheel to rotate, click to place, Esc to cancel. It can&apos;t overlap other parts,
+            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°), click to place, Esc to cancel. It can&apos;t overlap other parts,
             break the spacing, or enter the margin (it stays at the last allowed position).
           </p>
           {held && (
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 1); bump(); } }}>
+              <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
                 <RotateCcw /> Rotate 90°
               </Button>
               <Button variant="secondary" size="sm" onClick={() => { selRef.current = null; bump(); }}>
