@@ -914,9 +914,65 @@ export function problemMessages(res: OptResult, S: Settings): string[] {
 
 // ----------------------------------------------------------------- DXF export
 
+/**
+ * Detects a ring that is really a full circle (a CIRCLE entity or a polyline
+ * circle that was tessellated when the DXF was read). Returns its centre and
+ * radius, or null for anything else. Circles survive every rotation, so this
+ * can run on the already-transformed points.
+ */
+function fitCircle(pts: Pt[]): { c: Pt; r: number } | null {
+  const n = pts.length;
+  // A real polygon with few sides (hexagon, octagon...) must stay a polyline.
+  if (n < 16) return null;
+  // Least-squares (Kasa) fit: x^2 + y^2 + a*x + b*y + c = 0
+  let sx = 0, sy = 0;
+  for (const p of pts) {
+    sx += p[0];
+    sy += p[1];
+  }
+  const mx = sx / n;
+  const my = sy / n;
+  let suu = 0, suv = 0, svv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+  for (const p of pts) {
+    const u = p[0] - mx;
+    const v = p[1] - my;
+    suu += u * u;
+    suv += u * v;
+    svv += v * v;
+    suuu += u * u * u;
+    svvv += v * v * v;
+    suvv += u * v * v;
+    svuu += v * u * u;
+  }
+  const det = suu * svv - suv * suv;
+  if (Math.abs(det) < 1e-9) return null;
+  const k1 = 0.5 * (suuu + suvv);
+  const k2 = 0.5 * (svvv + svuu);
+  const uc = (k1 * svv - k2 * suv) / det;
+  const vc = (k2 * suu - k1 * suv) / det;
+  const cx = uc + mx;
+  const cy = vc + my;
+  const r = Math.sqrt(uc * uc + vc * vc + (suu + svv) / n);
+  if (!(r > 0)) return null;
+  const tol = Math.max(0.05, r * 0.001);
+  for (const p of pts) if (Math.abs(Math.hypot(p[0] - cx, p[1] - cy) - r) > tol) return null;
+  // Points must go all the way round (no big empty arc such as a "D" shape).
+  const ang = pts.map((p) => Math.atan2(p[1] - cy, p[0] - cx)).sort((a, b) => a - b);
+  let gap = ang[0] + 2 * Math.PI - ang[n - 1];
+  for (let i = 1; i < n; i++) gap = Math.max(gap, ang[i] - ang[i - 1]);
+  if (gap > Math.PI / 6) return null;
+  return { c: [cx, cy], r };
+}
+
 export function buildDxf(sheets: Sheet[], S: Settings): string {
   let s = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
   const pl = (pts: Pt[], ox: number) => {
+    // Round contours are written as true CIRCLE entities, not polylines.
+    const ci = fitCircle(pts);
+    if (ci) {
+      s += `0\nCIRCLE\n8\n0\n10\n${(ci.c[0] + ox).toFixed(3)}\n20\n${ci.c[1].toFixed(3)}\n30\n0.0\n40\n${ci.r.toFixed(3)}\n`;
+      return;
+    }
     s += "0\nPOLYLINE\n8\n0\n66\n1\n70\n1\n";
     pts.forEach((p) => {
       s += `0\nVERTEX\n8\n0\n10\n${(p[0] + ox).toFixed(3)}\n20\n${p[1].toFixed(3)}\n`;
