@@ -773,6 +773,8 @@ export interface Sel {
   pm: Pt;
   orig: { x: number; y: number; rot: number };
   lw?: number;
+  /** True while the held part overlaps something / enters the margin (drawn red, can't be placed). */
+  bad?: boolean;
 }
 
 export function othersOf(sh: Sheet, f: Item): Other[] {
@@ -794,6 +796,7 @@ export function startPick(sh: Sheet, idx: number, it: Item, m: Pt): Sel {
     pm: m,
     off: [m[0] - it.x, m[1] - it.y],
     orig: { x: it.x, y: it.y, rot: it.rot },
+    bad: false,
   };
 }
 
@@ -808,9 +811,10 @@ export function cancelPick(sel: Sel) {
   it.x = sel.orig.x;
   it.y = sel.orig.y;
   it.rot = sel.orig.rot;
+  sel.bad = false;
 }
 
-function isBad(sel: Sel, S: Settings) {
+export function isBad(sel: Sel, S: Settings) {
   const A = sides(sel.it);
   const b = bbox(A.o);
   if (b[0] < S.mg - 0.01 || b[1] < S.mg - 0.01 || b[2] > S.W - S.mg + 0.01 || b[3] > S.H - S.mg + 0.01) return true;
@@ -831,6 +835,14 @@ function tryPos(sel: Sel, S: Settings, x: number, y: number) {
   return true;
 }
 export function moveTo(sel: Sel, S: Settings, tx: number, ty: number) {
+  if (sel.bad) {
+    // The part is currently in an invalid spot (forced rotation): let it move
+    // freely so it can be dragged out; it becomes normal again once it is valid.
+    sel.it.x = tx;
+    sel.it.y = ty;
+    sel.bad = isBad(sel, S);
+    return;
+  }
   if (tryPos(sel, S, tx, ty)) return;
   const it = sel.it;
   const n = Math.max(1, Math.ceil(Math.hypot(tx - it.x, ty - it.y) / 3));
@@ -852,7 +864,8 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
   sel.oth = othersOf(sh, it);
   it.x = m[0] - sel.off[0];
   it.y = m[1] - sel.off[1];
-  if (isBad(sel, S)) {
+  const bad = isBad(sel, S);
+  if (bad && !sel.bad) {
     sel.sh = sv.sh;
     sel.idx = sv.idx;
     sel.oth = sv.oth;
@@ -860,6 +873,7 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
     it.y = sv.y;
     return false;
   }
+  sel.bad = bad;
   const a = sv.sh.items;
   a.splice(a.indexOf(it), 1);
   sh.items.push(it);
@@ -868,22 +882,20 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
 /** Rotates the picked part by `d` degrees (any angle) around the centre of its bounding box. */
 export function rotate(sel: Sel, S: Settings, d: number) {
   const it = sel.it;
-  const o = { r: it.rot, x: it.x, y: it.y };
   const b = bbox(sides(it).o);
   it.rot = normAngle(it.rot + d);
   const c = bbox(sides(it).o);
   it.x += (b[0] + b[2] - c[0] - c[2]) / 2;
   it.y += (b[1] + b[3] - c[1] - c[3]) / 2;
-  if (isBad(sel, S)) {
-    it.rot = o.r;
-    it.x = o.x;
-    it.y = o.y;
-  } else sel.off = [sel.pm[0] - it.x, sel.pm[1] - it.y];
+  // Rotation is never blocked: if there's no room the part turns anyway and is
+  // flagged invalid (drawn red) until it is moved to a free spot.
+  sel.bad = isBad(sel, S);
+  sel.off = [sel.pm[0] - it.x, sel.pm[1] - it.y];
 }
 
 // --------------------------------------------------------------------- drawing
 
-export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null) {
+export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false) {
   const c = cv.getContext("2d") as CanvasRenderingContext2D;
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, cv.width, cv.height);
@@ -894,11 +906,11 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
   c.strokeRect(S.mg, S.mg, S.W - 2 * S.mg, S.H - 2 * S.mg);
   c.setLineDash([]);
   for (const it of sh.items) {
-    c.fillStyle = partColor(it.g);
+    c.fillStyle = selBad && selItem === it ? "#ef4444" : partColor(it.g);
     const P = path(it.g, it.rot, it.x, it.y);
     c.fill(P, "evenodd");
     c.globalAlpha = selItem === it ? 0.75 : 1;
-    c.strokeStyle = "#0008";
+    c.strokeStyle = selBad && selItem === it ? "#991b1b" : "#0008";
     c.lineWidth = 1 / k;
     c.stroke(P);
     c.globalAlpha = 1;

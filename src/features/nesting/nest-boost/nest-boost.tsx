@@ -81,10 +81,12 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, onChang
   const k = width / S.W;
   const h = Math.ceil(S.H * k);
   const holdingHere = heldIdx === index;
+  const raf = React.useRef(0);
+  React.useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
   React.useEffect(() => {
     const cv = ref.current;
-    if (cv) drawSheet(sheet, cv, k, S, selRef.current?.it ?? null);
+    if (cv) drawSheet(sheet, cv, k, S, selRef.current?.it ?? null, !!selRef.current?.bad);
   }, [sheet, k, h, S, version, selRef]);
 
   // wheel must be a non-passive native listener so it can preventDefault()
@@ -144,11 +146,18 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, onChang
         if (s.idx !== index && !transfer(s, S, sheet, index, m)) return;
         s.pm = m;
         moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
-        onChange();
+        // redraw at most once per frame so dragging stays smooth
+        if (!raf.current) {
+          raf.current = requestAnimationFrame(() => {
+            raf.current = 0;
+            onChange();
+          });
+        }
       }}
       onClick={(e) => {
         const s = selRef.current;
         if (!s) return;
+        if (s.bad) return; // red = overlapping: move to a free spot (or Esc) first
         if (s.idx === index) {
           const m = mm(e);
           moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
@@ -194,11 +203,13 @@ export function NestBoost() {
   const [width, setWidth] = React.useState(600);
   // What is currently picked up — mirrored into state so the UI can render it
   // (the live selection itself stays in selRef because it is mutated per mouse move).
-  const [held, setHeld] = React.useState<{ idx: number; sn: number; name: string } | null>(null);
+  const [held, setHeld] = React.useState<{ idx: number; sn: number; name: string; bad: boolean } | null>(null);
   const bump = React.useCallback(() => {
     setVersion((v) => v + 1);
     const s = selRef.current;
-    setHeld(s ? { idx: s.idx, sn: s.it.g.sn, name: s.it.g.name } : null);
+    const next = s ? { idx: s.idx, sn: s.it.g.sn, name: s.it.g.name, bad: !!s.bad } : null;
+    // keep the same object when nothing changed so mouse moves don't re-render the whole page
+    setHeld((p) => (p && next && p.idx === next.idx && p.sn === next.sn && p.bad === next.bad ? p : next));
   }, []);
 
   React.useEffect(() => {
@@ -626,19 +637,22 @@ export function NestBoost() {
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Nesting result</h3>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
-            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°), click to place, Esc to cancel. It can&apos;t overlap other parts,
-            break the spacing, or enter the margin (it stays at the last allowed position).
+            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°), click to place, Esc to cancel. While moving, it can&apos;t overlap other parts,
+            break the spacing, or enter the margin (it stays at the last allowed position). Rotation is never blocked: if there&apos;s no room the part
+            turns anyway and goes red — drag it to a free spot to place it.
           </p>
           {held && (
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
                 <RotateCcw /> Rotate 90°
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => { selRef.current = null; bump(); }}>
+              <Button variant="secondary" size="sm" disabled={held.bad} onClick={() => { selRef.current = null; bump(); }}>
                 <Check /> Done
               </Button>
               <span className="text-xs text-muted-foreground">
-                Holding: Part #{held.sn} ({held.name}) — move the mouse, scroll to rotate, click to place
+                {held.bad
+                  ? `Part #${held.sn} overlaps something (red) — move it to a free spot to place it, or press Esc to cancel`
+                  : `Holding: Part #${held.sn} (${held.name}) — move the mouse, scroll to rotate, click to place`}
               </span>
             </div>
           )}
