@@ -1,6 +1,9 @@
 "use client";
 import * as React from "react";
-import { Check, Download, Layers, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Check, Download, FolderInput, Layers, Loader2, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { toast } from "sonner";
+import { useTakeoffProject } from "@/features/takeoff/project-context";
+import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -155,7 +158,15 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, onChang
   );
 }
 
+// mm-per-unit for the unit label the server-side DXF parser detected.
+const UNIT_SCALE: Record<string, number> = { in: 25.4, ft: 304.8, mm: 1, cm: 10, m: 1000, "µm": 0.001, dm: 100 };
+
 export function NestBoost() {
+  const { projectId, nestingQueue, clearNestingQueue } = useTakeoffProject();
+  const [importing, setImporting] = React.useState(false);
+  // Takeoff part ids already imported into this session, so pressing
+  // "Import" twice never doubles the quantities.
+  const importedIds = React.useRef<Set<string>>(new Set());
   const [groups, setGroups] = React.useState<Group[]>([]);
   const groupsRef = React.useRef<Group[]>([]);
   const counters = React.useRef<Counters>({ id: 0, sn: 0 });
@@ -170,6 +181,9 @@ export function NestBoost() {
   const [resS, setResS] = React.useState<Settings | null>(null);
   const [version, setVersion] = React.useState(0);
   const [confirmReset, setConfirmReset] = React.useState(false);
+  // Multi-select in "Parts & quantities" + the "Are you sure?" for removals.
+  const [checked, setChecked] = React.useState<Set<number>>(new Set());
+  const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
 
   const selRef = React.useRef<Sel | null>(null);
   const runRef = React.useRef(0);
@@ -229,17 +243,94 @@ export function NestBoost() {
     setMsg(text);
   }
 
+  /**
+   * Pulls the DXF + quantity + thickness of parts straight from Standard
+   * Calculations. `onlyIds` = parts sent one by one; omitted = every part in
+   * the project that has a valid DXF.
+   */
+  const importFromProject = React.useCallback(
+    async (onlyIds?: string[]) => {
+      if (!projectId) {
+        toast.error("Select a project first");
+        return;
+      }
+      setImporting(true);
+      try {
+        const res = await fetch(`/api/takeoff/drawings?projectId=${projectId}`);
+        if (!res.ok) throw new Error("Failed to load the parts list");
+        const drawings: TakeoffDrawingRow[] = await res.json();
+        const wanted = onlyIds ? new Set(onlyIds) : null;
+
+        let gs = groupsRef.current;
+        let text = "";
+        let ok = 0;
+        const skipped: string[] = [];
+
+        for (const d of drawings) {
+          for (const part of d.parts) {
+            if (wanted && !wanted.has(part.id)) continue;
+            const label = `${d.drawingNumber} #${part.itemNo} ${part.description}`;
+            if (importedIds.current.has(part.id)) { skipped.push(`${label}: already imported`); continue; }
+            if (!part.dxf) { skipped.push(`${label}: no DXF`); continue; }
+            if (!part.dxf.valid) { skipped.push(`${label}: DXF invalid`); continue; }
+            if (part.qty <= 0) { skipped.push(`${label}: qty is 0`); continue; }
+            const r = await fetch(`/api/takeoff/parts/${part.id}/dxf`);
+            if (!r.ok) { skipped.push(`${label}: could not read file`); continue; }
+            const parsed = parseDXF(await r.text());
+            const scale = UNIT_SCALE[part.dxf.unitsDetected ?? "mm"] ?? +units;
+            const added = addFileParts(gs, parsed.loops, label, scale, counters.current, {
+              th: part.thicknessMm ?? 0,
+              qty: part.qty,
+            });
+            gs = added.groups;
+            importedIds.current.add(part.id);
+            ok++;
+            text += `${label}: ${part.qty} pcs, ${part.thicknessMm ?? "?"} mm → ${added.count} contour(s)\n`;
+          }
+        }
+        setG(gs);
+        if (ok) clearResults();
+        setMsg((text + (skipped.length ? `\nSkipped:\n${skipped.join("\n")}` : "")).trim() || "Nothing to import.");
+        if (ok) toast.success(`Imported ${ok} part(s) from Standard Calculations`);
+        else toast.warning("No parts were imported");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Import failed");
+      } finally {
+        setImporting(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, units],
+  );
+
+  // Parts sent one-by-one from the Standard Calculations tab.
+  React.useEffect(() => {
+    if (!nestingQueue.length || !projectId) return;
+    const ids = nestingQueue;
+    clearNestingQueue();
+    importFromProject(ids);
+  }, [nestingQueue, projectId, clearNestingQueue, importFromProject]);
+
   const updateGroup = (id: number, patch: Partial<Group>) =>
     setG(groupsRef.current.map((g) => (g.id === id ? { ...g, ...patch } : g)));
 
-  const removePart = (g: Group) => {
-    setG(groupsRef.current.filter((x) => x.id !== g.id));
+  const removeParts = (ids: number[]) => {
+    const drop = new Set(ids);
+    const gone = groupsRef.current.filter((x) => drop.has(x.id));
+    setG(groupsRef.current.filter((x) => !drop.has(x.id)));
+    setChecked(new Set());
     clearResults();
-    setMsg(`Part #${g.sn} (${g.name}) removed. Press Optimize to re-nest.`);
+    setMsg(
+      gone.length === 1
+        ? `Part #${gone[0].sn} (${gone[0].name}) removed. Press Optimize to re-nest.`
+        : `${gone.length} parts removed. Press Optimize to re-nest.`,
+    );
   };
 
   const resetAll = () => {
     setG([]);
+    setChecked(new Set());
+    importedIds.current = new Set();
     counters.current = { id: 0, sn: 0 };
     clearResults();
     setMsg(DEFAULT_MSG);
@@ -352,8 +443,18 @@ export function NestBoost() {
               }}
             />
           </label>
+          <Button
+            variant="secondary"
+            className="mt-2 w-full"
+            disabled={!projectId || importing}
+            onClick={() => importFromProject()}
+            title="Import every part of the selected project that has a valid DXF, with its quantity and thickness"
+          >
+            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import all from Standard Calculations
+          </Button>
+          {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
           <div className="mt-2">
-            <Field label="Drawing units">
+            <Field label="Drawing units (manual uploads only)">
               <select className={selectCls} value={units} onChange={(e) => setUnits(e.target.value)}>
                 <option value="1">mm</option>
                 <option value="25.4">inch</option>
@@ -423,6 +524,12 @@ export function NestBoost() {
         <Card className="p-4">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parts &amp; quantities</h3>
+            <div className="flex items-center gap-2">
+            {checked.size > 0 && (
+              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove([...checked])}>
+                <Trash2 /> Remove selected ({checked.size})
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -432,6 +539,7 @@ export function NestBoost() {
             >
               <Trash2 /> Reset all
             </Button>
+            </div>
           </div>
           {!groups.length ? (
             <p className="text-sm text-muted-foreground">No parts yet.</p>
@@ -440,6 +548,17 @@ export function NestBoost() {
               <table className="w-full border-collapse text-xs">
                 <thead>
                   <tr className="text-left text-muted-foreground">
+                    <th className="p-1">
+                      <Checkbox
+                        aria-label="Select all parts"
+                        checked={
+                          groups.length > 0 && groups.every((g) => checked.has(g.id))
+                            ? true
+                            : checked.size > 0 ? "indeterminate" : false
+                        }
+                        onCheckedChange={(v) => setChecked(v === true ? new Set(groups.map((g) => g.id)) : new Set())}
+                      />
+                    </th>
                     <th className="p-1">#</th>
                     <th className="p-1" />
                     <th className="p-1">File</th>
@@ -453,7 +572,20 @@ export function NestBoost() {
                 </thead>
                 <tbody>
                   {groups.map((g) => (
-                    <tr key={g.id} className="border-t border-border">
+                    <tr key={g.id} className={`border-t border-border ${checked.has(g.id) ? "bg-primary/5" : ""}`}>
+                      <td className="p-1">
+                        <Checkbox
+                          aria-label={`Select part #${g.sn}`}
+                          checked={checked.has(g.id)}
+                          onCheckedChange={(v) =>
+                            setChecked((prev) => {
+                              const next = new Set(prev);
+                              if (v === true) next.add(g.id); else next.delete(g.id);
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
                       <td className="p-1 font-semibold">#{g.sn}</td>
                       <td className="p-1"><PartThumb g={g} /></td>
                       <td className="p-1">{g.name}</td>
@@ -474,7 +606,7 @@ export function NestBoost() {
                         />
                       </td>
                       <td className="p-1">
-                        <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => removePart(g)}>
+                        <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
                           <Trash2 /> Remove
                         </Button>
                       </td>
@@ -538,6 +670,22 @@ export function NestBoost() {
           )}
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={!!pendingRemove}
+        onOpenChange={(v) => !v && setPendingRemove(null)}
+        title={
+          pendingRemove && pendingRemove.length > 1
+            ? `Are you sure you want to remove ${pendingRemove.length} parts?`
+            : "Are you sure you want to remove this part?"
+        }
+        description="The nesting result will be cleared and you'll need to press Optimize again."
+        confirmLabel="Remove"
+        onConfirm={() => {
+          if (pendingRemove) removeParts(pendingRemove);
+          setPendingRemove(null);
+        }}
+      />
 
       <ConfirmDialog
         open={confirmReset}

@@ -7,6 +7,10 @@ interface TakeoffProjectContextValue {
   projectId: string;
   setProjectId: (id: string) => void;
   loadingProjects: boolean;
+  /** Part ids the user sent from Standard Calculations, waiting to be imported by the DXF Nesting tab. */
+  nestingQueue: string[];
+  queueForNesting: (partIds: string[]) => void;
+  clearNestingQueue: () => void;
 }
 
 const TakeoffProjectContext = React.createContext<TakeoffProjectContextValue | null>(null);
@@ -22,6 +26,12 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
   const [projects, setProjects] = React.useState<ProjectOption[]>([]);
   const [projectId, setProjectId] = React.useState("");
   const [loadingProjects, setLoadingProjects] = React.useState(true);
+  const [nestingQueue, setNestingQueue] = React.useState<string[]>([]);
+  const queueForNesting = React.useCallback(
+    (ids: string[]) => setNestingQueue((q) => Array.from(new Set([...q, ...ids]))),
+    [],
+  );
+  const clearNestingQueue = React.useCallback(() => setNestingQueue([]), []);
 
   React.useEffect(() => {
     fetch("/api/projects")
@@ -31,7 +41,7 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
   }, []);
 
   return (
-    <TakeoffProjectContext.Provider value={{ projects, projectId, setProjectId, loadingProjects }}>
+    <TakeoffProjectContext.Provider value={{ projects, projectId, setProjectId, loadingProjects, nestingQueue, queueForNesting, clearNestingQueue }}>
       {children}
     </TakeoffProjectContext.Provider>
   );

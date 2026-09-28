@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
+import { prisma } from "@/server/db/client";
 import { saveAndParseDxf, deleteDxf } from "@/server/services/dxf.service";
+
+// Streams the stored DXF text back through our own origin so the DXF Nesting
+// tab can import it without depending on the blob host's CORS settings.
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { res } = await requirePermission("takeoff.view");
+  if (res) return res;
+  const { id } = await params;
+  const dxf = await prisma.partDxf.findUnique({ where: { takeoffPartId: id } });
+  if (!dxf) return NextResponse.json({ error: "No DXF for this part" }, { status: 404 });
+  const upstream = await fetch(dxf.filePath);
+  if (!upstream.ok) return NextResponse.json({ error: "Could not read the stored DXF file" }, { status: 502 });
+  return new NextResponse(await upstream.text(), {
+    headers: { "Content-Type": "application/dxf; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { session, res } = await requirePermission("takeoff.edit");

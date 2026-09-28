@@ -319,8 +319,11 @@ export function addFileParts(
   name: string,
   scale: number,
   counters: Counters,
+  /** Override the thickness / per-contour quantity (used when importing from Standard Calculations). */
+  opts: { th?: number; qty?: number } = {},
 ): { groups: Group[]; count: number } {
-  const th = thicknessFromName(name);
+  const th = opts.th && opts.th > 0 ? opts.th : thicknessFromName(name);
+  const add = Math.max(1, Math.round(opts.qty ?? 1));
   const out = groups.slice();
   const parts = extractParts(loops, scale);
   for (const p of parts) {
@@ -332,8 +335,8 @@ export function addFileParts(
         Math.abs(g.per - p.per) <= g.per * 0.005 + 0.5 &&
         Math.abs(Math.max(g.w, g.h) - Math.max(p.w, p.h)) < 0.3,
     );
-    if (m) out[out.indexOf(m)] = { ...m, qty: m.qty + 1 };
-    else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: 1, th });
+    if (m) out[out.indexOf(m)] = { ...m, qty: m.qty + add };
+    else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th });
   }
   return { groups: out, count: parts.length };
 }

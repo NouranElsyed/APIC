@@ -1,7 +1,10 @@
 "use client";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTakeoffProject } from "./project-context";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import { explainTakeoffPart } from "@/server/calc/takeoff";
@@ -53,6 +56,10 @@ export function PartsGrid({
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
+  // Multi-select: ticked part ids + the bulk-delete confirmation.
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [bulkDeleteLoading, setBulkDeleteLoading] = React.useState(false);
   const [uploadingId, setUploadingId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const uploadTargetId = React.useRef<string | null>(null);
@@ -77,6 +84,43 @@ export function PartsGrid({
     if (!res.ok) { toast.error("Failed to delete item"); return; }
     toast.success("Item deleted");
     setDeletingId(null);
+    onChanged();
+  }
+
+  // Drop ids of parts that no longer exist (after a delete / reload).
+  React.useEffect(() => {
+    setSelected((prev) => {
+      const ids = new Set(parts.map((p) => p.id));
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [parts]);
+
+  const allSelected = parts.length > 0 && parts.every((p) => selected.has(p.id));
+  const someSelected = selected.size > 0 && !allSelected;
+  function toggleOne(id: string, on: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
+  function toggleAll(on: boolean) {
+    setSelected(on ? new Set(parts.map((p) => p.id)) : new Set());
+  }
+
+  async function handleBulkDelete() {
+    setBulkDeleteLoading(true);
+    const ids = [...selected];
+    const results = await Promise.all(
+      ids.map((id) => fetch(`/api/takeoff/parts/${id}`, { method: "DELETE" }).then((r) => r.ok).catch(() => false)),
+    );
+    setBulkDeleteLoading(false);
+    const failed = results.filter((ok) => !ok).length;
+    if (failed) toast.error(`${failed} of ${ids.length} item(s) could not be deleted`);
+    else toast.success(`${ids.length} item(s) deleted`);
+    setBulkDeleteOpen(false);
+    setSelected(new Set());
     onChanged();
   }
 
@@ -119,6 +163,15 @@ export function PartsGrid({
     onChanged();
   }
 
+  const router = useRouter();
+  const { queueForNesting } = useTakeoffProject();
+  function sendToNesting(ids: string[]) {
+    queueForNesting(ids);
+    toast.success("Sent to DXF Nesting");
+    router.push("/takeoff/nesting");
+  }
+  const nestableIds = parts.filter((p) => p.dxf?.valid && p.qty > 0).map((p) => p.id);
+
   const totalArea = parts.reduce((s, p) => s + n(p.totalArea), 0);
   const totalPaintArea = parts.reduce((s, p) => s + n(p.paintAreaSqm), 0);
   const totalWeight = parts.reduce((s, p) => s + n(p.weightKg), 0);
@@ -129,6 +182,14 @@ export function PartsGrid({
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/20 text-left text-xs text-muted-foreground">
+              <th className="w-8 px-2 py-1.5">
+                <Checkbox
+                  aria-label="Select all items"
+                  checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                  onCheckedChange={(v) => toggleAll(v === true)}
+                  disabled={parts.length === 0}
+                />
+              </th>
               <th className="px-2 py-1.5 font-medium">Item</th>
               <th className="px-2 py-1.5 font-medium">Description</th>
               <th className="border-l border-border px-2 py-1.5 font-medium">Type</th>
@@ -148,7 +209,7 @@ export function PartsGrid({
           <tbody>
             {parts.length === 0 && (
               <tr>
-                <td colSpan={15} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={16} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No items yet — use &quot;Add Item&quot; to enter the first part.
                 </td>
               </tr>
@@ -168,7 +229,14 @@ export function PartsGrid({
                 : null;
               return (
                 <React.Fragment key={part.id}>
-                  <tr className="border-b border-border hover:bg-muted/10">
+                  <tr className={`border-b border-border hover:bg-muted/10 ${selected.has(part.id) ? "bg-primary/5" : ""}`}>
+                    <td className="w-8 px-2 py-1.5">
+                      <Checkbox
+                        aria-label={`Select item ${part.itemNo}`}
+                        checked={selected.has(part.id)}
+                        onCheckedChange={(v) => toggleOne(part.id, v === true)}
+                      />
+                    </td>
                     <td className="px-2 py-1.5 tabular-nums">{part.itemNo}</td>
                     <td className="px-2 py-1.5">{part.description}</td>
                     <td className="border-l border-border px-2 py-1.5">{PART_TYPE_LABEL[part.partType]}</td>
@@ -194,6 +262,16 @@ export function PartsGrid({
                           >
                             <Download className="h-3.5 w-3.5" />
                           </a>
+                          {part.dxf.valid && part.qty > 0 ? (
+                            <button
+                              type="button"
+                              title="Send this part to DXF Nesting"
+                              className="flex items-center justify-center text-muted-foreground hover:text-primary"
+                              onClick={() => sendToNesting([part.id])}
+                            >
+                              <Layers className="h-3.5 w-3.5" />
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="flex items-center gap-1 text-xs"
@@ -269,6 +347,29 @@ export function PartsGrid({
             <Plus className="h-3.5 w-3.5" /> Add Item
           </Button>
         ) : <span />}
+        {selected.size > 0 && (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-xs">
+            <span className="font-medium">{selected.size} selected</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!parts.some((p) => selected.has(p.id) && p.dxf?.valid && p.qty > 0)}
+              onClick={() => sendToNesting(parts.filter((p) => selected.has(p.id) && p.dxf?.valid && p.qty > 0).map((p) => p.id))}
+              title="Send the selected parts (that have a valid DXF) to DXF Nesting"
+            >
+              <Layers className="h-3.5 w-3.5" /> Send selected to Nesting
+            </Button>
+            {canDelete && (
+              <Button size="sm" variant="outline" className="text-destructive" onClick={() => setBulkDeleteOpen(true)}>
+                <Trash2 className="h-3.5 w-3.5" /> Delete selected
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+          </div>
+        )}
+        <Button size="sm" variant="ghost" disabled={!nestableIds.length} onClick={() => sendToNesting(nestableIds)} title="Send every part with a valid DXF in this drawing to DXF Nesting">
+          <Layers className="h-3.5 w-3.5" /> Send all to Nesting ({nestableIds.length})
+        </Button>
         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
           <span>Total Area: <span className="font-semibold text-foreground">{totalArea.toFixed(3)} m²</span></span>
           <span>Paint Area: <span className="font-semibold text-foreground">{totalPaintArea.toFixed(3)} m²</span></span>
@@ -292,11 +393,21 @@ export function PartsGrid({
       <ConfirmDialog
         open={!!deletingId}
         onOpenChange={(v) => !v && setDeletingId(null)}
-        title="Delete item?"
+        title="Are you sure you want to delete this item?"
         description="This will remove this part from the drawing. This cannot be undone."
         confirmLabel="Delete"
         loading={deleteLoading}
         onConfirm={handleDelete}
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title={`Are you sure you want to delete ${selected.size} item(s)?`}
+        description="The selected parts (and their DXF links) will be removed from the drawing. This cannot be undone."
+        confirmLabel={`Delete ${selected.size} item(s)`}
+        loading={bulkDeleteLoading}
+        onConfirm={handleBulkDelete}
       />
     </div>
   );
