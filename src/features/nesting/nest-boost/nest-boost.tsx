@@ -481,13 +481,13 @@ export function NestBoost() {
             <Field label="Part spacing (mm)">
               <Input type="number" value={cfg.gp} onChange={(e) => setCfg({ ...cfg, gp: e.target.value })} />
             </Field>
-            <Field label="Grid cell (mm) – smaller = tighter, slower">
+            {/* <Field label="Grid cell (mm) – smaller = tighter, slower">
               <select className={selectCls} value={cfg.cell} onChange={(e) => setCfg({ ...cfg, cell: e.target.value })}>
                 <option>3</option>
                 <option>5</option>
                 <option>8</option>
               </select>
-            </Field>
+            </Field> */}
             <Field label="Rotation">
               <select className={selectCls} value={cfg.ro} onChange={(e) => setCfg({ ...cfg, ro: e.target.value })}>
                 <option value="0">None</option>
