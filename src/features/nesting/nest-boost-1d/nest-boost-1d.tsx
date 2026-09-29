@@ -20,6 +20,7 @@ import {
   barStats,
   buildCutList,
   buildCutListCsv,
+  lotKey,
   minBarLength,
   overallStats,
   resizeBar,
@@ -160,6 +161,10 @@ export function NestBoost1D() {
   React.useEffect(() => {
     piecesRef.current = pieces;
   }, [pieces]);
+  const sourcesRef = React.useRef<Source1D[]>([]);
+  React.useEffect(() => {
+    sourcesRef.current = sources;
+  }, [sources]);
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
 
@@ -193,15 +198,40 @@ export function NestBoost1D() {
   const [confirmReset, setConfirmReset] = React.useState(false);
   const [, bumpV] = React.useReducer((v: number) => v + 1, 0);
 
+  /**
+   * Makes sure every profile + material used by the parts has a source row.
+   * New rows are created WITHOUT a length (length 0 = blank) so the user must type the stock bar length.
+   */
+  const ensureSourcesFor = (parts: Piece1D[]) => {
+    const have = new Set(sourcesRef.current.map((s) => lotKey(s.profile, s.material)));
+    let next = sourcesRef.current;
+    for (const p of parts) {
+      if (!p.profile.trim()) continue;
+      const key = lotKey(p.profile, p.material);
+      if (have.has(key)) continue;
+      have.add(key);
+      next = addSource(next, { profile: p.profile, material: p.material, length: 0, qty: null, cost: 0, description: "" }, sourceCounters.current);
+    }
+    if (next !== sourcesRef.current) {
+      sourcesRef.current = next;
+      setSources(next);
+    }
+  };
+
   const addPieceRow = () => {
     const length = Number(pieceForm.length);
     if (!(length > 0)) {
       setStatus("Enter a cut length in mm for the part.");
       return;
     }
-    setPieces((prev) =>
-      addPiece(prev, { name: pieceForm.name, profile: pieceForm.profile, material: pieceForm.material, length, qty: Number(pieceForm.qty) || 1 }, pieceCounters.current),
+    const nextPieces = addPiece(
+      piecesRef.current,
+      { name: pieceForm.name, profile: pieceForm.profile, material: pieceForm.material, length, qty: Number(pieceForm.qty) || 1 },
+      pieceCounters.current,
     );
+    piecesRef.current = nextPieces;
+    setPieces(nextPieces);
+    ensureSourcesFor(nextPieces);
     setPieceForm((f) => ({ ...f, name: "", length: "", qty: "1" }));
     setStatus("");
   };
@@ -241,9 +271,11 @@ export function NestBoost1D() {
       lines.push(`${f.name}: ${r.pieces.length} part(s) imported` + (r.errors.length ? `, ${r.errors.length} row(s) skipped:\n  ${r.errors.join("\n  ")}` : ""));
     }
     if (added) {
+      piecesRef.current = next;
       setPieces(next);
+      ensureSourcesFor(next);
       setResult(null);
-      toast.success(`Imported ${added} part(s) from CSV`);
+      toast.success(`Imported ${added} part(s) from CSV — enter the stock bar length for each source`);
     } else toast.warning("No parts were imported");
     setImportMsg(lines.join("\n"));
   }
@@ -283,7 +315,9 @@ export function NestBoost1D() {
           }
         }
         if (ok) {
+          piecesRef.current = next;
           setPieces(next);
+          ensureSourcesFor(next);
           setResult(null);
           toast.success(`Imported ${ok} part(s) from Standard Calculations`);
         } else toast.warning("No parts were imported");
@@ -319,6 +353,8 @@ export function NestBoost1D() {
   const resetAll = () => {
     setPieces([]);
     setSources([]);
+    piecesRef.current = [];
+    sourcesRef.current = [];
     pieceCounters.current = { id: 0, sn: 0 };
     sourceCounters.current = { id: 100000, sn: 0 };
     importedIds.current = new Set();
@@ -353,6 +389,11 @@ export function NestBoost1D() {
     }
     if (!sources.length) {
       setStatus("Add at least one stock length (Source) to cut from.");
+      return;
+    }
+    const missing = sources.filter((x) => !(x.length > 0));
+    if (missing.length) {
+      setStatus(`Enter the stock bar length (mm) for: ${missing.map((x) => [x.profile, x.material].filter(Boolean).join(" ") || `source #${x.sn}`).join(", ")}`);
       return;
     }
     const res = runOptimize1D(pieces, sources, S);
@@ -625,7 +666,7 @@ export function NestBoost1D() {
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sources</h3>
           {!sources.length ? (
-            <p className="text-sm text-muted-foreground">No sources yet — add at least one stock length per profile/material.</p>
+            <p className="text-sm text-muted-foreground">No sources yet — they are added automatically when you import parts; you then enter each stock bar length.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
@@ -634,7 +675,7 @@ export function NestBoost1D() {
                     <th className="p-1">#</th>
                     <th className="p-1">Profile</th>
                     <th className="p-1">Material</th>
-                    <th className="p-1">Length (mm)</th>
+                    <th className="p-1">Length (mm) <span className="text-destructive">*</span></th>
                     <th className="p-1">Qty</th>
                     <th className="p-1">Cost/bar</th>
                     <th className="p-1" />
@@ -651,7 +692,12 @@ export function NestBoost1D() {
                         <Input type="text" className="h-8 w-24" value={s.material} onChange={(e) => updateSource(s.id, { material: e.target.value })} />
                       </td>
                       <td className="p-1">
-                        <Input type="number" min={0} className="h-8 w-24" value={s.length} onChange={(e) => updateSource(s.id, { length: Number(e.target.value) || 0 })} />
+                        <Input
+                          type="number" min={0} placeholder="required"
+                          className={`h-8 w-24 ${s.length > 0 ? "" : "border-destructive ring-1 ring-destructive/40"}`}
+                          value={s.length > 0 ? s.length : ""}
+                          onChange={(e) => updateSource(s.id, { length: Number(e.target.value) || 0 })}
+                        />
                       </td>
                       <td className="p-1">
                         <Input

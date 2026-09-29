@@ -108,7 +108,7 @@ export interface Counters1D {
 
 // ------------------------------------------------------------------- pieces & sources
 
-function lotKey(profile: string, material: string): string {
+export function lotKey(profile: string, material: string): string {
   const n = (x: string) => x.trim().replace(/\s+/g, " ").toLowerCase();
   return `${n(profile)}\u0000${n(material)}`;
 }
