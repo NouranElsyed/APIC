@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Download, FileSpreadsheet, FolderInput, Loader2, Package, Plus, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Download, FileSpreadsheet, FolderInput, Loader2, Plus, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -176,7 +176,6 @@ export function NestBoost1D() {
   const importedIds = React.useRef<Set<string>>(new Set());
 
   const [pieceForm, setPieceForm] = React.useState({ name: "", profile: "", material: "", length: "", qty: "1" });
-  const [sourceForm, setSourceForm] = React.useState({ profile: "", material: "", length: "6000", qty: "", cost: "", description: "" });
 
   const [cfg, setCfg] = React.useState({
     kerf: String(DEFAULT_SETTINGS.kerf),
@@ -233,30 +232,6 @@ export function NestBoost1D() {
     setPieces(nextPieces);
     ensureSourcesFor(nextPieces);
     setPieceForm((f) => ({ ...f, name: "", length: "", qty: "1" }));
-    setStatus("");
-  };
-
-  const addSourceRow = () => {
-    const length = Number(sourceForm.length);
-    if (!(length > 0)) {
-      setStatus("Enter a stock bar length in mm for the source.");
-      return;
-    }
-    setSources((prev) =>
-      addSource(
-        prev,
-        {
-          profile: sourceForm.profile,
-          material: sourceForm.material,
-          length,
-          qty: sourceForm.qty.trim() === "" ? null : Number(sourceForm.qty),
-          cost: Number(sourceForm.cost) || 0,
-          description: sourceForm.description,
-        },
-        sourceCounters.current,
-      ),
-    );
-    setSourceForm((f) => ({ ...f, length: "6000", qty: "", cost: "", description: "" }));
     setStatus("");
   };
 
@@ -495,63 +470,7 @@ export function NestBoost1D() {
         </Card>
 
         <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Add a part manually</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Name">
-              <Input className="h-9" value={pieceForm.name} onChange={(e) => setPieceForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Column leg" />
-            </Field>
-            <Field label="Profile / section">
-              <Input className="h-9" value={pieceForm.profile} onChange={(e) => setPieceForm((f) => ({ ...f, profile: e.target.value }))} placeholder='e.g. IPE120' />
-            </Field>
-            <Field label="Material">
-              <Input className="h-9" value={pieceForm.material} onChange={(e) => setPieceForm((f) => ({ ...f, material: e.target.value }))} placeholder="e.g. S235" />
-            </Field>
-            <Field label="Length (mm)">
-              <Input type="number" min={0} className="h-9" value={pieceForm.length} onChange={(e) => setPieceForm((f) => ({ ...f, length: e.target.value }))} />
-            </Field>
-            <Field label="Qty">
-              <Input type="number" min={1} className="h-9" value={pieceForm.qty} onChange={(e) => setPieceForm((f) => ({ ...f, qty: e.target.value }))} />
-            </Field>
-            <div className="flex items-end">
-              <Button className="h-9 w-full" onClick={addPieceRow}>
-                <Plus /> Add part
-              </Button>
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">3. Sources (stock on hand)</h3>
-          <p className="mb-2 text-xs text-muted-foreground">
-            The stock bar lengths available to cut from. A profile + material can have several sources (e.g. 12,000 mm and 6,000
-            mm bars). Leave Qty empty for unlimited stock. Profile/material must match the parts exactly to be used for them.
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Profile / section">
-              <Input className="h-9" value={sourceForm.profile} onChange={(e) => setSourceForm((f) => ({ ...f, profile: e.target.value }))} placeholder='e.g. IPE120' />
-            </Field>
-            <Field label="Material">
-              <Input className="h-9" value={sourceForm.material} onChange={(e) => setSourceForm((f) => ({ ...f, material: e.target.value }))} placeholder="e.g. S235" />
-            </Field>
-            <Field label="Bar length (mm)">
-              <Input type="number" min={0} className="h-9" value={sourceForm.length} onChange={(e) => setSourceForm((f) => ({ ...f, length: e.target.value }))} />
-            </Field>
-            <Field label="Qty (blank = unlimited)">
-              <Input type="number" min={0} className="h-9" value={sourceForm.qty} onChange={(e) => setSourceForm((f) => ({ ...f, qty: e.target.value }))} />
-            </Field>
-            <Field label="Cost / bar (optional)">
-              <Input type="number" min={0} className="h-9" value={sourceForm.cost} onChange={(e) => setSourceForm((f) => ({ ...f, cost: e.target.value }))} />
-            </Field>
-            <div className="flex items-end">
-              <Button className="h-9 w-full" variant="secondary" onClick={addSourceRow}>
-                <Package /> Add source
-              </Button>
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">4. Settings</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Settings</h3>
           <div className="mb-1 text-[11px] font-semibold text-muted-foreground">Basic</div>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Saw kerf (mm)">
@@ -617,10 +536,7 @@ export function NestBoost1D() {
               </Button>
             )}
           </div>
-          {!pieces.length ? (
-            <p className="text-sm text-muted-foreground">No parts yet.</p>
-          ) : (
-            <div className="overflow-x-auto">
+          <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
                 <thead>
                   <tr className="text-left text-muted-foreground">
@@ -658,9 +574,34 @@ export function NestBoost1D() {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-border bg-secondary/40" onKeyDown={(e) => { if (e.key === "Enter") addPieceRow(); }}>
+                    <td className="p-1 font-semibold text-muted-foreground"><Plus className="h-4 w-4" /></td>
+                    <td className="p-1">
+                      <Input className="h-8 w-28" placeholder="Name" value={pieceForm.name} onChange={(e) => setPieceForm((f) => ({ ...f, name: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <Input className="h-8 w-28" placeholder="e.g. IPE120" value={pieceForm.profile} onChange={(e) => setPieceForm((f) => ({ ...f, profile: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <Input className="h-8 w-24" placeholder="e.g. S235" value={pieceForm.material} onChange={(e) => setPieceForm((f) => ({ ...f, material: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <Input type="number" min={0} className="h-8 w-24" placeholder="Length" value={pieceForm.length} onChange={(e) => setPieceForm((f) => ({ ...f, length: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <Input type="number" min={1} className="h-8 w-20" placeholder="Qty" value={pieceForm.qty} onChange={(e) => setPieceForm((f) => ({ ...f, qty: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <Button size="sm" onClick={addPieceRow}>
+                        <Plus /> Add part
+                      </Button>
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
-            </div>
-          )}
+          </div>
+          {status && <p className="mt-2 text-xs text-destructive">{status}</p>}
         </Card>
 
         <Card className="p-4">
