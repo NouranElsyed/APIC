@@ -293,12 +293,14 @@ export function NestBoost() {
             const scale = UNIT_SCALE[part.dxf.unitsDetected ?? "mm"] ?? +units;
             const added = addFileParts(gs, parsed.loops, label, scale, counters.current, {
               th: part.thicknessMm ?? 0,
+              material: part.material ?? "",
               qty: part.qty,
             });
             gs = added.groups;
             importedIds.current.add(part.id);
             ok++;
-            text += `${label}: ${part.qty} pcs, ${part.thicknessMm ?? "?"} mm → ${added.count} contour(s)\n`;
+            const matLbl = part.material ? `${part.material}, ` : "";
+            text += `${label}: ${part.qty} pcs, ${matLbl}${part.thicknessMm ?? "?"} mm → ${added.count} contour(s)\n`;
           }
         }
         setG(gs);
@@ -581,6 +583,7 @@ export function NestBoost() {
                     <th className="p-1">Area</th>
                     <th className="p-1">Holes</th>
                     <th className="p-1">Thick (mm)</th>
+                    <th className="p-1">Material</th>
                     <th className="p-1">Qty</th>
                     <th className="p-1" />
                   </tr>
@@ -612,6 +615,13 @@ export function NestBoost() {
                           type="number" min={0} step="any" placeholder="mm" className="h-8 w-20"
                           value={g.th || ""}
                           onChange={(e) => updateGroup(g.id, { th: Number(e.target.value) || 0 })}
+                        />
+                      </td>
+                      <td className="p-1">
+                        <Input
+                          type="text" placeholder="e.g. S235" className="h-8 w-24"
+                          value={g.material || ""}
+                          onChange={(e) => updateGroup(g.id, { material: e.target.value })}
                         />
                       </td>
                       <td className="p-1">
@@ -665,7 +675,7 @@ export function NestBoost() {
                 return (
                   <div key={i}>
                     <div className="mb-1 text-xs text-muted-foreground">
-                      <b className="text-foreground">Sheet {i + 1}</b> — {sh.th ? `${sh.th} mm plate • ` : ""}
+                      <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
                       {st.parts} parts • used length {st.usedLength} mm • utilization {st.utilization.toFixed(1)}%
                     </div>
                     <SheetCanvas sheet={sh} index={i} S={resS} width={width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} onChange={bump} />

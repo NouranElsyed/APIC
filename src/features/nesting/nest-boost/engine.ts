@@ -13,6 +13,9 @@ export interface Group {
   qty: number;
   /** Plate thickness in mm (0 = unknown). */
   th: number;
+  /** Material grade/spec, e.g. "S235", "304 SS" ("" = unknown). Parts only
+   *  share a sheet with others of the same thickness AND material. */
+  material: string;
   outer: Pt[];
   holes: Pt[][];
   extra?: Pt[][];
@@ -35,6 +38,7 @@ export interface Item {
 export interface Sheet {
   items: Item[];
   th: number;
+  material: string;
   used: number;
   grid?: Uint8Array;
 }
@@ -320,10 +324,11 @@ export function addFileParts(
   name: string,
   scale: number,
   counters: Counters,
-  /** Override the thickness / per-contour quantity (used when importing from Standard Calculations). */
-  opts: { th?: number; qty?: number } = {},
+  /** Override the thickness / material / per-contour quantity (used when importing from Standard Calculations). */
+  opts: { th?: number; material?: string; qty?: number } = {},
 ): { groups: Group[]; count: number } {
   const th = opts.th && opts.th > 0 ? opts.th : thicknessFromName(name);
+  const material = (opts.material ?? "").trim();
   const add = Math.max(1, Math.round(opts.qty ?? 1));
   const out = groups.slice();
   const parts = extractParts(loops, scale);
@@ -331,13 +336,14 @@ export function addFileParts(
     const m = out.find(
       (g) =>
         g.th === th &&
+        g.material === material &&
         g.holes.length === p.holes.length &&
         Math.abs(g.area - p.area) <= g.area * 0.002 + 0.5 &&
         Math.abs(g.per - p.per) <= g.per * 0.005 + 0.5 &&
         Math.abs(Math.max(g.w, g.h) - Math.max(p.w, p.h)) < 0.3,
     );
     if (m) out[out.indexOf(m)] = { ...m, qty: m.qty + add };
-    else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th });
+    else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th, material });
   }
   return { groups: out, count: parts.length };
 }
@@ -581,7 +587,7 @@ async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[
       }
     }
     if (!ok) {
-      const sh: Sheet = { grid: new Uint8Array(S.GW * S.GH), items: [], used: 0, th: 0 };
+      const sh: Sheet = { grid: new Uint8Array(S.GW * S.GH), items: [], used: 0, th: 0, material: "" };
       const b = place(S, rc, sh, g, rots);
       if (b) {
         commit(S, sh, g, b);
@@ -630,7 +636,13 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
     (g) => g.h,
     (g) => g.w * g.h * (0.6 + 0.8 * Math.random()),
   ];
-  const ths = Array.from(new Set(items.map((g) => g.th || 0))).sort((a, b) => a - b);
+  // Parts only share a sheet when both thickness AND material match.
+  const lots = Array.from(new Set(items.map((g) => `${g.th || 0}\u0000${g.material || ""}`)))
+    .map((k) => {
+      const i = k.indexOf("\u0000");
+      return { th: +k.slice(0, i), material: k.slice(i + 1) };
+    })
+    .sort((a, b) => a.th - b.th || a.material.localeCompare(b.material));
   const done: Sheet[] = [];
   const dun: Group[] = [];
   let it = 0;
@@ -640,10 +652,10 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
     skip,
   });
 
-  for (const th of ths) {
-    const sub = items.filter((g) => (g.th || 0) === th);
+  for (const { th, material } of lots) {
+    const sub = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
     const t0 = performance.now();
-    const lim = (o.timeSec * 1000) / ths.length;
+    const lim = (o.timeSec * 1000) / lots.length;
     let best: { sheets: Sheet[]; un: Group[]; sc: number } | null = null;
     let k = 0;
     while (!o.shouldStop() && (k === 0 || performance.now() - t0 < lim)) {
@@ -661,12 +673,16 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
       const r = await attempt(S, rc, ord, rr, o.shouldStop);
       k++;
       it++;
-      r.sheets.forEach((x) => (x.th = th));
+      r.sheets.forEach((x) => {
+        x.th = th;
+        x.material = material;
+      });
       if (!o.shouldStop() && (!best || r.sc < best.sc)) {
         best = r;
         o.onBest(cur(best));
       }
-      o.onStatus(`Thickness ${th || "?"} mm • iteration ${it} • sheets: ${done.length + (best ? best.sheets.length : 0)}`);
+      const lbl = material ? `${material} • ${th || "?"} mm` : `${th || "?"} mm`;
+      o.onStatus(`${lbl} • iteration ${it} • sheets: ${done.length + (best ? best.sheets.length : 0)}`);
     }
     if (best) {
       done.push(...best.sheets);
@@ -858,6 +874,7 @@ export function moveTo(sel: Sel, S: Settings, tx: number, ty: number) {
 export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): boolean {
   const it = sel.it;
   if ((sh.th || 0) !== (sel.sh.th || 0)) return false;
+  if ((sh.material || "") !== (sel.sh.material || "")) return false;
   const sv = { sh: sel.sh, idx: sel.idx, oth: sel.oth, x: it.x, y: it.y };
   sel.sh = sh;
   sel.idx = idx;
