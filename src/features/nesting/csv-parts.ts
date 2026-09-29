@@ -25,6 +25,7 @@ function splitLine(line: string, d: string): string[] {
 }
 
 const ALIASES: Record<keyof Piece1DInput, string[]> = {
+  partType: ["type", "parttype", "kind"],
   name: ["name", "part", "partname", "description", "desc", "item"],
   profile: ["profile", "section", "size"],
   material: ["material", "grade", "mat"],
@@ -32,6 +33,16 @@ const ALIASES: Record<keyof Piece1DInput, string[]> = {
   qty: ["qty", "quantity", "pcs", "count", "nos"],
 };
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** "plate", "PL", "hot rolled", "HR", "pipe", "tube"... -> part type (undefined when not recognised). */
+export function parsePartType(v: string): Piece1DInput["partType"] {
+  const k = norm(v);
+  if (!k) return undefined;
+  if (k === "plate" || k === "pl" || k === "flat") return "PLATE";
+  if (k === "pipe" || k === "tube") return "PIPE";
+  if (k === "hotrolled" || k === "hr" || k === "hotroll" || k === "section" || k === "profile") return "HOT_ROLLED";
+  return undefined;
+}
 
 export interface CsvParseResult {
   pieces: Piece1DInput[];
@@ -71,7 +82,7 @@ export function parsePartsCsv(text: string): CsvParseResult {
     // No profile column (or an empty cell): the part label is the section, e.g. "IPE 300",
     // so it can be matched against stock sources of the same profile.
     const profile = get("profile") || name;
-    pieces.push({ name, profile, material: get("material"), length, qty: Math.round(qty) });
+    pieces.push({ name, profile, material: get("material"), length, qty: Math.round(qty), partType: parsePartType(get("partType")) });
   }
   return { pieces, errors };
 }

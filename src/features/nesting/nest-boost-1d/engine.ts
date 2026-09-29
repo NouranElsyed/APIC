@@ -5,6 +5,17 @@
 // of dedicated 1D cutting-optimization software. Pure client-side, no
 // server or database involved.
 
+/** What a part is made of, so it can be told apart in the list (plate strip, rolled section, pipe). */
+export type PartType1D = "PLATE" | "HOT_ROLLED" | "PIPE";
+
+export const PART_TYPES_1D: { value: PartType1D; label: string }[] = [
+  { value: "HOT_ROLLED", label: "Hot rolled" },
+  { value: "PLATE", label: "Plate" },
+  { value: "PIPE", label: "Pipe" },
+];
+
+export const DEFAULT_PART_TYPE_1D: PartType1D = "HOT_ROLLED";
+
 export interface Piece1D {
   id: number;
   /** Serial number shown next to the part. */
@@ -17,6 +28,8 @@ export interface Piece1D {
   /** Cut length in mm. */
   length: number;
   qty: number;
+  /** Plate / hot rolled / pipe (missing = hot rolled). */
+  partType?: PartType1D;
 }
 
 /** One available stock length for a given profile + material (a "Source"). */
@@ -116,19 +129,24 @@ export function lotKey(profile: string, material: string): string {
 /** Merges a manually entered piece into `pieces` (identical pieces share one row with a higher quantity). */
 export function addPiece(
   pieces: Piece1D[],
-  input: { name: string; profile: string; material: string; length: number; qty: number },
+  input: { name: string; profile: string; material: string; length: number; qty: number; partType?: PartType1D },
   counters: Counters1D,
 ): Piece1D[] {
   const profile = input.profile.trim();
   const material = input.material.trim();
   const length = Math.max(0, input.length);
   const qty = Math.max(1, Math.round(input.qty || 1));
+  const partType = input.partType ?? DEFAULT_PART_TYPE_1D;
   const out = pieces.slice();
   const m = out.find(
-    (p) => p.profile === profile && p.material === material && Math.abs(p.length - length) < 0.05,
+    (p) =>
+      p.profile === profile &&
+      p.material === material &&
+      (p.partType ?? DEFAULT_PART_TYPE_1D) === partType &&
+      Math.abs(p.length - length) < 0.05,
   );
   if (m) out[out.indexOf(m)] = { ...m, qty: m.qty + qty };
-  else out.push({ id: counters.id++, sn: ++counters.sn, name: input.name || `Part #${counters.sn}`, profile, material, length, qty });
+  else out.push({ id: counters.id++, sn: ++counters.sn, name: input.name || `Part #${counters.sn}`, profile, material, length, qty, partType });
   return out;
 }
 

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
+import { dxfToPiece } from "../dxf-piece";
 import { nestKindOf, partTo1DPiece } from "../part-routing";
 import { pieceColor, renderBarPng } from "../report/draw-1d";
 import { register1D } from "../report/report-store";
@@ -20,18 +21,33 @@ import {
   barStats,
   buildCutList,
   buildCutListCsv,
+  DEFAULT_PART_TYPE_1D,
   lotKey,
   minBarLength,
   overallStats,
+  PART_TYPES_1D,
   resizeBar,
   runOptimize1D,
   type Bar,
   type Counters1D,
+  type PartType1D,
   type Piece1D,
   type Result1D,
   type Settings1D,
   type Source1D,
 } from "./engine";
+
+const selectCls = "h-8 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring";
+
+function TypeSelect({ value, onChange, className = "" }: { value: PartType1D | undefined; onChange: (v: PartType1D) => void; className?: string }) {
+  return (
+    <select className={`${selectCls} ${className}`} value={value ?? DEFAULT_PART_TYPE_1D} onChange={(e) => onChange(e.target.value as PartType1D)}>
+      {PART_TYPES_1D.map((t) => (
+        <option key={t.value} value={t.value}>{t.label}</option>
+      ))}
+    </select>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -175,7 +191,13 @@ export function NestBoost1D() {
   // Takeoff part ids already imported, so pressing Import twice never doubles quantities.
   const importedIds = React.useRef<Set<string>>(new Set());
 
-  const [pieceForm, setPieceForm] = React.useState({ name: "", profile: "", material: "", length: "", qty: "1" });
+  const [pieceForm, setPieceForm] = React.useState<{ name: string; profile: string; material: string; length: string; qty: string; partType: PartType1D }>({
+    name: "", profile: "", material: "", length: "", qty: "1", partType: DEFAULT_PART_TYPE_1D,
+  });
+  // DXF import options: type given to every imported drawing, and the drawing units ("auto" = read from the file).
+  const [dxfType, setDxfType] = React.useState<PartType1D>(DEFAULT_PART_TYPE_1D);
+  const [dxfUnits, setDxfUnits] = React.useState("auto");
+  const [dxfBusy, setDxfBusy] = React.useState(false);
 
   const [cfg, setCfg] = React.useState({
     kerf: String(DEFAULT_SETTINGS.kerf),
@@ -205,7 +227,6 @@ export function NestBoost1D() {
     const have = new Set(sourcesRef.current.map((s) => lotKey(s.profile, s.material)));
     let next = sourcesRef.current;
     for (const p of parts) {
-      if (!p.profile.trim()) continue;
       const key = lotKey(p.profile, p.material);
       if (have.has(key)) continue;
       have.add(key);
@@ -225,7 +246,7 @@ export function NestBoost1D() {
     }
     const nextPieces = addPiece(
       piecesRef.current,
-      { name: pieceForm.name, profile: pieceForm.profile, material: pieceForm.material, length, qty: Number(pieceForm.qty) || 1 },
+      { name: pieceForm.name, profile: pieceForm.profile, material: pieceForm.material, length, qty: Number(pieceForm.qty) || 1, partType: pieceForm.partType },
       pieceCounters.current,
     );
     piecesRef.current = nextPieces;
@@ -234,6 +255,42 @@ export function NestBoost1D() {
     setPieceForm((f) => ({ ...f, name: "", length: "", qty: "1" }));
     setStatus("");
   };
+
+  /** Reads one or many DXF drawings and adds one part per file (cut length = longer side of the outline). */
+  async function handleDxf(files: File[]) {
+    files = files.filter((f) => /\.dxf$/i.test(f.name));
+    if (!files.length) {
+      toast.error("Choose one or more .dxf files");
+      return;
+    }
+    setDxfBusy(true);
+    try {
+      const scale = dxfUnits === "auto" ? null : Number(dxfUnits);
+      let next = piecesRef.current;
+      const lines: string[] = [];
+      let added = 0;
+      for (const f of files) {
+        const r = dxfToPiece(await f.text(), f.name, scale);
+        if ("error" in r) {
+          lines.push(`${f.name}: skipped — ${r.error}`);
+          continue;
+        }
+        next = addPiece(next, { name: r.name, profile: "", material: "", length: r.length, qty: 1, partType: dxfType }, pieceCounters.current);
+        added++;
+        lines.push(`${f.name}: ${r.length} mm long × ${r.width} mm wide (units: ${r.unitsLabel})${r.contours > 1 ? `, ${r.contours} contours — largest one used` : ""}`);
+      }
+      if (added) {
+        piecesRef.current = next;
+        setPieces(next);
+        ensureSourcesFor(next);
+        setResult(null);
+        toast.success(`Imported ${added} part(s) from DXF — set the profile, material and qty in the list`);
+      } else toast.warning("No parts were imported from the DXF files");
+      setImportMsg(lines.join("\n"));
+    } finally {
+      setDxfBusy(false);
+    }
+  }
 
   async function handleCsv(files: File[]) {
     let added = 0;
@@ -314,7 +371,13 @@ export function NestBoost1D() {
     importFromProject(ids);
   }, [nestingQueue1D, projectId, clearNestingQueue1D, importFromProject]);
 
-  const updatePiece = (id: number, patch: Partial<Piece1D>) => setPieces((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const updatePiece = (id: number, patch: Partial<Piece1D>) => {
+    const next = piecesRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    piecesRef.current = next;
+    setPieces(next);
+    // A new profile / material needs its own stock row (Sources) to cut from.
+    if ("profile" in patch || "material" in patch) ensureSourcesFor(next);
+  };
   const removePiece = (id: number) => {
     setPieces((prev) => prev.filter((p) => p.id !== id));
     setResult(null);
@@ -527,14 +590,51 @@ export function NestBoost1D() {
       </div>
 
       <div className="space-y-4">
-        <Card className="p-4">
-          <div className="mb-2 flex items-center justify-between">
+        <Card
+          className="p-4"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const dropped = Array.from(e.dataTransfer.files);
+            const dxf = dropped.filter((f) => /\.dxf$/i.test(f.name));
+            if (dxf.length) handleDxf(dxf);
+            else handleCsv(dropped.filter((f) => /\.csv$/i.test(f.name)));
+          }}
+        >
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parts &amp; quantities</h3>
-            {(pieces.length > 0 || sources.length > 0) && (
-              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmReset(true)}>
-                <Trash2 /> Reset all
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">DXF as</span>
+              <TypeSelect value={dxfType} onChange={setDxfType} />
+              <select className={selectCls} value={dxfUnits} onChange={(e) => setDxfUnits(e.target.value)} title="Drawing units of the DXF files">
+                <option value="auto">Units: auto</option>
+                <option value="1">mm</option>
+                <option value="10">cm</option>
+                <option value="1000">m</option>
+                <option value="25.4">inch</option>
+              </select>
+              <Button asChild variant="secondary" size="sm" disabled={dxfBusy}>
+                <label className="cursor-pointer" title="Pick one or many DXF drawings — one part is created per file, with its cut length filled in">
+                  {dxfBusy ? <Loader2 className="animate-spin" /> : <Upload />} Import DXF
+                  <input
+                    type="file"
+                    accept=".dxf"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      const fs = Array.from(e.target.files ?? []);
+                      e.target.value = "";
+                      handleDxf(fs);
+                    }}
+                  />
+                </label>
               </Button>
-            )}
+              {(pieces.length > 0 || sources.length > 0) && (
+                <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmReset(true)}>
+                  <Trash2 /> Reset all
+                </Button>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
@@ -542,6 +642,7 @@ export function NestBoost1D() {
                   <tr className="text-left text-muted-foreground">
                     <th className="p-1">#</th>
                     <th className="p-1">Name</th>
+                    <th className="p-1">Type</th>
                     <th className="p-1">Profile</th>
                     <th className="p-1">Material</th>
                     <th className="p-1">Length (mm)</th>
@@ -554,6 +655,9 @@ export function NestBoost1D() {
                     <tr key={p.id} className="border-t border-border">
                       <td className="p-1 font-semibold">#{p.sn}</td>
                       <td className="p-1">{p.name}</td>
+                      <td className="p-1">
+                        <TypeSelect value={p.partType} onChange={(v) => updatePiece(p.id, { partType: v })} />
+                      </td>
                       <td className="p-1">
                         <Input type="text" className="h-8 w-28" value={p.profile} onChange={(e) => updatePiece(p.id, { profile: e.target.value })} />
                       </td>
@@ -579,6 +683,9 @@ export function NestBoost1D() {
                     <td className="p-1 font-semibold text-muted-foreground"><Plus className="h-4 w-4" /></td>
                     <td className="p-1">
                       <Input className="h-8 w-28" placeholder="Name" value={pieceForm.name} onChange={(e) => setPieceForm((f) => ({ ...f, name: e.target.value }))} />
+                    </td>
+                    <td className="p-1">
+                      <TypeSelect value={pieceForm.partType} onChange={(v) => setPieceForm((f) => ({ ...f, partType: v }))} />
                     </td>
                     <td className="p-1">
                       <Input className="h-8 w-28" placeholder="e.g. IPE120" value={pieceForm.profile} onChange={(e) => setPieceForm((f) => ({ ...f, profile: e.target.value }))} />

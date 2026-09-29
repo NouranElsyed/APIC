@@ -18,6 +18,8 @@ export interface Piece1DInput {
   /** Cut length in mm. */
   length: number;
   qty: number;
+  /** Plate / hot rolled / pipe. Optional: missing = hot rolled. */
+  partType?: "PLATE" | "HOT_ROLLED" | "PIPE";
 }
 
 const num = (v: unknown): number => {
@@ -45,7 +47,7 @@ export function partTo1DPiece(part: TakeoffPartRow): { piece: Piece1DInput } | {
       const length = mm(num(g.length));
       const profile = String(g.profile ?? "").trim();
       if (length <= 0) return { error: "no length" };
-      return { piece: { name: part.description, profile, material, length, qty: part.qty } };
+      return { piece: { name: part.description, profile, material, length, qty: part.qty, partType: "HOT_ROLLED" } };
     }
     case "PIPE": {
       const length = mm(num(g.length));
@@ -53,7 +55,7 @@ export function partTo1DPiece(part: TakeoffPartRow): { piece: Piece1DInput } | {
       if (length <= 0) return { error: "no length" };
       const thk = part.thicknessMm ? `x${fmt(part.thicknessMm)}` : "";
       const profile = od > 0 ? `PIPE OD${fmt(od)}${thk}` : "PIPE";
-      return { piece: { name: part.description, profile, material, length, qty: part.qty } };
+      return { piece: { name: part.description, profile, material, length, qty: part.qty, partType: "PIPE" } };
     }
     default:
       return { error: `${part.partType} has no bar length` };
