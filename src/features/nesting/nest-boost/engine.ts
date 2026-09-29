@@ -512,6 +512,13 @@ interface Mask {
   mw: number;
   mh: number;
   pad: number;
+  /** Extent of the cells the part really occupies inside the mask box (the padding around
+   *  them is empty). Placement is limited by these, not by the padded box — otherwise the
+   *  padding would eat sheet capacity (e.g. 4 x 1500 mm no longer fit a 6000 mm sheet). */
+  minC: number;
+  maxC: number;
+  minR: number;
+  maxR: number;
   off: Int32Array;
 }
 type MaskCache = Map<string, Mask>;
@@ -561,8 +568,18 @@ function mask(S: Settings, rc: MaskCache, g: Group, rot: number): Mask {
   if (S.gp > 0) c.stroke(P);
   const d = c.getImageData(0, 0, mw, mh).data;
   const o: number[] = [];
-  for (let r = 0; r < mh; r++) for (let q = 0; q < mw; q++) if (d[(r * mw + q) * 4 + 3] > 0) o.push(r * S.GW + q);
-  const m: Mask = { mw, mh, pad, off: Int32Array.from(o) };
+  let minC = mw, maxC = -1, minR = mh, maxR = -1;
+  for (let r = 0; r < mh; r++)
+    for (let q = 0; q < mw; q++)
+      if (d[(r * mw + q) * 4 + 3] > 0) {
+        o.push(r * S.GW + q);
+        if (q < minC) minC = q;
+        if (q > maxC) maxC = q;
+        if (r < minR) minR = r;
+        if (r > maxR) maxR = r;
+      }
+  if (maxC < 0) { minC = maxC = minR = maxR = 0; }
+  const m: Mask = { mw, mh, pad, minC, maxC, minR, maxR, off: Int32Array.from(o) };
   rc.set(k, m);
   return m;
 }
@@ -571,13 +588,15 @@ function place(S: Settings, rc: MaskCache, sh: Sheet, g: Group, rots: number[]):
   let best: Slot | null = null;
   for (const rot of rots) {
     const m = mask(S, rc, g, rot);
-    if (m.mw > S.GW || m.mh > S.GH) continue;
+    if (m.maxC - m.minC + 1 > S.GW || m.maxR - m.minR + 1 > S.GH) continue;
     const G = sh.grid as Uint8Array;
     const o = m.off;
-    const lim = Math.min(best ? best.sc - m.mw : 1e9, S.GW - m.mw);
-    for (let gx = 0; gx <= lim; gx++) {
-      let f = -1;
-      for (let gy = 0; gy <= S.GH - m.mh; gy++) {
+    // gx/gy are the mask box's origin; only the occupied cells (minC..maxC / minR..maxR) must
+    // stay inside the grid, so the origin may sit a few cells outside it (empty padding).
+    const lim = Math.min(best ? best.sc - (m.maxC + 1) : 1e9, S.GW - 1 - m.maxC);
+    for (let gx = -m.minC; gx <= lim; gx++) {
+      let f = -Infinity;
+      for (let gy = -m.minR; gy <= S.GH - 1 - m.maxR; gy++) {
         const b = gy * S.GW + gx;
         let ok = true;
         for (let k = 0; k < o.length; k++)
@@ -590,8 +609,8 @@ function place(S: Settings, rc: MaskCache, sh: Sheet, g: Group, rots: number[]):
           break;
         }
       }
-      if (f >= 0) {
-        const sc = gx + m.mw;
+      if (f > -Infinity) {
+        const sc = gx + m.maxC + 1;
         if (!best || sc < best.sc || (sc === best.sc && f < best.gy)) best = { sc, gx, gy: f, rot, m };
         break;
       }
