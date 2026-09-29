@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, RotateCcw, Save, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -12,6 +12,7 @@ import { nestKindOf } from "@/features/nesting/part-routing";
 import { register2D } from "../report/report-store";
 import type { Report2DInput } from "../report/report-2d";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import {
   addFileParts,
   buildDxf,
@@ -202,6 +203,12 @@ export function NestBoost() {
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
 
+  // Saved nests (unlimited) so several attempts can be kept and compared.
+  const [savedNests, setSavedNests] = React.useState<SavedNest[]>([]);
+  const savedSeq = React.useRef(0);
+  const [nestName, setNestName] = React.useState("");
+  const [activeNestId, setActiveNestId] = React.useState<number | null>(null);
+
   const selRef = React.useRef<Sel | null>(null);
   const runRef = React.useRef(0);
   const stopRef = React.useRef(false);
@@ -242,6 +249,7 @@ export function NestBoost() {
     setResS(null);
     setRunning(false);
     setStatus("");
+    setActiveNestId(null);
     bump();
   };
 
@@ -374,6 +382,7 @@ export function NestBoost() {
       return;
     }
     const S = makeSettings(v);
+    setActiveNestId(null);
     const my = ++runRef.current;
     stopRef.current = false;
     selRef.current = null;
@@ -402,6 +411,40 @@ export function NestBoost() {
       setResult(res);
     }
     setRunning(false);
+  }
+
+  /** Keeps a copy of the current nest (result + settings + parts) so it can be compared with other attempts. */
+  function saveNest() {
+    if (!result || !resS || running) return;
+    const id = ++savedSeq.current;
+    const snap: SavedNest = {
+      id,
+      name: nestName.trim() || `Nest ${id}`,
+      savedAt: Date.now(),
+      cfg: { ...cfg },
+      S: resS,
+      result: cloneResult(result),
+      groups: groupsRef.current,
+    };
+    setSavedNests((p) => [...p, snap]);
+    setActiveNestId(id);
+    setNestName("");
+    toast.success(`Saved "${snap.name}"`);
+  }
+
+  function openSavedNest(n: SavedNest) {
+    runRef.current++;
+    stopRef.current = true;
+    selRef.current = null;
+    setRunning(false);
+    setStatus("");
+    setCfg({ ...n.cfg });
+    setG(n.groups);
+    setResS(n.S);
+    setResult(cloneResult(n.result));
+    setActiveNestId(n.id);
+    bump();
+    toast.success(`Opened "${n.name}" — its settings and parts were restored`);
   }
 
   function exportDxf() {
@@ -799,7 +842,16 @@ export function NestBoost() {
               })
             )}
           </div>
-          <div className="mt-4 flex justify-end border-t border-border pt-3">
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
+            <Input
+              className="h-9 w-44" placeholder="Name (optional)" value={nestName}
+              onChange={(e) => setNestName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && canExport) saveNest(); }}
+              disabled={!canExport}
+            />
+            <Button variant="secondary" onClick={saveNest} disabled={!canExport} title="Keep this nest so you can try another one and compare them">
+              <Save /> Save this nest
+            </Button>
             <Button onClick={exportReport} disabled={!canExport || reporting} title="Excel report: material used, scrap, parts nested and a picture of every sheet">
               {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
             </Button>
@@ -817,6 +869,17 @@ export function NestBoost() {
             </div>
           )}
         </Card>
+
+        <SavedNestsCard
+          nests={savedNests}
+          activeId={activeNestId}
+          onLoad={openSavedNest}
+          onDelete={(id) => {
+            setSavedNests((p) => p.filter((n) => n.id !== id));
+            setActiveNestId((a) => (a === id ? null : a));
+          }}
+          onRename={(id, name) => setSavedNests((p) => p.map((n) => (n.id === id ? { ...n, name } : n)))}
+        />
       </div>
 
       <ConfirmDialog
