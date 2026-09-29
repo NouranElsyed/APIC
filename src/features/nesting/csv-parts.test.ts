@@ -20,4 +20,8 @@ describe("parsePartsCsv", () => {
     expect(r.pieces.length).toBe(1);
     expect(r.errors.length).toBe(2);
   });
+  it("uses the part label as the profile when there is no profile column", () => {
+    const r = parsePartsCsv("\uFEFFpart ,length,Qty\nIPE 300,12000,6\n");
+    expect(r.pieces).toEqual([{ name: "IPE 300", profile: "IPE 300", material: "", length: 12000, qty: 6 }]);
+  });
 });

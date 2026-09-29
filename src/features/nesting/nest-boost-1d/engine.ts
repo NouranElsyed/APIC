@@ -109,7 +109,8 @@ export interface Counters1D {
 // ------------------------------------------------------------------- pieces & sources
 
 function lotKey(profile: string, material: string): string {
-  return `${profile.trim()}\u0000${material.trim()}`;
+  const n = (x: string) => x.trim().replace(/\s+/g, " ").toLowerCase();
+  return `${n(profile)}\u0000${n(material)}`;
 }
 
 /** Merges a manually entered piece into `pieces` (identical pieces share one row with a higher quantity). */
@@ -255,9 +256,10 @@ export function runOptimize1D(pieces: Piece1D[], sources: Source1D[], S: Setting
         }
       }
       if (!pick) {
-        skip.push(
-          `Part #${p.sn} (${p.name}, ${p.profile || "?"} ${p.material || ""}) is ${Math.round(p.length)} mm — no available stock length is long enough (after kerf/trim/gripping)`,
-        );
+        const msg =
+          `Part #${p.sn} (${p.name}, ${p.profile || "?"} ${p.material || ""}) is ${Math.round(p.length)} mm — no stock source with a matching profile/material is long enough (after kerf/trim/gripping)`;
+        // report once per part, not once per piece of its quantity
+        if (!skip.includes(msg)) skip.push(msg);
         continue;
       }
       if (pick.remaining !== null) {

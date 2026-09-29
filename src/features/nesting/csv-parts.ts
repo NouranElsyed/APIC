@@ -67,7 +67,11 @@ export function parsePartsCsv(text: string): CsvParseResult {
     const qty = Number(get("qty").replace(",", "."));
     if (!(length > 0)) { errors.push(`Row ${i + 1}: invalid length "${get("length")}"`); continue; }
     if (!(qty > 0)) { errors.push(`Row ${i + 1}: invalid qty "${get("qty")}"`); continue; }
-    pieces.push({ name: get("name"), profile: get("profile"), material: get("material"), length, qty: Math.round(qty) });
+    const name = get("name");
+    // No profile column (or an empty cell): the part label is the section, e.g. "IPE 300",
+    // so it can be matched against stock sources of the same profile.
+    const profile = get("profile") || name;
+    pieces.push({ name, profile, material: get("material"), length, qty: Math.round(qty) });
   }
   return { pieces, errors };
 }
