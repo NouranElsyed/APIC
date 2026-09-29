@@ -41,6 +41,43 @@ export interface Sheet {
   material: string;
   used: number;
   grid?: Uint8Array;
+  /** Actual physical sheet size, if trimmed down from the stock size (S.W / S.H) to
+   *  cut less material / scrap. Undefined = use the stock sheet size. */
+  W?: number;
+  H?: number;
+}
+
+/** The extent (max x, max y) reached by any part currently on the sheet. */
+export function sheetExtent(sh: Sheet): { w: number; h: number } {
+  let mx = 0;
+  let my = 0;
+  for (const it of sh.items) {
+    const b = bbox(sides(it).o);
+    mx = Math.max(mx, b[2]);
+    my = Math.max(my, b[3]);
+  }
+  return { w: mx, h: my };
+}
+
+/** Smallest physical size this sheet can be trimmed to without cutting into its parts. */
+export function minSheetSize(sh: Sheet, S: Settings): { w: number; h: number } {
+  const e = sheetExtent(sh);
+  return { w: Math.round(e.w + S.mg), h: Math.round(e.h + S.mg) };
+}
+
+/**
+ * Trims (or restores) a sheet's physical size, e.g. to cut a shorter/narrower
+ * plate for a partly-filled sheet and reduce scrap. Clamped between the
+ * minimum needed to hold its parts and the stock sheet size (S.W / S.H).
+ * Returns the size actually applied.
+ */
+export function resizeSheet(sh: Sheet, S: Settings, w: number, h: number): { w: number; h: number } {
+  const min = minSheetSize(sh, S);
+  const W = Math.min(S.W, Math.max(min.w, Math.round(w)));
+  const H = Math.min(S.H, Math.max(min.h, Math.round(h)));
+  sh.W = W;
+  sh.H = H;
+  return { w: W, h: H };
 }
 
 export interface Settings {
@@ -833,7 +870,9 @@ export function cancelPick(sel: Sel) {
 export function isBad(sel: Sel, S: Settings) {
   const A = sides(sel.it);
   const b = bbox(A.o);
-  if (b[0] < S.mg - 0.01 || b[1] < S.mg - 0.01 || b[2] > S.W - S.mg + 0.01 || b[3] > S.H - S.mg + 0.01) return true;
+  const W = sel.sh.W ?? S.W;
+  const H = sel.sh.H ?? S.H;
+  if (b[0] < S.mg - 0.01 || b[1] < S.mg - 0.01 || b[2] > W - S.mg + 0.01 || b[3] > H - S.mg + 0.01) return true;
   const g = Math.max(0, S.gp - 0.5);
   return sel.oth.some((o) => hit2(A, b, o.s, o.bb, g));
 }
@@ -914,13 +953,15 @@ export function rotate(sel: Sel, S: Settings, d: number) {
 
 export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false) {
   const c = cv.getContext("2d") as CanvasRenderingContext2D;
+  const W = sh.W ?? S.W;
+  const H = sh.H ?? S.H;
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, cv.width, cv.height);
   c.setTransform(k, 0, 0, -k, 0, cv.height);
   c.lineWidth = 1 / k;
   c.strokeStyle = "#94a3b8";
   c.setLineDash([6 / k, 4 / k]);
-  c.strokeRect(S.mg, S.mg, S.W - 2 * S.mg, S.H - 2 * S.mg);
+  c.strokeRect(S.mg, S.mg, W - 2 * S.mg, H - 2 * S.mg);
   c.setLineDash([]);
   for (const it of sh.items) {
     c.fillStyle = selBad && selItem === it ? "#ef4444" : partColor(it.g);
@@ -962,10 +1003,12 @@ export function sheetStats(sh: Sheet, S: Settings) {
     a += it.g.area;
     mx = Math.max(mx, bbox(sides(it).o)[2]);
   }
+  const W = sh.W ?? S.W;
+  const H = sh.H ?? S.H;
   return {
     parts: sh.items.reduce((s, x) => s + (x.g.n || 1), 0),
     usedLength: Math.round(mx + S.mg),
-    utilization: (100 * a) / (S.W * S.H),
+    utilization: (100 * a) / (W * H),
   };
 }
 
@@ -1077,9 +1120,11 @@ export function buildDxf(sheets: Sheet[], S: Settings): string {
     });
     s += "0\nSEQEND\n8\n0\n";
   };
-  sheets.forEach((sh, i) => {
-    const ox = i * (S.W + 300);
-    pl([[0, 0], [S.W, 0], [S.W, S.H], [0, S.H]], ox);
+  let ox = 0;
+  sheets.forEach((sh) => {
+    const W = sh.W ?? S.W;
+    const H = sh.H ?? S.H;
+    pl([[0, 0], [W, 0], [W, H], [0, H]], ox);
     for (const it of sh.items)
       for (const r of [it.g.outer, ...it.g.holes, ...(it.g.extra || [])])
         pl(
@@ -1089,6 +1134,7 @@ export function buildDxf(sheets: Sheet[], S: Settings): string {
           }),
           ox,
         );
+    ox += W + 300;
   });
   s += "0\nENDSEC\n0\nEOF\n";
   return s;

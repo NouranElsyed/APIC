@@ -15,11 +15,13 @@ import {
   cancelPick,
   drawSheet,
   makeSettings,
+  minSheetSize,
   moveTo,
   parseDXF,
   partColor,
   path,
   problemMessages,
+  resizeSheet,
   rotate,
   runOptimize,
   sheetStats,
@@ -674,9 +676,57 @@ export function NestBoost() {
                 const st = sheetStats(sh, resS);
                 return (
                   <div key={i}>
-                    <div className="mb-1 text-xs text-muted-foreground">
-                      <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
-                      {st.parts} parts • used length {st.usedLength} mm • utilization {st.utilization.toFixed(1)}%
+                    <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
+                        {st.parts} parts • utilization {st.utilization.toFixed(1)}%
+                      </span>
+                      <span className="flex items-center gap-1">
+                        Cut size
+                        <Input
+                          type="number" min={1} className="h-7 w-20"
+                          value={Math.round(sh.W ?? resS.W)}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (v > 0) resizeSheet(sh, resS, v, sh.H ?? resS.H);
+                            bump();
+                          }}
+                        />
+                        ×
+                        <Input
+                          type="number" min={1} className="h-7 w-20"
+                          value={Math.round(sh.H ?? resS.H)}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (v > 0) resizeSheet(sh, resS, sh.W ?? resS.W, v);
+                            bump();
+                          }}
+                        />
+                        mm
+                      </span>
+                      <Button
+                        variant="ghost" size="sm" className="h-7"
+                        title="Shrink this sheet to just fit its parts, to cut less material / less scrap"
+                        onClick={() => {
+                          const m = minSheetSize(sh, resS);
+                          resizeSheet(sh, resS, m.w, m.h);
+                          bump();
+                        }}
+                      >
+                        Fit to parts
+                      </Button>
+                      {(sh.W !== undefined || sh.H !== undefined) && (
+                        <Button
+                          variant="ghost" size="sm" className="h-7"
+                          onClick={() => {
+                            sh.W = undefined;
+                            sh.H = undefined;
+                            bump();
+                          }}
+                        >
+                          Reset to full sheet
+                        </Button>
+                      )}
                     </div>
                     <SheetCanvas sheet={sh} index={i} S={resS} width={width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} onChange={bump} />
                   </div>
