@@ -7,6 +7,8 @@ import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
 import { nestKindOf, partTo1DPiece } from "../part-routing";
 import { pieceColor, renderBarPng } from "../report/draw-1d";
+import { register1D } from "../report/report-store";
+import type { Report1DInput } from "../report/report-1d";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -367,22 +369,36 @@ export function NestBoost1D() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  const canExport = !!result && result.layouts.length > 0;
+
+  /** Report input for this tool's current result (also used by the combined 1D+2D report). */
+  const getReportInput = React.useCallback((): Report1DInput | null => {
+    if (!result || !resS) return null;
+    const S = resS;
+    return {
+      projectName: projects.find((p) => p.id === projectId)?.name,
+      result,
+      S,
+      pieces,
+      sources,
+      renderBar: (i) => renderBarPng(result.layouts[i].bars[0], S),
+    };
+  }, [result, resS, pieces, sources, projects, projectId]);
+
+  // Lets the combined 1D+2D report button reach this tool's latest result.
+  React.useEffect(() => {
+    register1D(canExport ? getReportInput : null);
+    return () => register1D(null);
+  }, [canExport, getReportInput]);
+
   /** Excel report: bars used, scrap, parts cut, cut list and a picture of every layout. */
   async function exportReport() {
-    if (!result || !resS) return;
+    const input = getReportInput();
+    if (!input) return;
     setReporting(true);
     try {
       const [{ buildReport1D }, { saveBlob }] = await Promise.all([import("../report/report-1d"), import("../report/excel-common")]);
-      const S = resS;
-      const blob = await buildReport1D({
-        projectName: projects.find((p) => p.id === projectId)?.name,
-        result,
-        S,
-        pieces,
-        sources,
-        renderBar: (i) => renderBarPng(result.layouts[i].bars[0], S),
-      });
-      saveBlob(blob, "nesting-report-1d.xlsx");
+      saveBlob(await buildReport1D(input), "nesting-report-1d.xlsx");
       toast.success("Report downloaded");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not create the report");
@@ -391,7 +407,6 @@ export function NestBoost1D() {
     }
   }
 
-  const canExport = !!result && result.layouts.length > 0;
   const summary = result && resS ? overallStats(result, sources) : null;
 
   return (

@@ -132,3 +132,21 @@ export function saveBlob(blob: Blob, filename: string) {
 }
 
 export const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " ");
+
+/** One line of the combined overview: what was nested and how much scrap it left. */
+export interface OverviewRow {
+  kind: "2D" | "1D";
+  material: string;
+  /** Thickness (2D) or profile (1D). */
+  item: string;
+  count: number;
+  unit: "sheets" | "bars";
+  utilPct: number;
+  scrapPct: number;
+  scrapQty: number;
+  scrapUnit: "m²" | "m";
+  scrapKg: number | null;
+}
+
+/** Sheet name, optionally prefixed ("2D Summary") when several reports share one workbook. */
+export const sheetName = (prefix: string, name: string) => (prefix ? `${prefix} ${name}` : name);

@@ -9,6 +9,8 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { nestKindOf } from "@/features/nesting/part-routing";
+import { register2D } from "../report/report-store";
+import type { Report2DInput } from "../report/report-2d";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   addFileParts,
@@ -411,41 +413,53 @@ export function NestBoost() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  /** Report input for this tool's current result (also used by the combined 1D+2D report). */
+  const getReportInput = React.useCallback((): Report2DInput | null => {
+    if (!result || !resS) return null;
+    const S = resS;
+    return {
+      projectName: projects.find((p) => p.id === projectId)?.name,
+      result,
+      S,
+      groups: groupsRef.current,
+      renderSheet: (i) => {
+        const sh = result.sheets[i];
+        const W = sh.W ?? S.W;
+        const H = sh.H ?? S.H;
+        const k = Math.min(1, 1400 / W);
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(W * k));
+        cv.height = Math.max(1, Math.round(H * k));
+        drawSheet(sh, cv, k, S, null);
+        const out = document.createElement("canvas");
+        out.width = cv.width;
+        out.height = cv.height;
+        const c = out.getContext("2d");
+        if (!c) return null;
+        c.fillStyle = "#fff";
+        c.fillRect(0, 0, out.width, out.height);
+        c.drawImage(cv, 0, 0);
+        c.strokeStyle = "#475569";
+        c.strokeRect(0.5, 0.5, out.width - 1, out.height - 1);
+        return { dataUrl: out.toDataURL("image/png"), width: out.width, height: out.height };
+      },
+    };
+  }, [result, resS, projects, projectId]);
+
+  // Lets the combined 1D+2D report button reach this tool's latest result.
+  React.useEffect(() => {
+    register2D(!!result && !running && result.sheets.length > 0 ? getReportInput : null);
+    return () => register2D(null);
+  }, [result, running, getReportInput]);
+
   /** Excel report: material used, scrap (m² / kg), parts nested and a picture of every sheet. */
   async function exportReport() {
-    if (!result || !resS) return;
+    const input = getReportInput();
+    if (!input) return;
     setReporting(true);
     try {
       const [{ buildReport2D }, { saveBlob }] = await Promise.all([import("./../report/report-2d"), import("./../report/excel-common")]);
-      const S = resS;
-      const blob = await buildReport2D({
-        projectName: projects.find((p) => p.id === projectId)?.name,
-        result,
-        S,
-        groups: groupsRef.current,
-        renderSheet: (i) => {
-          const sh = result.sheets[i];
-          const W = sh.W ?? S.W;
-          const H = sh.H ?? S.H;
-          const k = Math.min(1, 1400 / W);
-          const cv = document.createElement("canvas");
-          cv.width = Math.max(1, Math.round(W * k));
-          cv.height = Math.max(1, Math.round(H * k));
-          drawSheet(sh, cv, k, S, null);
-          const out = document.createElement("canvas");
-          out.width = cv.width;
-          out.height = cv.height;
-          const c = out.getContext("2d");
-          if (!c) return null;
-          c.fillStyle = "#fff";
-          c.fillRect(0, 0, out.width, out.height);
-          c.drawImage(cv, 0, 0);
-          c.strokeStyle = "#475569";
-          c.strokeRect(0.5, 0.5, out.width - 1, out.height - 1);
-          return { dataUrl: out.toDataURL("image/png"), width: out.width, height: out.height };
-        },
-      });
-      saveBlob(blob, "nesting-report-2d.xlsx");
+      saveBlob(await buildReport2D(input), "nesting-report-2d.xlsx");
       toast.success("Report downloaded");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not create the report");

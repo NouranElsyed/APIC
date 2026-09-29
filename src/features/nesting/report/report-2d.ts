@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { Group, OptResult, Settings } from "../nest-boost/engine";
-import { addImageAt, addKeyValues, addTable, addTitle, pct, round, stamp, workbookToBlob, type Cell } from "./excel-common";
+import { addImageAt, addKeyValues, addTable, addTitle, pct, round, sheetName, stamp, workbookToBlob, type Cell, type OverviewRow } from "./excel-common";
 
 /** Steel plate weight factor: kg per (m² · mm) — same constant as Standard Calculations. */
 const DENSITY = 7.85;
@@ -58,14 +58,14 @@ export function collectSheetRows(result: OptResult, S: Settings): SheetRow[] {
 
 const num = (v: number | null) => v ?? 0;
 
-export async function buildReport2D(input: Report2DInput): Promise<Blob> {
+/** Adds the 2D report sheets to `wb` (names prefixed with `prefix`) and returns its overview lines. */
+export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix = ""): OverviewRow[] {
   const { result, S, groups } = input;
-  const wb = new ExcelJS.Workbook();
-  wb.created = new Date();
+  const nm = (n: string) => sheetName(prefix, n);
   const rows = collectSheetRows(result, S);
 
   // ---------------------------------------------------------------- Summary
-  const ws = wb.addWorksheet("Summary");
+  const ws = wb.addWorksheet(nm("Summary"));
   let r = addTitle(ws, 1, "Nesting Report — 2D (plates)", 16);
   r = addKeyValues(ws, r, [
     ["Project", input.projectName || "—"],
@@ -124,7 +124,7 @@ export async function buildReport2D(input: Report2DInput): Promise<Blob> {
   }
 
   // ----------------------------------------------------------------- Sheets
-  const wsS = wb.addWorksheet("Sheets", { views: [{ state: "frozen", ySplit: 1 }] });
+  const wsS = wb.addWorksheet(nm("Sheets"), { views: [{ state: "frozen", ySplit: 1 }] });
   addTable(
     wsS, 1,
     [
@@ -155,7 +155,7 @@ export async function buildReport2D(input: Report2DInput): Promise<Blob> {
       onSheets.set(key, (onSheets.get(key) ?? new Set()).add(si + 1));
     }),
   );
-  const wsP = wb.addWorksheet("Parts", { views: [{ state: "frozen", ySplit: 1 }] });
+  const wsP = wb.addWorksheet(nm("Parts"), { views: [{ state: "frozen", ySplit: 1 }] });
   const partRows: Cell[][] = groups
     .filter((g) => g.qty > 0 || placed.has(g.id))
     .map((g) => {
@@ -182,7 +182,7 @@ export async function buildReport2D(input: Report2DInput): Promise<Blob> {
 
   // ---------------------------------------------------------------- Layouts
   if (input.renderSheet && result.sheets.length) {
-    const wsL = wb.addWorksheet("Layouts");
+    const wsL = wb.addWorksheet(nm("Layouts"));
     let lr = addTitle(wsL, 1, "Sheet layouts", 14) + 1;
     for (let i = 0; i < result.sheets.length; i++) {
       const img = input.renderSheet(i);
@@ -194,5 +194,23 @@ export async function buildReport2D(input: Report2DInput): Promise<Blob> {
     }
   }
 
+  return matRows.map((x) => ({
+    kind: "2D" as const,
+    material: String(x[0]),
+    item: x[1] ? `${x[1]} mm` : "—",
+    count: Number(x[2]),
+    unit: "sheets" as const,
+    utilPct: Number(x[7]),
+    scrapPct: Number(x[8]),
+    scrapQty: Number(x[6]),
+    scrapUnit: "m²" as const,
+    scrapKg: x[11] == null ? null : Number(x[11]),
+  }));
+}
+
+export async function buildReport2D(input: Report2DInput): Promise<Blob> {
+  const wb = new ExcelJS.Workbook();
+  wb.created = new Date();
+  add2DSheets(wb, input);
   return workbookToBlob(wb);
 }

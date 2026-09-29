@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { barStats, type Piece1D, type Result1D, type Settings1D, type Source1D } from "../nest-boost-1d/engine";
-import { addImageAt, addKeyValues, addTable, addTitle, pct, round, stamp, workbookToBlob, type Cell } from "./excel-common";
+import { addImageAt, addKeyValues, addTable, addTitle, pct, round, sheetName, stamp, workbookToBlob, type Cell, type OverviewRow } from "./excel-common";
 
 export interface Report1DInput {
   projectName?: string;
@@ -14,10 +14,10 @@ export interface Report1DInput {
 
 const m = (mm: number) => round(mm / 1000, 3); // mm -> metres
 
-export async function buildReport1D(input: Report1DInput): Promise<Blob> {
+/** Adds the 1D report sheets to `wb` (names prefixed with `prefix`) and returns its overview lines. */
+export function add1DSheets(wb: ExcelJS.Workbook, input: Report1DInput, prefix = ""): OverviewRow[] {
   const { result, S, pieces, sources } = input;
-  const wb = new ExcelJS.Workbook();
-  wb.created = new Date();
+  const nm = (n: string) => sheetName(prefix, n);
 
   // Per layout numbers (bars[0] is representative; all bars in a layout are identical).
   const layouts = result.layouts.map((l, i) => {
@@ -33,7 +33,7 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
   });
 
   // ---------------------------------------------------------------- Summary
-  const ws = wb.addWorksheet("Summary");
+  const ws = wb.addWorksheet(nm("Summary"));
   let r = addTitle(ws, 1, "Nesting Report — 1D (bars, pipes & profiles)", 16);
   r = addKeyValues(ws, r, [
     ["Project", input.projectName || "—"],
@@ -106,7 +106,7 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
   }
 
   // ---------------------------------------------------------------- Layouts
-  const wsL = wb.addWorksheet("Layouts", { views: [{ state: "frozen", ySplit: 1 }] });
+  const wsL = wb.addWorksheet(nm("Layouts"), { views: [{ state: "frozen", ySplit: 1 }] });
   addTable(
     wsL, 1,
     [
@@ -125,7 +125,7 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
   );
 
   // --------------------------------------------------------------- Cut list
-  const wsC = wb.addWorksheet("Cut list", { views: [{ state: "frozen", ySplit: 1 }] });
+  const wsC = wb.addWorksheet(nm("Cut list"), { views: [{ state: "frozen", ySplit: 1 }] });
   const cutRows: Cell[][] = [];
   for (const x of layouts)
     x.b.cuts
@@ -147,7 +147,7 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
   // ------------------------------------------------------------------ Parts
   const cutCount = new Map<number, number>();
   for (const x of layouts) for (const c of x.b.cuts) cutCount.set(c.piece.id, (cutCount.get(c.piece.id) ?? 0) + x.repeat);
-  const wsP = wb.addWorksheet("Parts", { views: [{ state: "frozen", ySplit: 1 }] });
+  const wsP = wb.addWorksheet(nm("Parts"), { views: [{ state: "frozen", ySplit: 1 }] });
   addTable(
     wsP, 1,
     [
@@ -166,7 +166,7 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
 
   // ----------------------------------------------------------------- Images
   if (input.renderBar && layouts.length) {
-    const wsI = wb.addWorksheet("Layout images");
+    const wsI = wb.addWorksheet(nm("Layout images"));
     let lr = addTitle(wsI, 1, "Cutting layouts", 14) + 1;
     for (let i = 0; i < layouts.length; i++) {
       const x = layouts[i];
@@ -178,5 +178,23 @@ export async function buildReport1D(input: Report1DInput): Promise<Blob> {
     }
   }
 
+  return profRows.map((x) => ({
+    kind: "1D" as const,
+    material: String(x[1]),
+    item: String(x[0]),
+    count: Number(x[2]),
+    unit: "bars" as const,
+    utilPct: Number(x[7]),
+    scrapPct: Number(x[8]),
+    scrapQty: Number(x[6]),
+    scrapUnit: "m" as const,
+    scrapKg: null,
+  }));
+}
+
+export async function buildReport1D(input: Report1DInput): Promise<Blob> {
+  const wb = new ExcelJS.Workbook();
+  wb.created = new Date();
+  add1DSheets(wb, input);
   return workbookToBlob(wb);
 }

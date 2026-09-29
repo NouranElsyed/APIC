@@ -1,4 +1,5 @@
 import { NestBoost } from "@/features/nesting/nest-boost/nest-boost";
+import { CombinedReportButton } from "@/features/nesting/combined-report-button";
 import { NestBoost1D } from "@/features/nesting/nest-boost-1d/nest-boost-1d";
 
 // DXF Nesting tab — native Nest Boost tool (client-side nesting, no database).
@@ -14,6 +15,7 @@ export default function NestingPage() {
         </p>
         <NestBoost1D />
       </div>
+      <CombinedReportButton />
     </div>
   );
 }
