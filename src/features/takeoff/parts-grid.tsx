@@ -1,7 +1,7 @@
 "use client";
 import { isNestable, nestKindOf } from "@/features/nesting/part-routing";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers, FileUp } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTakeoffProject } from "./project-context";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import { explainTakeoffPart } from "@/server/calc/takeoff";
 import { PartForm } from "./part-form";
+import { DxfImportDialog } from "./dxf-import-dialog";
 import type { TakeoffPartRow, PartType } from "./types";
 
 // Defensive: legacy/partial rows can come back from the API as null —
@@ -53,6 +54,7 @@ export function PartsGrid({
   onChanged: () => void;
 }) {
   const [formOpen, setFormOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<TakeoffPartRow | null>(null);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
@@ -351,9 +353,14 @@ export function PartsGrid({
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/20 px-3 py-2">
         {canCreate ? (
-          <Button size="sm" variant="ghost" onClick={openAdd}>
-            <Plus className="h-3.5 w-3.5" /> Add Item
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" onClick={openAdd}>
+              <Plus className="h-3.5 w-3.5" /> Add Item
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)} title="Import one or many DXF files — each file becomes an item">
+              <FileUp className="h-3.5 w-3.5" /> Import DXF
+            </Button>
+          </div>
         ) : <span />}
         {selected.size > 0 && (
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-xs">
@@ -386,6 +393,10 @@ export function PartsGrid({
       </div>
 
       <input ref={fileInputRef} type="file" accept=".dxf" className="hidden" onChange={handleFileChosen} />
+
+      {canCreate && (
+        <DxfImportDialog open={importOpen} onOpenChange={setImportOpen} drawingId={drawingId} onImported={onChanged} />
+      )}
 
       {canCreate && (
         <PartForm
