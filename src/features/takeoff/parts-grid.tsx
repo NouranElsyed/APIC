@@ -1,4 +1,5 @@
 "use client";
+import { isNestable, nestKindOf } from "@/features/nesting/part-routing";
 import * as React from "react";
 import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -165,12 +166,19 @@ export function PartsGrid({
 
   const router = useRouter();
   const { queueForNesting } = useTakeoffProject();
+  // Plates go to the 2D tool (need a valid DXF); every other type goes to 1D.
   function sendToNesting(ids: string[]) {
-    queueForNesting(ids);
-    toast.success("Sent to DXF Nesting");
+    const chosen = parts.filter((p) => ids.includes(p.id) && isNestable(p));
+    const ids2D = chosen.filter((p) => nestKindOf(p.partType) === "2D").map((p) => p.id);
+    const ids1D = chosen.filter((p) => nestKindOf(p.partType) === "1D").map((p) => p.id);
+    if (ids2D.length) queueForNesting(ids2D, "2D");
+    if (ids1D.length) queueForNesting(ids1D, "1D");
+    toast.success(
+      [ids2D.length && `${ids2D.length} plate(s) → 2D`, ids1D.length && `${ids1D.length} part(s) → 1D`].filter(Boolean).join(", ") || "Nothing to send",
+    );
     router.push("/takeoff/nesting");
   }
-  const nestableIds = parts.filter((p) => p.dxf?.valid && p.qty > 0).map((p) => p.id);
+  const nestableIds = parts.filter(isNestable).map((p) => p.id);
 
   const totalArea = parts.reduce((s, p) => s + n(p.totalArea), 0);
   const totalPaintArea = parts.reduce((s, p) => s + n(p.paintAreaSqm), 0);
@@ -353,9 +361,9 @@ export function PartsGrid({
             <Button
               size="sm"
               variant="secondary"
-              disabled={!parts.some((p) => selected.has(p.id) && p.dxf?.valid && p.qty > 0)}
-              onClick={() => sendToNesting(parts.filter((p) => selected.has(p.id) && p.dxf?.valid && p.qty > 0).map((p) => p.id))}
-              title="Send the selected parts (that have a valid DXF) to DXF Nesting"
+              disabled={!parts.some((p) => selected.has(p.id) && isNestable(p))}
+              onClick={() => sendToNesting(parts.filter((p) => selected.has(p.id) && isNestable(p)).map((p) => p.id))}
+              title="Send the selected parts to Nesting — plates (with a valid DXF) go to 2D, everything else goes to 1D"
             >
               <Layers className="h-3.5 w-3.5" /> Send selected to Nesting
             </Button>
@@ -367,7 +375,7 @@ export function PartsGrid({
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
           </div>
         )}
-        <Button size="sm" variant="ghost" disabled={!nestableIds.length} onClick={() => sendToNesting(nestableIds)} title="Send every part with a valid DXF in this drawing to DXF Nesting">
+        <Button size="sm" variant="ghost" disabled={!nestableIds.length} onClick={() => sendToNesting(nestableIds)} title="Send every nestable part in this drawing — plates (with a valid DXF) to 2D, everything else to 1D">
           <Layers className="h-3.5 w-3.5" /> Send all to Nesting ({nestableIds.length})
         </Button>
         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">

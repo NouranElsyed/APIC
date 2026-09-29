@@ -9,8 +9,11 @@ interface TakeoffProjectContextValue {
   loadingProjects: boolean;
   /** Part ids the user sent from Standard Calculations, waiting to be imported by the DXF Nesting tab. */
   nestingQueue: string[];
-  queueForNesting: (partIds: string[]) => void;
+  /** Same, for the 1D tool (non-plate parts: hot rolled, pipe, ...). */
+  nestingQueue1D: string[];
+  queueForNesting: (partIds: string[], kind?: "1D" | "2D") => void;
   clearNestingQueue: () => void;
+  clearNestingQueue1D: () => void;
 }
 
 const TakeoffProjectContext = React.createContext<TakeoffProjectContextValue | null>(null);
@@ -27,11 +30,13 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
   const [projectId, setProjectId] = React.useState("");
   const [loadingProjects, setLoadingProjects] = React.useState(true);
   const [nestingQueue, setNestingQueue] = React.useState<string[]>([]);
-  const queueForNesting = React.useCallback(
-    (ids: string[]) => setNestingQueue((q) => Array.from(new Set([...q, ...ids]))),
-    [],
-  );
+  const [nestingQueue1D, setNestingQueue1D] = React.useState<string[]>([]);
+  const queueForNesting = React.useCallback((ids: string[], kind: "1D" | "2D" = "2D") => {
+    const set = kind === "1D" ? setNestingQueue1D : setNestingQueue;
+    set((q) => Array.from(new Set([...q, ...ids])));
+  }, []);
   const clearNestingQueue = React.useCallback(() => setNestingQueue([]), []);
+  const clearNestingQueue1D = React.useCallback(() => setNestingQueue1D([]), []);
 
   React.useEffect(() => {
     fetch("/api/projects")
@@ -41,7 +46,7 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
   }, []);
 
   return (
-    <TakeoffProjectContext.Provider value={{ projects, projectId, setProjectId, loadingProjects, nestingQueue, queueForNesting, clearNestingQueue }}>
+    <TakeoffProjectContext.Provider value={{ projects, projectId, setProjectId, loadingProjects, nestingQueue, nestingQueue1D, queueForNesting, clearNestingQueue, clearNestingQueue1D }}>
       {children}
     </TakeoffProjectContext.Provider>
   );

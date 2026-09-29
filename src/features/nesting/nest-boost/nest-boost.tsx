@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { nestKindOf } from "@/features/nesting/part-routing";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   addFileParts,
@@ -285,6 +286,12 @@ export function NestBoost() {
           for (const part of d.parts) {
             if (wanted && !wanted.has(part.id)) continue;
             const label = `${d.drawingNumber} #${part.itemNo} ${part.description}`;
+            // Only plates are nested in 2D; everything else goes to the 1D tool.
+            if (nestKindOf(part.partType) !== "2D") {
+              if (!wanted) continue; // bulk import: silently leave 1D parts to the 1D tool
+              skipped.push(`${label}: ${part.partType} is not a plate — use the 1D tool`);
+              continue;
+            }
             if (importedIds.current.has(part.id)) { skipped.push(`${label}: already imported`); continue; }
             if (!part.dxf) { skipped.push(`${label}: no DXF`); continue; }
             if (!part.dxf.valid) { skipped.push(`${label}: DXF invalid`); continue; }
@@ -465,9 +472,9 @@ export function NestBoost() {
             className="mt-2 w-full"
             disabled={!projectId || importing}
             onClick={() => importFromProject()}
-            title="Import every part of the selected project that has a valid DXF, with its quantity and thickness"
+            title="Import every plate of the selected project that has a valid DXF, with its quantity and thickness"
           >
-            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import all from Standard Calculations
+            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import plates from Standard Calculations
           </Button>
           {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
           <div className="mt-2">

@@ -1,6 +1,11 @@
 "use client";
 import * as React from "react";
-import { Download, Package, Plus, Ruler, Scissors, Trash2, TriangleAlert } from "lucide-react";
+import { Download, FileSpreadsheet, FolderInput, Loader2, Package, Plus, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { toast } from "sonner";
+import { useTakeoffProject } from "@/features/takeoff/project-context";
+import type { TakeoffDrawingRow } from "@/features/takeoff/types";
+import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
+import { nestKindOf, partTo1DPiece } from "../part-routing";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -154,8 +159,18 @@ const DEFAULT_SETTINGS: Settings1D = {
 export function NestBoost1D() {
   const [pieces, setPieces] = React.useState<Piece1D[]>([]);
   const [sources, setSources] = React.useState<Source1D[]>([]);
+  const piecesRef = React.useRef<Piece1D[]>([]);
+  React.useEffect(() => {
+    piecesRef.current = pieces;
+  }, [pieces]);
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
+
+  const { projectId, nestingQueue1D, clearNestingQueue1D } = useTakeoffProject();
+  const [importing, setImporting] = React.useState(false);
+  const [importMsg, setImportMsg] = React.useState("");
+  // Takeoff part ids already imported, so pressing Import twice never doubles quantities.
+  const importedIds = React.useRef<Set<string>>(new Set());
 
   const [pieceForm, setPieceForm] = React.useState({ name: "", profile: "", material: "", length: "", qty: "1" });
   const [sourceForm, setSourceForm] = React.useState({ profile: "", material: "", length: "6000", qty: "", cost: "", description: "" });
@@ -217,6 +232,81 @@ export function NestBoost1D() {
     setStatus("");
   };
 
+  async function handleCsv(files: File[]) {
+    let added = 0;
+    const lines: string[] = [];
+    let next: Piece1D[] = piecesRef.current;
+    for (const f of files) {
+      const r = parsePartsCsv(await f.text());
+      for (const p of r.pieces) next = addPiece(next, p, pieceCounters.current);
+      added += r.pieces.length;
+      lines.push(`${f.name}: ${r.pieces.length} part(s) imported` + (r.errors.length ? `, ${r.errors.length} row(s) skipped:\n  ${r.errors.join("\n  ")}` : ""));
+    }
+    if (added) {
+      setPieces(next);
+      setResult(null);
+      toast.success(`Imported ${added} part(s) from CSV`);
+    } else toast.warning("No parts were imported");
+    setImportMsg(lines.join("\n"));
+  }
+
+  /**
+   * Pulls every non-plate part (hot rolled, pipe, ...) of the selected project
+   * from Standard Calculations. `onlyIds` = parts sent one by one; omitted = all.
+   */
+  const importFromProject = React.useCallback(
+    async (onlyIds?: string[]) => {
+      if (!projectId) {
+        toast.error("Select a project first");
+        return;
+      }
+      setImporting(true);
+      try {
+        const res = await fetch(`/api/takeoff/drawings?projectId=${projectId}`);
+        if (!res.ok) throw new Error("Failed to load the parts list");
+        const drawings: TakeoffDrawingRow[] = await res.json();
+        const wanted = onlyIds ? new Set(onlyIds) : null;
+        let next = piecesRef.current;
+        let ok = 0;
+        const done: string[] = [];
+        const skipped: string[] = [];
+        for (const d of drawings) {
+          for (const part of d.parts) {
+            if (wanted && !wanted.has(part.id)) continue;
+            if (nestKindOf(part.partType) !== "1D") continue; // plates belong to the 2D tool
+            const label = `${d.drawingNumber} #${part.itemNo} ${part.description}`;
+            if (importedIds.current.has(part.id)) { skipped.push(`${label}: already imported`); continue; }
+            const r = partTo1DPiece(part);
+            if ("error" in r) { skipped.push(`${label}: ${r.error}`); continue; }
+            next = addPiece(next, { ...r.piece, name: label }, pieceCounters.current);
+            importedIds.current.add(part.id);
+            ok++;
+            done.push(`${label}: ${r.piece.qty} × ${r.piece.length} mm ${r.piece.profile}`);
+          }
+        }
+        if (ok) {
+          setPieces(next);
+          setResult(null);
+          toast.success(`Imported ${ok} part(s) from Standard Calculations`);
+        } else toast.warning("No parts were imported");
+        setImportMsg((done.join("\n") + (skipped.length ? `\nSkipped:\n${skipped.join("\n")}` : "")).trim() || "Nothing to import.");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Import failed");
+      } finally {
+        setImporting(false);
+      }
+    },
+    [projectId],
+  );
+
+  // Parts sent one-by-one from the Standard Calculations tab.
+  React.useEffect(() => {
+    if (!nestingQueue1D.length || !projectId) return;
+    const ids = nestingQueue1D;
+    clearNestingQueue1D();
+    importFromProject(ids);
+  }, [nestingQueue1D, projectId, clearNestingQueue1D, importFromProject]);
+
   const updatePiece = (id: number, patch: Partial<Piece1D>) => setPieces((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const removePiece = (id: number) => {
     setPieces((prev) => prev.filter((p) => p.id !== id));
@@ -233,6 +323,8 @@ export function NestBoost1D() {
     setSources([]);
     pieceCounters.current = { id: 0, sn: 0 };
     sourceCounters.current = { id: 100000, sn: 0 };
+    importedIds.current = new Set();
+    setImportMsg("");
     setResult(null);
     setResS(null);
     setStatus("");
@@ -286,7 +378,48 @@ export function NestBoost1D() {
     <div className="grid gap-4 lg:grid-cols-[minmax(320px,420px)_1fr]">
       <div className="space-y-4">
         <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Parts</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import parts</h3>
+          <label
+            className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-center text-sm text-muted-foreground hover:bg-secondary"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              handleCsv(Array.from(e.dataTransfer.files).filter((f) => /\.csv$/i.test(f.name)));
+            }}
+          >
+            <Upload className="h-5 w-5" />
+            Drop a CSV here or click
+            <span className="text-[11px]">columns: name, profile, material, length_mm, qty</span>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              multiple
+              hidden
+              onChange={(e) => {
+                const fs = Array.from(e.target.files ?? []);
+                e.target.value = "";
+                handleCsv(fs);
+              }}
+            />
+          </label>
+          <Button variant="ghost" size="sm" className="mt-1 h-7" onClick={() => download("parts-template.csv", PARTS_CSV_TEMPLATE, "text/csv")}>
+            <FileSpreadsheet /> Download CSV template
+          </Button>
+          <Button
+            variant="secondary"
+            className="mt-2 w-full"
+            disabled={!projectId || importing}
+            onClick={() => importFromProject()}
+            title="Import every non-plate part (hot rolled, pipe...) of the selected project with its length and quantity"
+          >
+            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import bars/pipes from Standard Calculations
+          </Button>
+          {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
+          {importMsg && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{importMsg}</pre>}
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Add a part manually</h3>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Name">
               <Input className="h-9" value={pieceForm.name} onChange={(e) => setPieceForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Column leg" />
@@ -312,7 +445,7 @@ export function NestBoost1D() {
         </Card>
 
         <Card className="p-4">
-          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Sources (stock on hand)</h3>
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">3. Sources (stock on hand)</h3>
           <p className="mb-2 text-xs text-muted-foreground">
             The stock bar lengths available to cut from. A profile + material can have several sources (e.g. 12,000 mm and 6,000
             mm bars). Leave Qty empty for unlimited stock. Profile/material must match the parts exactly to be used for them.
@@ -342,7 +475,7 @@ export function NestBoost1D() {
         </Card>
 
         <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">3. Settings</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">4. Settings</h3>
           <div className="mb-1 text-[11px] font-semibold text-muted-foreground">Basic</div>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Saw kerf (mm)">
