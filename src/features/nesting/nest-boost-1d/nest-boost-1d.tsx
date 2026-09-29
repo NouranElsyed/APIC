@@ -6,6 +6,7 @@ import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
 import { nestKindOf, partTo1DPiece } from "../part-routing";
+import { pieceColor, renderBarPng } from "../report/draw-1d";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -45,12 +46,6 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-sm font-semibold text-foreground">{value}</div>
     </div>
   );
-}
-
-/** Stable colour per part serial number. */
-function pieceColor(sn: number): string {
-  const hues = [210, 25, 150, 280, 50, 190, 340, 100];
-  return `hsl(${hues[sn % hues.length]} 65% 62%)`;
 }
 
 function BarStrip({ b, S }: { b: Bar; S: Settings1D }) {
@@ -166,7 +161,8 @@ export function NestBoost1D() {
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
 
-  const { projectId, nestingQueue1D, clearNestingQueue1D } = useTakeoffProject();
+  const { projectId, projects, nestingQueue1D, clearNestingQueue1D } = useTakeoffProject();
+  const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState("");
   // Takeoff part ids already imported, so pressing Import twice never doubles quantities.
@@ -369,6 +365,30 @@ export function NestBoost1D() {
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  /** Excel report: bars used, scrap, parts cut, cut list and a picture of every layout. */
+  async function exportReport() {
+    if (!result || !resS) return;
+    setReporting(true);
+    try {
+      const [{ buildReport1D }, { saveBlob }] = await Promise.all([import("../report/report-1d"), import("../report/excel-common")]);
+      const S = resS;
+      const blob = await buildReport1D({
+        projectName: projects.find((p) => p.id === projectId)?.name,
+        result,
+        S,
+        pieces,
+        sources,
+        renderBar: (i) => renderBarPng(result.layouts[i].bars[0], S),
+      });
+      saveBlob(blob, "nesting-report-1d.xlsx");
+      toast.success("Report downloaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create the report");
+    } finally {
+      setReporting(false);
+    }
   }
 
   const canExport = !!result && result.layouts.length > 0;
@@ -690,6 +710,13 @@ export function NestBoost1D() {
                   }}
                 />
               ))}
+            </div>
+          )}
+          {canExport && (
+            <div className="mt-4 flex justify-end border-t border-border pt-3">
+              <Button onClick={exportReport} disabled={reporting} title="Excel report: bars used, scrap, parts cut, cut list and a picture of every layout">
+                {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
+              </Button>
             </div>
           )}
           {result && (result.skip.length > 0 || result.problems.length > 0) && (

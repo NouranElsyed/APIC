@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Check, Download, FolderInput, Layers, Loader2, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -176,7 +176,8 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, onChang
 const UNIT_SCALE: Record<string, number> = { in: 25.4, ft: 304.8, mm: 1, cm: 10, m: 1000, "µm": 0.001, dm: 100 };
 
 export function NestBoost() {
-  const { projectId, nestingQueue, clearNestingQueue } = useTakeoffProject();
+  const { projectId, projects, nestingQueue, clearNestingQueue } = useTakeoffProject();
+  const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   // Takeoff part ids already imported into this session, so pressing
   // "Import" twice never doubles the quantities.
@@ -408,6 +409,49 @@ export function NestBoost() {
     a.download = "nested.dxf";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  /** Excel report: material used, scrap (m² / kg), parts nested and a picture of every sheet. */
+  async function exportReport() {
+    if (!result || !resS) return;
+    setReporting(true);
+    try {
+      const [{ buildReport2D }, { saveBlob }] = await Promise.all([import("./../report/report-2d"), import("./../report/excel-common")]);
+      const S = resS;
+      const blob = await buildReport2D({
+        projectName: projects.find((p) => p.id === projectId)?.name,
+        result,
+        S,
+        groups: groupsRef.current,
+        renderSheet: (i) => {
+          const sh = result.sheets[i];
+          const W = sh.W ?? S.W;
+          const H = sh.H ?? S.H;
+          const k = Math.min(1, 1400 / W);
+          const cv = document.createElement("canvas");
+          cv.width = Math.max(1, Math.round(W * k));
+          cv.height = Math.max(1, Math.round(H * k));
+          drawSheet(sh, cv, k, S, null);
+          const out = document.createElement("canvas");
+          out.width = cv.width;
+          out.height = cv.height;
+          const c = out.getContext("2d");
+          if (!c) return null;
+          c.fillStyle = "#fff";
+          c.fillRect(0, 0, out.width, out.height);
+          c.drawImage(cv, 0, 0);
+          c.strokeStyle = "#475569";
+          c.strokeRect(0.5, 0.5, out.width - 1, out.height - 1);
+          return { dataUrl: out.toDataURL("image/png"), width: out.width, height: out.height };
+        },
+      });
+      saveBlob(blob, "nesting-report-2d.xlsx");
+      toast.success("Report downloaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create the report");
+    } finally {
+      setReporting(false);
+    }
   }
 
   // keyboard while a part is picked up
@@ -740,6 +784,11 @@ export function NestBoost() {
                 );
               })
             )}
+          </div>
+          <div className="mt-4 flex justify-end border-t border-border pt-3">
+            <Button onClick={exportReport} disabled={!canExport || reporting} title="Excel report: material used, scrap, parts nested and a picture of every sheet">
+              {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
+            </Button>
           </div>
           {problems.length > 0 && (
             <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
