@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, setCellCanvasFactory, sides, startGroupDrag,
+  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, setCellCanvasFactory, sides, startGroupDrag, transferGroup,
   type Group, type Item, type MultiSel, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -108,5 +108,55 @@ describe("moving the selection together", () => {
     const others = sh.items.filter((i) => !ms.items.includes(i));
     expect(others).toHaveLength(1);
     expect(isBad({ sh, origSh: sh, idx: 0, it: A, oth: others.map((o) => ({ s: sides(o), bb: bbox(sides(o).o), it: o })), off: [0, 0], pm: [0, 0], orig: { x: 0, y: 0, rot: 0 } }, S)).toBe(false);
+  });
+});
+
+describe("carrying the selection to another sheet", () => {
+  it("moves the whole group to the other sheet under the pointer, and Esc brings it home", () => {
+    const { sh, A, B } = setup();
+    const other = newSheet(10, "S235");
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    ms.carry = true;
+    ms.home = { sh, pos: ms.items.map((q) => [q.x, q.y] as Pt) };
+    startGroupDrag(ms, S, [250, 125]);
+    const dx = B.x - A.x;
+    expect(transferGroup(ms, S, other, 1, [500, 300])).toBe(true);
+    expect(ms.sh).toBe(other);
+    expect(other.items).toEqual(expect.arrayContaining([A, B]));
+    expect(sh.items).not.toContain(A);
+    expect(sh.items).not.toContain(B);
+    expect(B.x - A.x).toBeCloseTo(dx); // still one rigid group
+    const bb = bbox(sides(A).o);
+    expect(bb[0]).toBeGreaterThanOrEqual(S.mg - 0.01);
+    moveGroup(ms, S, 100, 0); // keeps following the mouse on the new sheet
+    cancelGroupDrag(ms); // Esc
+    expect(ms.sh).toBe(sh);
+    expect(sh.items).toEqual(expect.arrayContaining([A, B]));
+    expect(other.items).toHaveLength(0);
+    expect([A.x, A.y, B.x, B.y]).toEqual([100, 100, 300, 100]);
+  });
+
+  it("refuses another material/thickness, and a spot that is already taken", () => {
+    const { sh, A, B } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    startGroupDrag(ms, S, [0, 0]);
+    expect(transferGroup(ms, S, newSheet(12, "S235"), 1, [500, 300])).toBe(false);
+    expect(transferGroup(ms, S, newSheet(10, "st37"), 1, [500, 300])).toBe(false);
+    const busy = newSheet(10, "S235");
+    busy.items.push({ g: grp(9, 600, 300), rot: 0, x: 200, y: 150 });
+    expect(transferGroup(ms, S, busy, 1, [400, 175])).toBe(false);
+    expect(ms.sh).toBe(sh); // nothing moved
+    expect(sh.items).toEqual(expect.arrayContaining([A, B]));
+  });
+
+  it("pulls the group back inside the margin when the pointer enters at the edge", () => {
+    const { sh, A, B } = setup();
+    const other = newSheet(10, "S235");
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    startGroupDrag(ms, S, [0, 0]);
+    expect(transferGroup(ms, S, other, 1, [1, 1])).toBe(true);
+    const bb = bbox(sides(A).o);
+    expect(bb[0]).toBeGreaterThanOrEqual(S.mg - 0.01);
+    expect(bb[1]).toBeGreaterThanOrEqual(S.mg - 0.01);
   });
 });

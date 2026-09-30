@@ -40,6 +40,7 @@ import {
   sheetStats,
   startGroupDrag,
   startNew,
+  transferGroup,
   startPick,
   syncUnplaced,
   transfer,
@@ -314,6 +315,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
               // double-click on a selected part with several selected: pick up ALL of them together
               gesture.current = null;
               ms.carry = true;
+              ms.home = { sh: ms.sh, pos: ms.items.map((q) => [q.x, q.y] as Pt) };
               startGroupDrag(ms, S, m);
               onChange();
               return;
@@ -347,6 +349,11 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
           return;
         }
         const cm = multiRef.current;
+        if (cm?.carry && cm.drag && cm.sh !== sheet) {
+          // pointer is over another sheet: the whole group jumps there if it fits (same thickness/material)
+          if (transferGroup(cm, S, sheet, index, mm(e))) onChange();
+          return;
+        }
         if (cm?.carry && cm.drag && cm.sh === sheet) {
           const m = mm(e);
           moveGroup(cm, S, m[0] - cm.drag.pm[0], m[1] - cm.drag.pm[1]);
@@ -378,6 +385,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
           // click = drop the carried group where it is (it is always in a legal spot)
           cm.carry = false;
           cm.drag = undefined;
+          cm.home = undefined;
           onChange();
           return;
         }
@@ -1269,12 +1277,12 @@ export function NestBoost() {
                 <>
                   <Button
                     variant="secondary" size="sm"
-                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; } bump(); }}
+                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
                   >
                     <Check /> Place here
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    Holding the whole selection — move the mouse over the sheet, click to place, Esc to cancel. It stops at other parts, the spacing and the margin.
+                    Holding the whole selection — move the mouse over this or another sheet of the same material/thickness, click to place, Esc to cancel. It stops at other parts, the spacing and the margin.
                   </span>
                 </>
               ) : (

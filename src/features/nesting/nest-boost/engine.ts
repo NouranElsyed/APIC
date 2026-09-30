@@ -1138,6 +1138,8 @@ export interface MultiSel {
   items: Item[];
   /** Picked up with a double-click: the whole group follows the mouse until a click places it (Esc cancels). */
   carry?: boolean;
+  /** Where the group was when it was picked up (so Esc can bring it back, even from another sheet). */
+  home?: { sh: Sheet; pos: Pt[] };
   /** Only while a move is in progress (mouse drag / arrow key / carrying). */
   drag?: {
     pm: Pt;
@@ -1251,8 +1253,26 @@ export function moveGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
   apply(x, y);
 }
 
-/** Puts the group back where it was when the drag started (Esc). */
+/** Puts the group back where it was when the drag/carry started (Esc), on its original sheet. */
 export function cancelGroupDrag(ms: MultiSel) {
+  const h = ms.home;
+  if (h) {
+    if (h.sh !== ms.sh) {
+      for (const it of ms.items) {
+        const i = ms.sh.items.indexOf(it);
+        if (i >= 0) ms.sh.items.splice(i, 1);
+        h.sh.items.push(it);
+      }
+      ms.sh = h.sh;
+    }
+    ms.items.forEach((it, i) => {
+      it.x = h.pos[i][0];
+      it.y = h.pos[i][1];
+    });
+    ms.home = undefined;
+    ms.drag = undefined;
+    return;
+  }
   const d = ms.drag;
   if (!d) return;
   ms.items.forEach((it, i) => {
@@ -1260,6 +1280,47 @@ export function cancelGroupDrag(ms: MultiSel) {
     it.y = d.base[i][1];
   });
   ms.drag = undefined;
+}
+
+/**
+ * Carries the whole group onto another sheet of the same thickness / material. The group is centred on the pointer
+ * (pulled back inside the margin) and moves over only if every part fits there. Returns false when it does not.
+ */
+export function transferGroup(ms: MultiSel, S: Settings, sh: Sheet, idx: number, m: Pt): boolean {
+  if (sh === ms.sh) return true;
+  if ((sh.th || 0) !== (ms.sh.th || 0) || (sh.material || "") !== (ms.sh.material || "")) return false;
+  const bs = ms.items.map((it) => bbox(sides(it).o));
+  const x0 = Math.min(...bs.map((q) => q[0]));
+  const y0 = Math.min(...bs.map((q) => q[1]));
+  const x1 = Math.max(...bs.map((q) => q[2]));
+  const y1 = Math.max(...bs.map((q) => q[3]));
+  const W = sh.W ?? S.W;
+  const H = sh.H ?? S.H;
+  const c = S.cell;
+  // whole-cell shifts that keep the group's bounding box inside the margin
+  const lox = Math.ceil((S.mg - x0) / c) * c;
+  const hix = Math.floor((W - S.mg - x1) / c) * c;
+  const loy = Math.ceil((S.mg - y0) / c) * c;
+  const hiy = Math.floor((H - S.mg - y1) / c) * c;
+  if (lox > hix || loy > hiy) return false;
+  const dx = Math.max(lox, Math.min(hix, Math.round((m[0] - (x0 + x1) / 2) / c) * c));
+  const dy = Math.max(loy, Math.min(hiy, Math.round((m[1] - (y0 + y1) / 2) / c) * c));
+  const oth: Other[] = sh.items.map((o) => {
+    const q = sides(o);
+    return { s: q, bb: bbox(q.o), it: o };
+  });
+  for (const it of ms.items) if (gridBad(S, sh, it, it.x + dx, it.y + dy, oth)) return false;
+  for (const it of ms.items) {
+    const i = ms.sh.items.indexOf(it);
+    if (i >= 0) ms.sh.items.splice(i, 1);
+    it.x += dx;
+    it.y += dy;
+    sh.items.push(it);
+  }
+  ms.sh = sh;
+  ms.idx = idx;
+  startGroupDrag(ms, S, m);
+  return true;
 }
 
 /** Moves the selected group by a small step (arrow keys); it stops at the last allowed position. */
