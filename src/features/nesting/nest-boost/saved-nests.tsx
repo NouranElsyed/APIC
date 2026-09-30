@@ -31,6 +31,7 @@ export function cloneResult(r: OptResult): OptResult {
     ),
     un: [...r.un],
     skip: [...r.skip],
+    manual: r.manual,
   };
 }
 

@@ -96,6 +96,9 @@ export interface OptResult {
   sheets: Sheet[];
   un: Group[];
   skip: string[];
+  /** True once the user has edited the nest by hand (empty sheets, parts taken from the list / put back).
+   *  `un` is then re-derived from the quantities instead of coming from the optimiser. */
+  manual?: boolean;
 }
 
 const TOL = 0.05;
@@ -847,6 +850,47 @@ export interface Sel {
   lw?: number;
   /** True while the held part overlaps something / enters the margin (drawn red, can't be placed). */
   bad?: boolean;
+  /** The part was taken from the parts list (manual nesting), not picked up from a sheet. */
+  fresh?: boolean;
+}
+
+/** A part taken from the list that has not touched any sheet yet (it floats with the cursor). */
+export const inGhost = (sel: Sel) => !!sel.fresh && sel.sh === sel.origSh;
+
+/** Physical pieces of every part group currently on the sheets (paired triangles count as 2). */
+export function placedCounts(res: OptResult | null): Map<number, number> {
+  const m = new Map<number, number>();
+  if (!res) return m;
+  for (const sh of res.sheets)
+    for (const it of sh.items) {
+      const id = it.g.cid ?? it.g.id;
+      m.set(id, (m.get(id) ?? 0) + (it.g.n || 1));
+    }
+  return m;
+}
+
+/** Pieces of `g` still available to place by hand (never negative). */
+export const leftOf = (g: Group, placed: Map<number, number>) => Math.max(0, g.qty - (placed.get(g.id) ?? 0));
+
+/** Re-derives the "not nested" list from quantities after a manual change. */
+export function syncUnplaced(res: OptResult, groups: Group[]) {
+  const placed = placedCounts(res);
+  const un: Group[] = [];
+  for (const g of groups) for (let i = leftOf(g, placed); i > 0; i--) un.push(g);
+  res.un = un;
+}
+
+export function newSheet(th: number, material: string): Sheet {
+  return { items: [], th, material, used: 0 };
+}
+
+/** Starts holding a brand-new copy of `g` taken from the parts list. */
+export function startNew(g: Group): Sel {
+  const it: Item = { g, rot: 0, x: 0, y: 0 };
+  // detached sheet that only carries the part's thickness/material until it enters a real sheet
+  const ghost = newSheet(g.th, g.material);
+  ghost.items.push(it);
+  return { sh: ghost, origSh: ghost, idx: -1, it, oth: [], pm: [0, 0], off: [0, 0], orig: { x: 0, y: 0, rot: 0 }, bad: false, fresh: true };
 }
 
 export function othersOf(sh: Sheet, f: Item): Other[] {
@@ -887,6 +931,7 @@ export function cancelPick(sel: Sel) {
 }
 
 export function isBad(sel: Sel, S: Settings) {
+  if (inGhost(sel)) return false;
   const A = sides(sel.it);
   const b = bbox(A.o);
   const W = sel.sh.W ?? S.W;
@@ -933,6 +978,11 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
   const it = sel.it;
   if ((sh.th || 0) !== (sel.sh.th || 0)) return false;
   if ((sh.material || "") !== (sel.sh.material || "")) return false;
+  if (inGhost(sel)) {
+    // first contact with a sheet: hold the part by the centre of its bounding box
+    const b = bbox(sides(it).o);
+    sel.off = [(b[0] + b[2]) / 2 - it.x, (b[1] + b[3]) / 2 - it.y];
+  }
   const sv = { sh: sel.sh, idx: sel.idx, oth: sel.oth, x: it.x, y: it.y };
   sel.sh = sh;
   sel.idx = idx;
@@ -968,9 +1018,160 @@ export function rotate(sel: Sel, S: Settings, d: number) {
   sel.off = [sel.pm[0] - it.x, sel.pm[1] - it.y];
 }
 
+// ------------------------------------------------- multi-selection (CAD-style box select)
+
+/** Several parts of ONE sheet selected together; they move as a rigid group. */
+export interface MultiSel {
+  sh: Sheet;
+  idx: number;
+  items: Item[];
+  /** Only while a move is in progress (mouse drag / arrow key). */
+  drag?: {
+    pm: Pt;
+    base: Pt[];
+    own: Sides[];
+    obb: BBox[];
+    oth: Other[];
+    d: Pt;
+    /** Started in an invalid spot: moves freely until valid again (same rule as a single part). */
+    bad: boolean;
+  };
+}
+
+/**
+ * Parts picked by a selection rectangle `r` = [x0, y0, x1, y1] (mm, any corner order).
+ *  - window (cross = false, drag left → right): only parts that are completely inside the rectangle.
+ *  - crossing (cross = true, drag right → left): every part the rectangle touches or overlaps.
+ */
+export function itemsInRect(sh: Sheet, r: BBox, cross: boolean): Item[] {
+  const x0 = Math.min(r[0], r[2]);
+  const x1 = Math.max(r[0], r[2]);
+  const y0 = Math.min(r[1], r[3]);
+  const y1 = Math.max(r[1], r[3]);
+  const ring: Pt[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  const R: Sides = { o: [ring], h: [] };
+  const out: Item[] = [];
+  for (const it of sh.items) {
+    const A = sides(it);
+    const b = bbox(A.o);
+    if (cross) {
+      if (b[0] > x1 || b[2] < x0 || b[1] > y1 || b[3] < y0) continue;
+      if (hit(A, R)) out.push(it);
+    } else if (b[0] >= x0 && b[2] <= x1 && b[1] >= y0 && b[3] <= y1) out.push(it);
+  }
+  return out;
+}
+
+const shiftSides = (s: Sides, dx: number, dy: number): Sides => ({
+  o: s.o.map((r) => r.map((p) => [p[0] + dx, p[1] + dy] as Pt)),
+  h: s.h.map((r) => r.map((p) => [p[0] + dx, p[1] + dy] as Pt)),
+});
+
+/** Freezes the current geometry and starts moving the group (`m` = pointer position in mm). */
+export function startGroupDrag(ms: MultiSel, S: Settings, m: Pt) {
+  const chosen = new Set(ms.items);
+  const own = ms.items.map((it) => sides(it));
+  ms.drag = {
+    pm: m,
+    base: ms.items.map((it) => [it.x, it.y] as Pt),
+    own,
+    obb: own.map((q) => bbox(q.o)),
+    oth: ms.sh.items.filter((o) => !chosen.has(o)).map((o) => {
+      const q = sides(o);
+      return { s: q, bb: bbox(q.o) };
+    }),
+    d: [0, 0],
+    bad: false,
+  };
+  ms.drag.bad = groupBad(ms, S, 0, 0);
+}
+
+/** True when moving the whole group by (dx, dy) from where the drag started is not allowed. */
+function groupBad(ms: MultiSel, S: Settings, dx: number, dy: number): boolean {
+  const d = ms.drag as NonNullable<MultiSel["drag"]>;
+  const W = ms.sh.W ?? S.W;
+  const H = ms.sh.H ?? S.H;
+  const g = Math.max(0, S.gp - 0.5);
+  for (let i = 0; i < d.own.length; i++) {
+    const b = d.obb[i];
+    const nb: BBox = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+    if (nb[0] < S.mg - 0.01 || nb[1] < S.mg - 0.01 || nb[2] > W - S.mg + 0.01 || nb[3] > H - S.mg + 0.01) return true;
+    let A: Sides | null = null;
+    for (const o of d.oth) {
+      if (nb[0] > o.bb[2] + g || o.bb[0] > nb[2] + g || nb[1] > o.bb[3] + g || o.bb[1] > nb[3] + g) continue;
+      A = A ?? shiftSides(d.own[i], dx, dy);
+      if (hit2(A, nb, o.s, o.bb, g)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Moves the group so the pointer offset from the drag start is (dx, dy). Like a single part, it stops at the last
+ * allowed position (slides along walls / other parts) instead of ever overlapping anything or leaving the margin.
+ */
+export function moveGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
+  const d = ms.drag;
+  if (!d) return;
+  const apply = (x: number, y: number) => {
+    d.d = [x, y];
+    ms.items.forEach((it, i) => {
+      it.x = d.base[i][0] + x;
+      it.y = d.base[i][1] + y;
+    });
+  };
+  if (d.bad) {
+    apply(dx, dy);
+    d.bad = groupBad(ms, S, dx, dy);
+    return;
+  }
+  if (!groupBad(ms, S, dx, dy)) {
+    apply(dx, dy);
+    return;
+  }
+  let [x, y] = d.d;
+  const n = Math.max(1, Math.ceil(Math.hypot(dx - x, dy - y) / 3));
+  const sx = (dx - x) / n;
+  const sy = (dy - y) / n;
+  for (let i = 0; i < n; i++) {
+    if (!groupBad(ms, S, x + sx, y + sy)) {
+      x += sx;
+      y += sy;
+    } else if (!groupBad(ms, S, x + sx, y)) x += sx;
+    else if (!groupBad(ms, S, x, y + sy)) y += sy;
+    else break;
+  }
+  apply(x, y);
+}
+
+/** Puts the group back where it was when the drag started (Esc). */
+export function cancelGroupDrag(ms: MultiSel) {
+  const d = ms.drag;
+  if (!d) return;
+  ms.items.forEach((it, i) => {
+    it.x = d.base[i][0];
+    it.y = d.base[i][1];
+  });
+  ms.drag = undefined;
+}
+
+/** Moves the selected group by a small step (arrow keys); it stops at the last allowed position. */
+export function nudgeGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
+  startGroupDrag(ms, S, [0, 0]);
+  moveGroup(ms, S, dx, dy);
+  ms.drag = undefined;
+}
+
 // --------------------------------------------------------------------- drawing
 
-export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false) {
+export interface DrawExtras {
+  /** Parts in the multi-selection (outlined in blue). */
+  sel?: ReadonlySet<Item> | null;
+  /** Selection rectangle being dragged, in mm. `cross` = right-to-left (touch) selection, drawn green + dashed. */
+  box?: { x0: number; y0: number; x1: number; y1: number; cross: boolean } | null;
+}
+
+export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false, extra?: DrawExtras) {
   const c = cv.getContext("2d") as CanvasRenderingContext2D;
   const W = sh.W ?? S.W;
   const H = sh.H ?? S.H;
@@ -991,6 +1192,25 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.lineWidth = 1 / k;
     c.stroke(P);
     c.globalAlpha = 1;
+    if (extra?.sel?.has(it)) {
+      c.strokeStyle = "#2563eb";
+      c.lineWidth = 2.5 / k;
+      c.stroke(P);
+      c.lineWidth = 1 / k;
+    }
+  }
+  const bx = extra?.box;
+  if (bx) {
+    // AutoCAD style: window (left → right) = blue solid, crossing (right → left) = green dashed
+    const col = bx.cross ? "#16a34a" : "#2563eb";
+    c.fillStyle = bx.cross ? "rgba(22,163,74,0.14)" : "rgba(37,99,235,0.14)";
+    c.strokeStyle = col;
+    c.lineWidth = 1.5 / k;
+    c.setLineDash(bx.cross ? [6 / k, 4 / k] : []);
+    c.fillRect(bx.x0, bx.y0, bx.x1 - bx.x0, bx.y1 - bx.y0);
+    c.strokeRect(bx.x0, bx.y0, bx.x1 - bx.x0, bx.y1 - bx.y0);
+    c.setLineDash([]);
+    c.lineWidth = 1 / k;
   }
   // serial numbers on every part (drawn un-flipped so the text is readable)
   c.save();
@@ -1060,6 +1280,8 @@ export function whyNotNested(g: Group, S: Settings): string {
 /** One message per un-nested part number. */
 export function problemMessages(res: OptResult, S: Settings): string[] {
   const msgs = res.skip.slice();
+  // manual nesting: leftovers are just "still to place" (shown in the parts table), not optimiser failures
+  if (res.manual) return msgs;
   const mp = new Map<number, { g: Group; c: number }>();
   for (const g of res.un) {
     const q = mp.get(g.sn) || { g, c: 0 };

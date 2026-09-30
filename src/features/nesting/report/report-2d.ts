@@ -119,7 +119,7 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
 
   if (result.skip.length || result.un.length) {
     r = addTitle(ws, r, "Not nested / warnings", 12);
-    for (const g of result.un) ws.getCell(r++, 1).value = `#${g.sn} ${g.name} (${g.material || "—"}, ${g.th || "?"} mm) — could not be placed`;
+    for (const g of result.un) ws.getCell(r++, 1).value = `#${g.sn} ${g.name} (${g.material || "—"}, ${g.th || "?"} mm) — ${result.manual ? "not placed on any sheet" : "could not be placed"}`;
     for (const m of result.skip) ws.getCell(r++, 1).value = m;
   }
 
