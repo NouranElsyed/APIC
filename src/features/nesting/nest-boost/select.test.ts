@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, sides, startGroupDrag,
+  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, setCellCanvasFactory, sides, startGroupDrag,
   type Group, type Item, type MultiSel, type Pt,
 } from "./engine";
+import { fakeCanvasFactory } from "./fake-canvas";
+
+setCellCanvasFactory(fakeCanvasFactory);
 
 const rect = (w: number, h: number): Pt[] => [[0, 0], [w, 0], [w, h], [0, h]];
 const grp = (id: number, w = 100, h = 50): Group => ({
@@ -66,8 +69,8 @@ describe("moving the selection together", () => {
     expect(B.x - A.x).toBeCloseTo(dxBefore);
     moveGroup(ms, S, 500, 0); // back to the original row and far right: B would run into C (x 700) -> stops with the spacing left
     const gap = C.x - (B.x + 100);
-    expect(gap).toBeGreaterThanOrEqual(S.gp - 0.5 - 0.01 - 1e-6);
-    expect(gap).toBeLessThan(S.gp + 4); // and it got as close as it could
+    expect(gap).toBeGreaterThanOrEqual(S.gp); // never closer than the spacing
+    expect(gap).toBeCloseTo(S.gp + S.cell); // same gap the optimiser leaves (spacing rounded up to the grid)
     expect(B.x - A.x).toBeCloseTo(dxBefore);
     for (const it of [A, B, C]) {
       const b = bbox(sides(it).o);
@@ -104,6 +107,6 @@ describe("moving the selection together", () => {
     // the moved parts are all valid against the untouched ones
     const others = sh.items.filter((i) => !ms.items.includes(i));
     expect(others).toHaveLength(1);
-    expect(isBad({ sh, origSh: sh, idx: 0, it: A, oth: others.map((o) => ({ s: sides(o), bb: bbox(sides(o).o) })), off: [0, 0], pm: [0, 0], orig: { x: 0, y: 0, rot: 0 } }, S)).toBe(false);
+    expect(isBad({ sh, origSh: sh, idx: 0, it: A, oth: others.map((o) => ({ s: sides(o), bb: bbox(sides(o).o), it: o })), off: [0, 0], pm: [0, 0], orig: { x: 0, y: 0, rot: 0 } }, S)).toBe(false);
   });
 });

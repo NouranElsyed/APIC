@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, inGhost, leftOf, makeSettings, moveTo, newSheet, placedCounts, sides, startNew, syncUnplaced, transfer,
+  bbox, inGhost, leftOf, makeSettings, moveTo, newSheet, placedCounts, setCellCanvasFactory, sides, startNew, syncUnplaced, transfer,
   type Group, type OptResult, type Pt,
 } from "./engine";
+import { fakeCanvasFactory } from "./fake-canvas";
+
+setCellCanvasFactory(fakeCanvasFactory);
 
 const rect = (w: number, h: number): Pt[] => [[0, 0], [w, 0], [w, h], [0, h]];
 const grp = (id: number, qty: number, w = 100, h = 50): Group => ({

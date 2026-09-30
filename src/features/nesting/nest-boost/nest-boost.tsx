@@ -888,7 +888,7 @@ export function NestBoost() {
           removeSelected();
           return;
         }
-        const st = e.shiftKey ? 10 : 1;
+        const st = (e.shiftKey ? 10 : 1) * resS.cell; // parts sit on the optimiser's grid, so one step = one grid cell
         const nv: Record<string, Pt> = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] };
         if (nv[e.key] && !ms.drag) {
           e.preventDefault();
@@ -1218,7 +1218,7 @@ export function NestBoost() {
           <p className="mb-2 text-xs text-muted-foreground">
             Select like CAD: drag a box on a sheet — <span className="font-medium text-blue-600">left → right</span> selects only the parts completely
             inside the box, <span className="font-medium text-green-600">right → left</span> selects every part the box touches (Shift adds to the
-            selection). Then drag any selected part to move them all together (arrow keys nudge, Delete puts them back to the list, Esc clears).
+            selection). Then drag any selected part to move them all together (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
           </p>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to

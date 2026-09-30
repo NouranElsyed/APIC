@@ -806,36 +806,146 @@ function hit(A: Sides, B: Sides) {
   for (const r of A.o.concat(A.h)) for (const q of B.o.concat(B.h)) if (ringX(r, q)) return true;
   return A.o.some((r) => solid(r[0], B)) || B.o.some((r) => solid(r[0], A));
 }
-function segD(a: Pt, b: Pt, c: Pt, d: Pt) {
-  if (segX(a, b, c, d)) return 0;
-  const pd = (p: Pt, q: Pt, r: Pt) => {
-    const dx = r[0] - q[0];
-    const dy = r[1] - q[1];
-    const l = dx * dx + dy * dy;
-    let t = l ? ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l : 0;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy);
-  };
-  return Math.min(pd(a, c, d), pd(b, c, d), pd(c, a, b), pd(d, a, b));
-}
-function near(A: Sides, B: Sides, g: number) {
-  for (const r of A.o.concat(A.h))
-    for (const q of B.o.concat(B.h))
-      for (let i = 0; i < r.length; i++) {
-        const a = r[i];
-        const b = r[(i + 1) % r.length];
-        for (let j = 0; j < q.length; j++) if (segD(a, b, q[j], q[(j + 1) % q.length]) < g) return true;
-      }
-  return false;
-}
-function hit2(A: Sides, ba: BBox, B: Sides, bb: BBox, g: number) {
-  if (ba[0] > bb[2] + g || bb[0] > ba[2] + g || ba[1] > bb[3] + g || bb[1] > ba[3] + g) return false;
-  return hit(A, B) || (g > 0 && near(A, B, g));
-}
-
 interface Other {
   s: Sides;
   bb: BBox;
+  it: Item;
+}
+
+// ---------------------------------------------------- spacing exactly like the optimiser
+// The optimiser puts parts on a grid of `cell` mm and blocks every grid cell touched by the part grown by
+// spacing/2. Two parts may therefore be a little further apart than `spacing` (up to one cell more per side).
+// Manual editing uses the very same cells, so a hand-made nest keeps the same gaps as an optimised one and a part
+// can never be dropped into the free zone around another part.
+
+/** Occupied grid cells of a part at one rotation, as column runs per row (same rasterisation as the optimiser). */
+interface Cells {
+  pad: number;
+  minC: number;
+  maxC: number;
+  minR: number;
+  maxR: number;
+  /** rows[r] = [start0, end0, start1, end1, ...] (inclusive column runs) */
+  rows: Int32Array[];
+}
+
+type CellCanvasFactory = (w: number, h: number) => HTMLCanvasElement;
+let cellCanvas: CellCanvasFactory = (w, h) => {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+};
+/** Lets tests (no DOM) supply their own canvas. */
+export function setCellCanvasFactory(f: CellCanvasFactory) {
+  cellCanvas = f;
+}
+
+const cellsCache = new WeakMap<Group, Map<string, Cells>>();
+
+function cellsOf(S: Settings, g: Group, rot: number): Cells {
+  let m = cellsCache.get(g);
+  if (!m) cellsCache.set(g, (m = new Map()));
+  const key = `${rot}|${S.cell}|${S.gp}`;
+  const hit = m.get(key);
+  if (hit) return hit;
+  const { w: bw, h: bh } = rotBox(g, rot);
+  const pad = Math.ceil(S.gp / 2 / S.cell) + 1;
+  const mw = Math.ceil(bw / S.cell) + 2 * pad;
+  const mh = Math.ceil(bh / S.cell) + 2 * pad;
+  const c = cellCanvas(mw, mh).getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D;
+  c.setTransform(1 / S.cell, 0, 0, 1 / S.cell, pad, pad);
+  c.beginPath();
+  for (const r of [g.outer, ...g.holes, ...(g.extra || [])]) {
+    r.forEach((p, i) => {
+      const [x, y] = tp(g, rot, p);
+      if (i) c.lineTo(x, y);
+      else c.moveTo(x, y);
+    });
+    c.closePath();
+  }
+  c.fill("evenodd");
+  c.lineWidth = S.gp;
+  c.lineJoin = "round";
+  if (S.gp > 0) c.stroke();
+  const d = c.getImageData(0, 0, mw, mh).data;
+  const rows: Int32Array[] = [];
+  let minC = mw, maxC = -1, minR = mh, maxR = -1;
+  for (let r = 0; r < mh; r++) {
+    const runs: number[] = [];
+    let start = -1;
+    for (let q = 0; q <= mw; q++) {
+      const on = q < mw && d[(r * mw + q) * 4 + 3] > 0;
+      if (on && start < 0) start = q;
+      if (!on && start >= 0) {
+        runs.push(start, q - 1);
+        minC = Math.min(minC, start);
+        maxC = Math.max(maxC, q - 1);
+        start = -1;
+      }
+    }
+    if (runs.length) {
+      minR = Math.min(minR, r);
+      maxR = Math.max(maxR, r);
+    }
+    rows.push(Int32Array.from(runs));
+  }
+  if (maxC < 0) minC = maxC = minR = maxR = 0;
+  const out: Cells = { pad, minC, maxC, minR, maxR, rows };
+  m.set(key, out);
+  return out;
+}
+
+/** Grid position (in cells) of the mask origin of a part placed at (x, y). */
+const cellOrigin = (S: Settings, cs: Cells, x: number, y: number): Pt => [
+  Math.round((x - S.x0) / S.cell) - cs.pad,
+  Math.round((y - S.x0) / S.cell) - cs.pad,
+];
+
+/** Snaps a coordinate to the optimiser's grid (parts always sit on grid points, like optimised ones). */
+export const snapV = (S: Settings, v: number) => S.x0 + Math.round((v - S.x0) / S.cell) * S.cell;
+
+function cellsHit(a: Cells, ax: number, ay: number, b: Cells, bx: number, by: number): boolean {
+  if (ax + a.maxC < bx + b.minC || bx + b.maxC < ax + a.minC || ay + a.maxR < by + b.minR || by + b.maxR < ay + a.minR) return false;
+  const r0 = Math.max(ay + a.minR, by + b.minR);
+  const r1 = Math.min(ay + a.maxR, by + b.maxR);
+  for (let r = r0; r <= r1; r++) {
+    const ra = a.rows[r - ay];
+    const rb = b.rows[r - by];
+    if (!ra || !rb) continue;
+    let i = 0;
+    let j = 0;
+    while (i < ra.length && j < rb.length) {
+      const e1 = ra[i + 1] + ax;
+      const s2 = rb[j] + bx;
+      const e2 = rb[j + 1] + bx;
+      if (e1 < s2) i += 2;
+      else if (e2 < ra[i] + ax) j += 2;
+      else return true;
+    }
+  }
+  return false;
+}
+
+/** True when part `it` (at x, y) would break the sheet's grid limits or share a cell with any of `oth`. */
+function gridBad(S: Settings, sh: Sheet, it: Item, x: number, y: number, oth: Other[]): boolean {
+  const cs = cellsOf(S, it.g, it.rot);
+  const [ax, ay] = cellOrigin(S, cs, x, y);
+  const W = sh.W ?? S.W;
+  const H = sh.H ?? S.H;
+  const GW = Math.floor((W - 2 * S.mg + S.gp) / S.cell);
+  const GH = Math.floor((H - 2 * S.mg + S.gp) / S.cell);
+  if (ax + cs.minC < 0 || ay + cs.minR < 0 || ax + cs.maxC > GW - 1 || ay + cs.maxR > GH - 1) return true;
+  const reach = S.gp + 2 * S.cell;
+  const b0 = bbox(sides(it).o);
+  const b: BBox = [b0[0] + x - it.x, b0[1] + y - it.y, b0[2] + x - it.x, b0[3] + y - it.y];
+  for (const o of oth) {
+    if (b[0] > o.bb[2] + reach || o.bb[0] > b[2] + reach || b[1] > o.bb[3] + reach || o.bb[1] > b[3] + reach) continue;
+    const oc = cellsOf(S, o.it.g, o.it.rot);
+    const [bx, by] = cellOrigin(S, oc, o.it.x, o.it.y);
+    if (cellsHit(cs, ax, ay, oc, bx, by)) return true;
+  }
+  return false;
 }
 
 export interface Sel {
@@ -898,7 +1008,7 @@ export function othersOf(sh: Sheet, f: Item): Other[] {
     .filter((o) => o !== f)
     .map((o) => {
       const q = sides(o);
-      return { s: q, bb: bbox(q.o) };
+      return { s: q, bb: bbox(q.o), it: o };
     });
 }
 
@@ -937,15 +1047,16 @@ export function isBad(sel: Sel, S: Settings) {
   const W = sel.sh.W ?? S.W;
   const H = sel.sh.H ?? S.H;
   if (b[0] < S.mg - 0.01 || b[1] < S.mg - 0.01 || b[2] > W - S.mg + 0.01 || b[3] > H - S.mg + 0.01) return true;
-  const g = Math.max(0, S.gp - 0.5);
-  return sel.oth.some((o) => hit2(A, b, o.s, o.bb, g));
+  // same spacing rule as the optimiser: never share a grid cell with another part's spacing zone
+  return gridBad(S, sel.sh, sel.it, sel.it.x, sel.it.y, sel.oth);
 }
 function tryPos(sel: Sel, S: Settings, x: number, y: number) {
   const it = sel.it;
   const ox = it.x;
   const oy = it.y;
-  it.x = x;
-  it.y = y;
+  it.x = snapV(S, x);
+  it.y = snapV(S, y);
+  if (it.x === ox && it.y === oy) return true; // sub-cell movement: stay put
   if (isBad(sel, S)) {
     it.x = ox;
     it.y = oy;
@@ -987,8 +1098,8 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
   sel.sh = sh;
   sel.idx = idx;
   sel.oth = othersOf(sh, it);
-  it.x = m[0] - sel.off[0];
-  it.y = m[1] - sel.off[1];
+  it.x = snapV(S, m[0] - sel.off[0]);
+  it.y = snapV(S, m[1] - sel.off[1]);
   const bad = isBad(sel, S);
   if (bad && !sel.bad) {
     sel.sh = sv.sh;
@@ -1010,8 +1121,8 @@ export function rotate(sel: Sel, S: Settings, d: number) {
   const b = bbox(sides(it).o);
   it.rot = normAngle(it.rot + d);
   const c = bbox(sides(it).o);
-  it.x += (b[0] + b[2] - c[0] - c[2]) / 2;
-  it.y += (b[1] + b[3] - c[1] - c[3]) / 2;
+  it.x = snapV(S, it.x + (b[0] + b[2] - c[0] - c[2]) / 2);
+  it.y = snapV(S, it.y + (b[1] + b[3] - c[1] - c[3]) / 2);
   // Rotation is never blocked: if there's no room the part turns anyway and is
   // flagged invalid (drawn red) until it is moved to a free spot.
   sel.bad = isBad(sel, S);
@@ -1062,11 +1173,6 @@ export function itemsInRect(sh: Sheet, r: BBox, cross: boolean): Item[] {
   return out;
 }
 
-const shiftSides = (s: Sides, dx: number, dy: number): Sides => ({
-  o: s.o.map((r) => r.map((p) => [p[0] + dx, p[1] + dy] as Pt)),
-  h: s.h.map((r) => r.map((p) => [p[0] + dx, p[1] + dy] as Pt)),
-});
-
 /** Freezes the current geometry and starts moving the group (`m` = pointer position in mm). */
 export function startGroupDrag(ms: MultiSel, S: Settings, m: Pt) {
   const chosen = new Set(ms.items);
@@ -1078,7 +1184,7 @@ export function startGroupDrag(ms: MultiSel, S: Settings, m: Pt) {
     obb: own.map((q) => bbox(q.o)),
     oth: ms.sh.items.filter((o) => !chosen.has(o)).map((o) => {
       const q = sides(o);
-      return { s: q, bb: bbox(q.o) };
+      return { s: q, bb: bbox(q.o), it: o };
     }),
     d: [0, 0],
     bad: false,
@@ -1091,54 +1197,53 @@ function groupBad(ms: MultiSel, S: Settings, dx: number, dy: number): boolean {
   const d = ms.drag as NonNullable<MultiSel["drag"]>;
   const W = ms.sh.W ?? S.W;
   const H = ms.sh.H ?? S.H;
-  const g = Math.max(0, S.gp - 0.5);
-  for (let i = 0; i < d.own.length; i++) {
+  for (let i = 0; i < ms.items.length; i++) {
     const b = d.obb[i];
-    const nb: BBox = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
-    if (nb[0] < S.mg - 0.01 || nb[1] < S.mg - 0.01 || nb[2] > W - S.mg + 0.01 || nb[3] > H - S.mg + 0.01) return true;
-    let A: Sides | null = null;
-    for (const o of d.oth) {
-      if (nb[0] > o.bb[2] + g || o.bb[0] > nb[2] + g || nb[1] > o.bb[3] + g || o.bb[1] > nb[3] + g) continue;
-      A = A ?? shiftSides(d.own[i], dx, dy);
-      if (hit2(A, nb, o.s, o.bb, g)) return true;
-    }
+    if (b[0] + dx < S.mg - 0.01 || b[1] + dy < S.mg - 0.01 || b[2] + dx > W - S.mg + 0.01 || b[3] + dy > H - S.mg + 0.01) return true;
+    if (gridBad(S, ms.sh, ms.items[i], d.base[i][0] + dx, d.base[i][1] + dy, d.oth)) return true;
   }
   return false;
 }
 
 /**
- * Moves the group so the pointer offset from the drag start is (dx, dy). Like a single part, it stops at the last
- * allowed position (slides along walls / other parts) instead of ever overlapping anything or leaving the margin.
+ * Moves the group so the pointer offset from the drag start is (dx, dy), in whole grid cells like optimised parts.
+ * Like a single part, it stops at the last allowed position (slides along walls / other parts) instead of ever
+ * getting closer than the optimiser's spacing or leaving the margin.
  */
 export function moveGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
   const d = ms.drag;
   if (!d) return;
-  const apply = (x: number, y: number) => {
-    d.d = [x, y];
+  const c = S.cell;
+  const apply = (cx: number, cy: number) => {
+    d.d = [cx * c, cy * c];
     ms.items.forEach((it, i) => {
-      it.x = d.base[i][0] + x;
-      it.y = d.base[i][1] + y;
+      it.x = d.base[i][0] + cx * c;
+      it.y = d.base[i][1] + cy * c;
     });
   };
+  const tx = Math.round(dx / c);
+  const ty = Math.round(dy / c);
   if (d.bad) {
-    apply(dx, dy);
-    d.bad = groupBad(ms, S, dx, dy);
+    apply(tx, ty);
+    d.bad = groupBad(ms, S, tx * c, ty * c);
     return;
   }
-  if (!groupBad(ms, S, dx, dy)) {
-    apply(dx, dy);
+  let x = Math.round(d.d[0] / c);
+  let y = Math.round(d.d[1] / c);
+  if (x === tx && y === ty) return;
+  if (!groupBad(ms, S, tx * c, ty * c)) {
+    apply(tx, ty);
     return;
   }
-  let [x, y] = d.d;
-  const n = Math.max(1, Math.ceil(Math.hypot(dx - x, dy - y) / 3));
-  const sx = (dx - x) / n;
-  const sy = (dy - y) / n;
-  for (let i = 0; i < n; i++) {
-    if (!groupBad(ms, S, x + sx, y + sy)) {
+  const steps = Math.max(Math.abs(tx - x), Math.abs(ty - y));
+  for (let i = 0; i < steps; i++) {
+    const sx = Math.sign(tx - x);
+    const sy = Math.sign(ty - y);
+    if (sx && sy && !groupBad(ms, S, (x + sx) * c, (y + sy) * c)) {
       x += sx;
       y += sy;
-    } else if (!groupBad(ms, S, x + sx, y)) x += sx;
-    else if (!groupBad(ms, S, x, y + sy)) y += sy;
+    } else if (sx && !groupBad(ms, S, (x + sx) * c, y * c)) x += sx;
+    else if (sy && !groupBad(ms, S, x * c, (y + sy) * c)) y += sy;
     else break;
   }
   apply(x, y);
