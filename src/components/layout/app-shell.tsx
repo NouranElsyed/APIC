@@ -15,6 +15,7 @@ const SUBTITLES: Record<string, string> = {
   "/reports": "Operational reporting across the platform",
   "/users": "Manage platform users and access",
   "/settings": "Configure company, system and workflow settings",
+  "/docs": "How to use every feature of the Calculations tabs",
 };
 
 export function AppShell({

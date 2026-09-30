@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, FolderKanban, Users2, UserCog, Settings, Ruler,
+  LayoutDashboard, FolderKanban, Users2, UserCog, Settings, Ruler, BookOpen,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -20,6 +20,7 @@ export const NAV_ITEMS: NavItem[] = [
   // { label: "Reports", href: "/reports", icon: BarChart3 },
   { label: "Users", href: "/users", icon: UserCog, roles: ["ADMIN"] },
   { label: "Settings", href: "/settings", icon: Settings, roles: ["ADMIN"] },
+  { label: "Docs", href: "/docs", icon: BookOpen },
 
   // ---------------------------------------------------------------------
   // Phase 2 (reserved — do not enable until pricing/scrap module ships):
