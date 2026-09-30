@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -571,6 +571,35 @@ export function NestBoost() {
     return () => ro.disconnect();
   }, []);
 
+  // Fullscreen: one sheet at a time fills the window (index into result.sheets, null = normal page)
+  const [fsIdx, setFsIdx] = React.useState<number | null>(null);
+  const fsBoxRef = React.useRef<HTMLDivElement | null>(null);
+  const [fsWidth, setFsWidth] = React.useState(1000);
+  const fs = result && fsIdx !== null && fsIdx < result.sheets.length ? fsIdx : null; // a deleted sheet closes it
+
+  React.useEffect(() => {
+    if (fs === null) return;
+    const el = fsBoxRef.current;
+    if (!el) return;
+    const upd = () => setFsWidth(Math.max(300, el.clientWidth));
+    upd();
+    const ro = new ResizeObserver(upd);
+    ro.observe(el);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden"; // the page behind must not scroll
+    // Esc leaves fullscreen only when it isn't already cancelling a held part / selection
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || selRef.current || multiRef.current) return;
+      setFsIdx(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      ro.disconnect();
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [fs]);
+
   const setG = (g: Group[]) => {
     groupsRef.current = g;
     setGroups(g);
@@ -1110,6 +1139,75 @@ export function NestBoost() {
   const lotKey = lots.some((l) => l.key === lotSel) ? lotSel : (lots[0]?.key ?? "");
   const canExport = !!result && !running && result.sheets.length > 0;
 
+  // selection / held-part bar (shown in the page and, while a sheet is fullscreen, above that sheet)
+  const actionBar = (
+          <div className="mb-2 min-h-[6.5rem]">
+          {!held && multiCount > 0 && (
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
+              <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
+              {!carrying && (
+                <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
+                  <Undo2 /> Put back to list
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => rotateSelection(90)} title="Rotate the whole selection 90° as one block (R key)">
+                <RotateCcw /> Rotate block 90°
+              </Button>
+              {carrying ? (
+                <>
+                  <Button
+                    variant="secondary" size="sm" disabled={carryBad}
+                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
+                  >
+                    <Check /> Place here
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {carryBad
+                      ? "The block has no room here (red) — move it to a free spot to place it, or press Esc. "
+                      : "Holding the whole selection — scroll the wheel to rotate it (5° per notch, Shift = 1°, R = 90°), move over this or another sheet of the same material/thickness, click to place, Esc to cancel. "}
+                    It stops at other parts, the spacing and the margin.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
+                    Clear selection
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin. Press S while moving to separate them: the part under the pointer stays in hand, the rest go back.
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+          {held && (
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 p-2">
+              <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
+                <RotateCcw /> Rotate 90°
+              </Button>
+              <Button variant="secondary" size="sm" disabled={held.bad || held.ghost} onClick={() => { selRef.current = null; bump(); }}>
+                <Check /> Done
+              </Button>
+              <Button variant="outline" size="sm" className="text-destructive" onClick={removeHeld} title="Take this piece off the sheets (Delete key) — it becomes available in the list again">
+                <Undo2 /> {held.fresh ? "Drop it" : "Put back to list"}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {held.ghost
+                  ? `Holding a new Part #${held.sn} (${held.name}) — move it over a sheet of the same material/thickness and click`
+                  : held.bad
+                    ? `Part #${held.sn} overlaps something (red) — move it to a free spot to place it, or press Esc to cancel`
+                    : `Holding: Part #${held.sn} (${held.name}) — move the mouse, scroll to rotate, click to place`}
+              </span>
+            </div>
+          )}
+            {!held && multiCount === 0 && (
+              <div className="flex min-h-[6.5rem] items-center justify-center rounded-lg border border-dashed border-border p-2 text-xs text-muted-foreground">
+                Select parts on a sheet (drag a box) or double-click a part to pick it up — its actions appear here.
+              </div>
+            )}
+          </div>
+  );
+
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
       <div className="space-y-4">
@@ -1421,71 +1519,7 @@ export function NestBoost() {
             turns anyway and goes red — drag it to a free spot to place it.
           </p>
           {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
-          <div className="mb-2 min-h-[6.5rem]">
-          {!held && multiCount > 0 && (
-            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
-              <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
-              {!carrying && (
-                <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
-                  <Undo2 /> Put back to list
-                </Button>
-              )}
-              <Button variant="secondary" size="sm" onClick={() => rotateSelection(90)} title="Rotate the whole selection 90° as one block (R key)">
-                <RotateCcw /> Rotate block 90°
-              </Button>
-              {carrying ? (
-                <>
-                  <Button
-                    variant="secondary" size="sm" disabled={carryBad}
-                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
-                  >
-                    <Check /> Place here
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {carryBad
-                      ? "The block has no room here (red) — move it to a free spot to place it, or press Esc. "
-                      : "Holding the whole selection — scroll the wheel to rotate it (5° per notch, Shift = 1°, R = 90°), move over this or another sheet of the same material/thickness, click to place, Esc to cancel. "}
-                    It stops at other parts, the spacing and the margin.
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
-                    Clear selection
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin. Press S while moving to separate them: the part under the pointer stays in hand, the rest go back.
-                  </span>
-                </>
-              )}
-            </div>
-          )}
-          {held && (
-            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 p-2">
-              <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
-                <RotateCcw /> Rotate 90°
-              </Button>
-              <Button variant="secondary" size="sm" disabled={held.bad || held.ghost} onClick={() => { selRef.current = null; bump(); }}>
-                <Check /> Done
-              </Button>
-              <Button variant="outline" size="sm" className="text-destructive" onClick={removeHeld} title="Take this piece off the sheets (Delete key) — it becomes available in the list again">
-                <Undo2 /> {held.fresh ? "Drop it" : "Put back to list"}
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                {held.ghost
-                  ? `Holding a new Part #${held.sn} (${held.name}) — move it over a sheet of the same material/thickness and click`
-                  : held.bad
-                    ? `Part #${held.sn} overlaps something (red) — move it to a free spot to place it, or press Esc to cancel`
-                    : `Holding: Part #${held.sn} (${held.name}) — move the mouse, scroll to rotate, click to place`}
-              </span>
-            </div>
-          )}
-            {!held && multiCount === 0 && (
-              <div className="flex min-h-[6.5rem] items-center justify-center rounded-lg border border-dashed border-border p-2 text-xs text-muted-foreground">
-                Select parts on a sheet (drag a box) or double-click a part to pick it up — its actions appear here.
-              </div>
-            )}
-          </div>
+          {actionBar}
           <div ref={boxRef} className="space-y-4">
             {!result || !resS ? (
               <p className="text-sm text-muted-foreground">Import parts, then press Optimize — or press a part in the table to nest it by hand.</p>
@@ -1493,7 +1527,7 @@ export function NestBoost() {
               result.sheets.map((sh, i) => {
                 const st = sheetStats(sh, resS);
                 return (
-                  <div key={i}>
+                  <div key={i} className={fs === i ? "fixed inset-0 z-40 flex flex-col overflow-hidden bg-background p-3" : undefined}>
                     <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span>
                         <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
@@ -1568,8 +1602,21 @@ export function NestBoost() {
                           Reset to full sheet
                         </Button>
                       )}
+                      <Button
+                        variant="ghost" size="sm" className="ml-auto h-7"
+                        title={fs === i ? "Back to the page (Esc)" : "Fill the whole window with this sheet"}
+                        onClick={() => setFsIdx(fs === i ? null : i)}
+                      >
+                        {fs === i ? <Minimize2 /> : <Maximize2 />} {fs === i ? "Exit full screen" : "Full screen"}
+                      </Button>
                     </div>
-                    <SheetCanvas sheet={sh} index={i} S={resS} width={width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} dragRef={dragRef} multiRef={multiRef} selectMode={selectMode} onChange={bump} />
+                    {fs === i && <div className="mb-2 shrink-0">{actionBar}</div>}
+                    <div
+                      ref={fs === i ? fsBoxRef : undefined}
+                      className={fs === i ? "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]" : undefined}
+                    >
+                      <SheetCanvas sheet={sh} index={i} S={resS} width={fs === i ? fsWidth : width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} dragRef={dragRef} multiRef={multiRef} selectMode={selectMode} onChange={bump} />
+                    </div>
                   </div>
                 );
               })
