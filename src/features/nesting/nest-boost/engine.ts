@@ -80,6 +80,20 @@ export function resizeSheet(sh: Sheet, S: Settings, w: number, h: number): { w: 
   return { w: W, h: H };
 }
 
+export type FitDirection = "width" | "height" | "both";
+
+/**
+ * Shrinks a sheet down to its parts in the chosen direction only: "width" trims W and keeps H as it is,
+ * "height" trims H and keeps W, "both" trims both. The margin is kept on the trimmed side(s).
+ * Returns the size actually applied.
+ */
+export function fitSheetToParts(sh: Sheet, S: Settings, dir: FitDirection): { w: number; h: number } {
+  const m = minSheetSize(sh, S);
+  const curW = sh.W ?? S.W;
+  const curH = sh.H ?? S.H;
+  return resizeSheet(sh, S, dir === "height" ? curW : m.w, dir === "width" ? curH : m.h);
+}
+
 export interface Settings {
   W: number;
   H: number;

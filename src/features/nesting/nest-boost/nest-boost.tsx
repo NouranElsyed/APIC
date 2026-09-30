@@ -23,7 +23,7 @@ import {
   itemsInRect,
   leftOf,
   makeSettings,
-  minSheetSize,
+  fitSheetToParts,
   moveGroup,
   moveTo,
   newSheet,
@@ -1409,17 +1409,26 @@ export function NestBoost() {
                         />
                         mm
                       </span>
-                      <Button
-                        variant="ghost" size="sm" className="h-7"
-                        title="Shrink this sheet to just fit its parts, to cut less material / less scrap"
-                        onClick={() => {
-                          const m = minSheetSize(sh, resS);
-                          resizeSheet(sh, resS, m.w, m.h);
-                          bump();
-                        }}
-                      >
-                        Fit to parts
-                      </Button>
+                      <span className="inline-flex items-center gap-0.5">
+                        <span className="text-xs text-muted-foreground">Fit to parts:</span>
+                        {([
+                          ["width", "Width", "Trim only the sheet width (W) down to its parts; the height stays as it is"],
+                          ["height", "Height", "Trim only the sheet height (H) down to its parts; the width stays as it is"],
+                          ["both", "Both", "Trim both width and height down to its parts, to cut less material / less scrap"],
+                        ] as const).map(([dir, label, tip]) => (
+                          <Button
+                            key={dir}
+                            variant="ghost" size="sm" className="h-7 px-2"
+                            title={tip}
+                            onClick={() => {
+                              fitSheetToParts(sh, resS, dir);
+                              bump();
+                            }}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </span>
                       {sh.items.length > 0 && (
                         <Button
                           variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held || running}

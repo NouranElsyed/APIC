@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, inGhost, leftOf, makeSettings, moveTo, newSheet, placedCounts, setCellCanvasFactory, sides, startNew, syncUnplaced, transfer,
+  bbox, fitSheetToParts, inGhost, leftOf, makeSettings, moveTo, newSheet, placedCounts, setCellCanvasFactory, sides, startNew, syncUnplaced, transfer,
   type Group, type OptResult, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -63,5 +63,39 @@ describe("manual nesting", () => {
     const ok = dropAt(res, g, 600, 300);
     const b = bbox(sides(ok.it).o);
     expect(b[0]).toBeGreaterThanOrEqual(S.mg - 0.01);
+  });
+});
+
+describe("fit sheet to parts by direction", () => {
+  const setup = () => {
+    const g = grp(0, 1);
+    const res: OptResult = { sheets: [newSheet(10, "S235")], un: [], skip: [], manual: true };
+    dropAt(res, g, 100, 100);
+    return res.sheets[0];
+  };
+
+  it("width only trims W and leaves H", () => {
+    const sh = setup();
+    const r = fitSheetToParts(sh, S, "width");
+    expect(r.h).toBe(S.H);
+    expect(r.w).toBeLessThan(S.W);
+  });
+
+  it("height only trims H and leaves W", () => {
+    const sh = setup();
+    const r = fitSheetToParts(sh, S, "height");
+    expect(r.w).toBe(S.W);
+    expect(r.h).toBeLessThan(S.H);
+  });
+
+  it("both trims both, and equals width + height applied in turn", () => {
+    const a = setup();
+    const both = fitSheetToParts(a, S, "both");
+    const b = setup();
+    fitSheetToParts(b, S, "width");
+    const seq = fitSheetToParts(b, S, "height");
+    expect(both).toEqual(seq);
+    expect(both.w).toBeLessThan(S.W);
+    expect(both.h).toBeLessThan(S.H);
   });
 });
