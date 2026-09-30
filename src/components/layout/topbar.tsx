@@ -1,5 +1,5 @@
 "use client";
-import { Menu, Bell } from "lucide-react";
+import { Menu, Bell, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,11 +28,16 @@ export function Topbar({
   subtitle,
   user,
   onToggleSidebar,
+  sidebarOpen = true,
+  onToggleDesktopSidebar,
 }: {
   title: string;
   subtitle?: string;
   user: { name: string; email: string; role: string };
   onToggleSidebar?: () => void;
+  /** Desktop sidebar state + toggle (the button is hidden on mobile, which uses the hamburger drawer). */
+  sidebarOpen?: boolean;
+  onToggleDesktopSidebar?: () => void;
 }) {
   const { notifications, unreadCount, connected, markAllRead } = useNotificationStream();
 
@@ -42,6 +47,19 @@ export function Topbar({
         <Button variant="ghost" size="icon" className="md:hidden" onClick={onToggleSidebar}>
           <Menu className="h-5 w-5" />
         </Button>
+        {onToggleDesktopSidebar && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="hidden md:inline-flex"
+            onClick={onToggleDesktopSidebar}
+            title={sidebarOpen ? "Hide sidebar (Ctrl+B)" : "Show sidebar (Ctrl+B)"}
+            aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            aria-pressed={sidebarOpen}
+          >
+            {sidebarOpen ? <PanelLeftClose className="h-5 w-5" /> : <PanelLeftOpen className="h-5 w-5" />}
+          </Button>
+        )}
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold text-foreground">{title}</h1>
           {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}

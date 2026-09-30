@@ -6,14 +6,15 @@ import { cn } from "@/lib/utils";
 import { visibleNavItems } from "@/lib/nav-config";
 import type { Role } from "@prisma/client";
 
-export function Sidebar({ role, collapsed }: { role: Role; collapsed?: boolean }) {
+export function Sidebar({ role, collapsed, open = true }: { role: Role; collapsed?: boolean; open?: boolean }) {
   const pathname = usePathname();
   const items = visibleNavItems(role);
 
   return (
     <aside
       className={cn(
-        "hidden md:flex h-screen flex-col bg-sidebar text-sidebar-foreground transition-all duration-200",
+        "hidden h-screen flex-col bg-sidebar text-sidebar-foreground transition-all duration-200",
+        open ? "md:flex" : "md:hidden",
         collapsed ? "w-[76px]" : "w-64"
       )}
     >
