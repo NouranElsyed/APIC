@@ -1,6 +1,7 @@
 "use client";
 import * as React from "react";
-import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -575,7 +576,8 @@ export function NestBoost() {
   const [fsIdx, setFsIdx] = React.useState<number | null>(null);
   const fsBoxRef = React.useRef<HTMLDivElement | null>(null);
   const [fsWidth, setFsWidth] = React.useState(1000);
-  const fs = result && fsIdx !== null && fsIdx < result.sheets.length ? fsIdx : null; // a deleted sheet closes it
+  const sheetCount = result?.sheets.length ?? 0;
+  const fs = fsIdx !== null && fsIdx < sheetCount ? fsIdx : null; // a deleted sheet closes it
 
   React.useEffect(() => {
     if (fs === null) return;
@@ -589,8 +591,18 @@ export function NestBoost() {
     document.body.style.overflow = "hidden"; // the page behind must not scroll
     // Esc leaves fullscreen only when it isn't already cancelling a held part / selection
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || selRef.current || multiRef.current) return;
-      setFsIdx(null);
+      if (selRef.current || multiRef.current) return; // then the keys belong to the held part / selection
+      if (e.key === "Escape") {
+        setFsIdx(null);
+        return;
+      }
+      // arrows switch between sheets (only when nothing is held or selected, so nudging parts still works)
+      const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
+      if (!step || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if ((e.target as HTMLElement | null)?.closest?.("input,textarea,select")) return;
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+      e.preventDefault();
+      setFsIdx((c) => (c === null ? c : Math.min(sheetCount - 1, Math.max(0, c + step))));
     };
     window.addEventListener("keydown", onKey, true);
     return () => {
@@ -598,7 +610,7 @@ export function NestBoost() {
       document.body.style.overflow = prev;
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [fs]);
+  }, [fs, sheetCount]);
 
   const setG = (g: Group[]) => {
     groupsRef.current = g;
@@ -1526,8 +1538,8 @@ export function NestBoost() {
             ) : (
               result.sheets.map((sh, i) => {
                 const st = sheetStats(sh, resS);
-                return (
-                  <div key={i} className={fs === i ? "fixed inset-0 z-40 flex flex-col overflow-hidden bg-background p-3" : undefined}>
+                const node = (
+                  <div key={i} className={fs === i ? "fixed inset-0 z-[45] flex h-dvh flex-col overflow-hidden bg-background p-3" : undefined}>
                     <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span>
                         <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
@@ -1602,8 +1614,19 @@ export function NestBoost() {
                           Reset to full sheet
                         </Button>
                       )}
+                      {fs === i && result.sheets.length > 1 && (
+                        <span className="ml-auto inline-flex items-center gap-1">
+                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === 0} title="Previous sheet (← / ↑)" onClick={() => setFsIdx(i - 1)}>
+                            <ChevronLeft />
+                          </Button>
+                          <span className="tabular-nums">{i + 1} / {result.sheets.length}</span>
+                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === result.sheets.length - 1} title="Next sheet (→ / ↓)" onClick={() => setFsIdx(i + 1)}>
+                            <ChevronRight />
+                          </Button>
+                        </span>
+                      )}
                       <Button
-                        variant="ghost" size="sm" className="ml-auto h-7"
+                        variant="ghost" size="sm" className={fs === i && result.sheets.length > 1 ? "h-7" : "ml-auto h-7"}
                         title={fs === i ? "Back to the page (Esc)" : "Fill the whole window with this sheet"}
                         onClick={() => setFsIdx(fs === i ? null : i)}
                       >
@@ -1611,6 +1634,25 @@ export function NestBoost() {
                       </Button>
                     </div>
                     {fs === i && <div className="mb-2 shrink-0">{actionBar}</div>}
+                    {fs === i && stillToPlace.length > 0 && (
+                      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2">
+                        <span className="text-xs font-medium">Not nested yet — press a part, drag it onto the sheet and release (or click, then click on the sheet):</span>
+                        {stillToPlace.map(({ g, n }) => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            disabled={running}
+                            onPointerDown={(e) => holdFromList(g, e)}
+                            className="flex cursor-grab select-none items-center gap-1.5 rounded-md border border-primary/40 bg-card px-2 py-1 text-xs font-medium hover:bg-primary/10 active:cursor-grabbing"
+                            style={{ touchAction: "none" }}
+                            title={`Part #${g.sn} ${g.name} — ${n} left`}
+                          >
+                            <span className="inline-block h-3 w-3 rounded-sm border border-black/20" style={{ background: partColor(g) }} />
+                            #{g.sn} {g.name} <span className="tabular-nums text-primary">{n} left</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div
                       ref={fs === i ? fsBoxRef : undefined}
                       className={fs === i ? "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]" : undefined}
@@ -1619,6 +1661,8 @@ export function NestBoost() {
                     </div>
                   </div>
                 );
+                // fullscreen is rendered straight into <body> so no parent (sidebar, transforms, overflow) can clip or cover it
+                return fs === i && typeof document !== "undefined" ? createPortal(node, document.body, `fs-${i}`) : node;
               })
             )}
           </div>
