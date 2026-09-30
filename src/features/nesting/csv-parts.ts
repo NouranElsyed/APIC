@@ -6,7 +6,7 @@ export const PARTS_CSV_TEMPLATE =
   "Bracket,FB50x10,S235,600,12\r\n";
 
 /** Splits one CSV record honouring quotes; delimiter is auto-detected by the caller. */
-function splitLine(line: string, d: string): string[] {
+export function splitLine(line: string, d: string): string[] {
   const out: string[] = [];
   let cur = "";
   let q = false;
@@ -32,7 +32,7 @@ const ALIASES: Record<keyof Piece1DInput, string[]> = {
   length: ["length", "lengthmm", "len", "cutlength", "lmm"],
   qty: ["qty", "quantity", "pcs", "count", "nos"],
 };
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+export const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** "plate", "PL", "hot rolled", "HR", "pipe", "tube"... -> part type (undefined when not recognised). */
 export function parsePartType(v: string): Piece1DInput["partType"] {

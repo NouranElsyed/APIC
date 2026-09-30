@@ -1007,3 +1007,93 @@ export function parseDxf(text: string, options: ParseDxfOptions = {}): DxfGeomet
     parts,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Text labels (TEXT / MTEXT)
+// ---------------------------------------------------------------------------
+// Read-only helper for the bulk importer: drafters often write "5mm" above a
+// group of parts and "x6" next to a part. The geometry parser above ignores
+// text on purpose; this returns it (positions in mm, same space as the part
+// polygons) so the importer can pair labels with parts.
+
+export interface DxfText {
+  text: string;
+  /** Anchor X in mm — the estimated horizontal CENTRE of the text. */
+  x: number;
+  /** Anchor Y in mm — the estimated vertical centre of the text. */
+  y: number;
+  height: number;
+  /** Estimated text width in mm. */
+  width: number;
+}
+
+function cleanMText(raw: string): string {
+  return raw
+    .replace(/\\P/gi, " ")
+    .replace(/\\~/g, " ")
+    .replace(/\\[ACFfHQTWc][^;]*;/g, "")
+    .replace(/\\[LlOoKk]/g, "")
+    .replace(/\\\\/g, "\\")
+    .replace(/[{}]/g, "")
+    .replace(/%%[cC]/g, "Ø")
+    .replace(/%%[dD]/g, "°")
+    .replace(/%%[pP]/g, "±")
+    .replace(/%%[uUoO]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function extractDxfTexts(text: string): DxfText[] {
+  let tags: Tag[];
+  try { tags = tokenize(text); } catch { return []; }
+  const factor = detectUnits(tags).factor;
+  const section = getEntitiesSection(tags);
+  const out: DxfText[] = [];
+
+  let i = 0;
+  while (i < section.length) {
+    const t = section[i];
+    const kind = t.code === 0 ? t.value.toUpperCase() : "";
+    if (kind !== "TEXT" && kind !== "MTEXT") { i++; continue; }
+
+    let j = i + 1;
+    let x = 0, y = 0, ax: number | null = null, ay: number | null = null;
+    let height = 0, refWidth = 0, hAlign = 0, vAlign = 0, attach = 1;
+    let chunks = "", last = "";
+    while (j < section.length && section[j].code !== 0) {
+      const g = section[j];
+      const num = parseFloat(g.value);
+      if (g.code === 10) x = num;
+      else if (g.code === 20) y = num;
+      else if (g.code === 11) ax = num;
+      else if (g.code === 21) ay = num;
+      else if (g.code === 40) height = num;
+      else if (g.code === 41) refWidth = num;
+      else if (g.code === 71) attach = parseInt(g.value, 10);
+      else if (g.code === 72) hAlign = parseInt(g.value, 10);
+      else if (g.code === 73) vAlign = parseInt(g.value, 10);
+      else if (g.code === 3) chunks += g.value;
+      else if (g.code === 1) last = g.value;
+      j++;
+    }
+    i = j;
+
+    const content = kind === "MTEXT" ? cleanMText(chunks + last) : cleanMText(last);
+    if (!content || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const h = Number.isFinite(height) && height > 0 ? height : 0;
+    const estWidth = kind === "MTEXT" && refWidth > 0 ? refWidth : h * 0.6 * content.length;
+
+    let cx = x, cy = y;
+    if (kind === "TEXT") {
+      if ((hAlign !== 0 || vAlign !== 0) && ax !== null && ay !== null) { cx = ax; cy = ay; }
+      else { cx = x + estWidth / 2; cy = y + h / 2; }
+    } else {
+      const col = (attach - 1) % 3; // 0 left, 1 centre, 2 right
+      const row = Math.floor((attach - 1) / 3); // 0 top, 1 middle, 2 bottom
+      cx = col === 0 ? x + estWidth / 2 : col === 2 ? x - estWidth / 2 : x;
+      cy = row === 0 ? y - h / 2 : row === 2 ? y + h / 2 : y;
+    }
+    out.push({ text: content, x: cx * factor, y: cy * factor, height: h * factor, width: estWidth * factor });
+  }
+  return out;
+}

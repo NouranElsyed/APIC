@@ -15,7 +15,19 @@
 // HOT_ROLLED length = longest side of the DXF bbox; profile and kg/m must come
 //            from the row (they are not in a DXF).
 
-import type { DxfGeometryResult } from "./dxf";
+import type { DxfGeometryResult, DxfPartGeometry } from "./dxf";
+
+/** The bits of a parsed DXF (or one part of a multi-part DXF) the builder needs. */
+export type DxfSize = Pick<DxfGeometryResult, "areaSqm" | "bboxWidthMm" | "bboxHeightMm"> & { valid?: boolean; errorMessage?: string | null };
+
+/** Every importable part in a parsed file: one for a normal DXF, many for a multi-part sheet. */
+export function importableParts(dxf: DxfGeometryResult): DxfPartGeometry[] {
+  return dxf.parts.length > 0 && (dxf.valid || dxf.outerContourCount > 1) ? dxf.parts : [];
+}
+
+export function sizeOfPart(p: DxfPartGeometry): DxfSize {
+  return { valid: true, areaSqm: p.areaSqm, bboxWidthMm: p.bboxWidthMm, bboxHeightMm: p.bboxHeightMm, errorMessage: null };
+}
 
 export type ImportPartType = "PLATE" | "HOT_ROLLED";
 
@@ -63,8 +75,8 @@ export type BuildResult =
   | { ok: false; error: string };
 
 /** Builds the payload accepted by takeoffPartSchema (minus drawingId/itemNo). */
-export function buildPartFromDxf(dxf: DxfGeometryResult, cfg: ImportRowConfig): BuildResult {
-  if (!dxf.valid || dxf.areaSqm == null || dxf.bboxWidthMm == null || dxf.bboxHeightMm == null) {
+export function buildPartFromDxf(dxf: DxfSize, cfg: ImportRowConfig): BuildResult {
+  if (dxf.valid === false || dxf.areaSqm == null || dxf.bboxWidthMm == null || dxf.bboxHeightMm == null) {
     return { ok: false, error: dxf.errorMessage ?? "Invalid DXF" };
   }
   if (!cfg.description.trim()) return { ok: false, error: "Description is required" };

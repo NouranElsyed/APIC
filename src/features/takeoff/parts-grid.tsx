@@ -1,7 +1,7 @@
 "use client";
 import { isNestable, nestKindOf } from "@/features/nesting/part-routing";
 import * as React from "react";
-import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers, FileUp } from "lucide-react";
+import { Pencil, Trash2, Plus, Sigma, X, Upload, FileCheck2, FileX2, Loader2, Download, TriangleAlert, Layers, FileUp, FileSpreadsheet } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTakeoffProject } from "./project-context";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { explainTakeoffPart } from "@/server/calc/takeoff";
 import { PartForm } from "./part-form";
 import { DxfImportDialog } from "./dxf-import-dialog";
+import { CsvImportDialog } from "./csv-import-dialog";
 import type { TakeoffPartRow, PartType } from "./types";
 
 // Defensive: legacy/partial rows can come back from the API as null —
@@ -55,6 +56,7 @@ export function PartsGrid({
 }) {
   const [formOpen, setFormOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+  const [csvOpen, setCsvOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<TakeoffPartRow | null>(null);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
@@ -357,8 +359,11 @@ export function PartsGrid({
             <Button size="sm" variant="ghost" onClick={openAdd}>
               <Plus className="h-3.5 w-3.5" /> Add Item
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)} title="Import one or many DXF files — each file becomes an item">
+            <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)} title="Import DXF files — a sheet with several labelled parts is split into items">
               <FileUp className="h-3.5 w-3.5" /> Import DXF
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setCsvOpen(true)} title="Import hot-rolled sections and pipes from a CSV file">
+              <FileSpreadsheet className="h-3.5 w-3.5" /> Import CSV
             </Button>
           </div>
         ) : <span />}
@@ -396,6 +401,10 @@ export function PartsGrid({
 
       {canCreate && (
         <DxfImportDialog open={importOpen} onOpenChange={setImportOpen} drawingId={drawingId} onImported={onChanged} />
+      )}
+
+      {canCreate && (
+        <CsvImportDialog open={csvOpen} onOpenChange={setCsvOpen} drawingId={drawingId} nextItemNo={nextItemNo} onImported={onChanged} />
       )}
 
       {canCreate && (
