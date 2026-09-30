@@ -4,6 +4,7 @@ import {
   type Group, type OptResult, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
+import { canRedo, canUndo, record, redo, resetHistory, undo } from "./history";
 
 setCellCanvasFactory(fakeCanvasFactory);
 
@@ -97,5 +98,47 @@ describe("fit sheet to parts by direction", () => {
     expect(both).toEqual(seq);
     expect(both.w).toBeLessThan(S.W);
     expect(both.h).toBeLessThan(S.H);
+  });
+});
+
+describe("undo / redo", () => {
+  it("steps back and forward through hand edits", () => {
+    const g = grp(0, 2);
+    const res: OptResult = { sheets: [newSheet(10, "S235")], un: [], skip: [], manual: true };
+    const h = resetHistory(res);
+    expect(canUndo(h)).toBe(false);
+
+    dropAt(res, g, 100, 100);
+    expect(record(h, res)).toBe(true);
+    dropAt(res, g, 400, 100);
+    expect(record(h, res)).toBe(true);
+    expect(record(h, res)).toBe(false); // nothing changed
+    expect(res.sheets[0].items).toHaveLength(2);
+
+    expect(undo(h, res)).toBe(true);
+    expect(res.sheets[0].items).toHaveLength(1);
+    expect(undo(h, res)).toBe(true);
+    expect(res.sheets[0].items).toHaveLength(0);
+    expect(undo(h, res)).toBe(false);
+
+    expect(redo(h, res)).toBe(true);
+    expect(redo(h, res)).toBe(true);
+    expect(res.sheets[0].items).toHaveLength(2);
+    expect(redo(h, res)).toBe(false);
+  });
+
+  it("restores sheet size and drops redo after a new edit", () => {
+    const g = grp(0, 2);
+    const res: OptResult = { sheets: [newSheet(10, "S235")], un: [], skip: [], manual: true };
+    dropAt(res, g, 100, 100);
+    const h = resetHistory(res);
+    fitSheetToParts(res.sheets[0], S, "both");
+    record(h, res);
+    expect(res.sheets[0].W).toBeLessThan(S.W);
+    undo(h, res);
+    expect(res.sheets[0].W).toBeUndefined();
+    dropAt(res, g, 400, 100);
+    record(h, res);
+    expect(canRedo(h)).toBe(false);
   });
 });

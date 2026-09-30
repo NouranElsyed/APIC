@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Plus, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { Check, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -12,6 +12,7 @@ import { nestKindOf } from "@/features/nesting/part-routing";
 import { register2D } from "../report/report-store";
 import type { Report2DInput } from "../report/report-2d";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import {
   addFileParts,
@@ -465,6 +466,12 @@ export function NestBoost() {
   React.useEffect(() => {
     resultRef.current = result;
   }, [result]);
+  // undo / redo of hand edits; starts over whenever a new nest result appears (optimise, reset, open a saved nest)
+  const histRef = React.useRef<NestHistory>(resetHistory(null));
+  const [hist, setHist] = React.useState<{ res: OptResult | null; undo: boolean; redo: boolean }>({ res: null, undo: false, redo: false });
+  React.useEffect(() => {
+    histRef.current = resetHistory(result);
+  }, [result]);
   React.useEffect(() => {
     const up = () => {
       dragRef.current = false;
@@ -508,6 +515,14 @@ export function NestBoost() {
     setCarrying(!!multiRef.current?.carry);
     setCarryBad(!!multiRef.current?.drag?.bad);
     if (r?.manual && !selRef.current) syncUnplaced(r, groupsRef.current);
+    // remember the nest as an undo step once it is idle again (nothing in hand, no group mid-drag)
+    if (r && !selRef.current && !multiRef.current?.drag && !multiRef.current?.carry) record(histRef.current, r);
+    setHist((p) => {
+      const h = histRef.current;
+      const u = canUndo(h);
+      const rd = canRedo(h);
+      return p.res === r && p.undo === u && p.redo === rd ? p : { res: r, undo: u, redo: rd };
+    });
     setVersion((v) => v + 1);
     const s = selRef.current;
     const next = s
@@ -954,6 +969,36 @@ export function NestBoost() {
     }
   }
 
+  /** Ctrl+Z / Ctrl+Y (also the buttons): step through hand edits of the nest. Not while something is in hand. */
+  const stepHistory = React.useCallback(
+    (dir: "undo" | "redo") => {
+      const r = resultRef.current;
+      if (!r || selRef.current || multiRef.current?.drag || multiRef.current?.carry) return;
+      if (!(dir === "undo" ? undo : redo)(histRef.current, r)) return;
+      multiRef.current = null;
+      bump();
+    },
+    [bump],
+  );
+
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // let text fields keep their own undo
+      if ((e.target as HTMLElement | null)?.closest?.("input,textarea,select,[contenteditable=true]")) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        stepHistory("undo");
+      } else if (k === "y" || (k === "z" && e.shiftKey)) {
+        e.preventDefault();
+        stepHistory("redo");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stepHistory]);
+
   // keyboard while a part is picked up
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1284,6 +1329,22 @@ export function NestBoost() {
               </select>
               <Button variant="secondary" size="sm" onClick={addSheet} disabled={running || !lots.length}>
                 <Plus /> Add empty sheet
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => stepHistory("undo")}
+                disabled={running || !!held || carrying || !(hist.res === result && hist.undo)}
+                title="Undo the last change to the nest (Ctrl+Z)"
+              >
+                <Undo2 /> Undo
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => stepHistory("redo")}
+                disabled={running || !!held || carrying || !(hist.res === result && hist.redo)}
+                title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+              >
+                <Redo2 /> Redo
               </Button>
               <Button
                 variant={selectMode ? "default" : "outline"}
