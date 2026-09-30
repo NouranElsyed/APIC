@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, fitSheetToParts, inGhost, leftOf, makeSettings, moveTo, newSheet, placedCounts, setCellCanvasFactory, sides, startNew, syncUnplaced, transfer,
+  bbox, detentDelta, fitSheetToParts, inGhost, isDetent, rotateSnap, leftOf, makeSettings, moveTo, newSheet, placedCounts, setCellCanvasFactory, sides, startNew, syncUnplaced, transfer,
   type Group, type OptResult, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -140,5 +140,32 @@ describe("undo / redo", () => {
     dropAt(res, g, 400, 100);
     record(h, res);
     expect(canRedo(h)).toBe(false);
+  });
+});
+
+describe("rotation detents every 45°", () => {
+  it("stops exactly on 45° multiples in both directions", () => {
+    expect(detentDelta(40, 5)).toBe(5);
+    expect(detentDelta(43, 5)).toBe(2); // would pass 45 -> stops on it
+    expect(detentDelta(45, 5)).toBe(5); // on a detent, moves away freely
+    expect(detentDelta(88, 5)).toBe(2);
+    expect(detentDelta(2, -5)).toBe(-2); // stops on 0
+    expect(detentDelta(0, -5)).toBe(-5); // then goes on to 355
+    expect(detentDelta(92, -5)).toBe(-2);
+    expect(detentDelta(350, 15)).toBe(10); // stops on 360 (= 0)
+  });
+
+  it("isDetent recognises 0, 45, 90, 135 ... 360", () => {
+    for (const a of [0, 45, 90, 135, 180, 225, 270, 315, 360]) expect(isDetent(a)).toBe(true);
+    for (const a of [1, 44.9, 46, 100]) expect(isDetent(a)).toBe(false);
+  });
+
+  it("rotateSnap lands on the detent and reports it", () => {
+    const sel = startNew(grp(0, 1));
+    sel.it.rot = 43;
+    expect(rotateSnap(sel, S, 5)).toBe(true);
+    expect(sel.it.rot).toBe(45);
+    expect(rotateSnap(sel, S, 5)).toBe(false);
+    expect(sel.it.rot).toBe(50);
   });
 });

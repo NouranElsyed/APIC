@@ -1143,6 +1143,39 @@ export function rotate(sel: Sel, S: Settings, d: number) {
   sel.off = [sel.pm[0] - it.x, sel.pm[1] - it.y];
 }
 
+/** Rotation detents: the wheel stops at every multiple of this many degrees (0, 45, 90, 135, ...). */
+export const ANGLE_DETENT = 45;
+
+/** True when `a` (degrees) sits exactly on a detent. */
+export function isDetent(a: number): boolean {
+  const r = ((a % ANGLE_DETENT) + ANGLE_DETENT) % ANGLE_DETENT;
+  return r < 1e-6 || ANGLE_DETENT - r < 1e-6;
+}
+
+/**
+ * Shortens a requested rotation `d` so it stops exactly on the next detent when it would reach or pass it
+ * (the next notch then carries on normally). A part already on a detent moves away freely.
+ */
+export function detentDelta(cur: number, d: number): number {
+  const e = 1e-9;
+  if (d > 0) {
+    const next = (Math.floor(cur / ANGLE_DETENT + e) + 1) * ANGLE_DETENT;
+    return cur + d >= next - e ? next - cur : d;
+  }
+  if (d < 0) {
+    const prev = (Math.ceil(cur / ANGLE_DETENT - e) - 1) * ANGLE_DETENT;
+    return cur + d <= prev + e ? prev - cur : d;
+  }
+  return d;
+}
+
+/** Like rotate(), but stops on every 45°. Returns true when the part landed exactly on a detent. */
+export function rotateSnap(sel: Sel, S: Settings, d: number): boolean {
+  const dd = detentDelta(sel.it.rot, d);
+  rotate(sel, S, dd);
+  return Math.abs(dd) > 1e-9 && isDetent(sel.it.rot);
+}
+
 // ------------------------------------------------- multi-selection (CAD-style box select)
 
 /** Several parts of ONE sheet selected together; they move as a rigid group. */
@@ -1388,6 +1421,15 @@ export function rotateGroup(ms: MultiSel, S: Settings, d: number) {
   startGroupDrag(ms, S, dr.ptr); // keeps following the pointer from where it is now
 }
 
+/** Like rotateGroup(), but stops on every 45° (measured on the first part of the block). True = landed on a detent. */
+export function rotateGroupSnap(ms: MultiSel, S: Settings, d: number): boolean {
+  const ref = ms.items[0];
+  if (!ref) return false;
+  const dd = detentDelta(ref.rot, d);
+  rotateGroup(ms, S, dd);
+  return Math.abs(dd) > 1e-9 && isDetent(ref.rot);
+}
+
 // --------------------------------------------------------------------- drawing
 
 export interface DrawExtras {
@@ -1396,6 +1438,8 @@ export interface DrawExtras {
   selBad?: boolean;
   /** Selection rectangle being dragged, in mm. `cross` = right-to-left (touch) selection, drawn green + dashed. */
   box?: { x0: number; y0: number; x1: number; y1: number; cross: boolean } | null;
+  /** Angle badge of the part / block being held: shown above (x, y) in mm; `snap` = exactly on a 45° step (drawn green). */
+  angle?: { deg: number; x: number; y: number; snap: boolean } | null;
 }
 
 export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false, extra?: DrawExtras) {
@@ -1415,8 +1459,8 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     const P = path(it.g, it.rot, it.x, it.y);
     c.fill(P, "evenodd");
     c.globalAlpha = selItem === it ? 0.75 : 1;
-    c.strokeStyle = selBad && selItem === it ? "#991b1b" : "#0008";
-    c.lineWidth = 1 / k;
+    c.strokeStyle = selBad && selItem === it ? "#991b1b" : selItem === it && extra?.angle?.snap ? "#16a34a" : "#0008";
+    c.lineWidth = selItem === it && extra?.angle?.snap ? 2.5 / k : 1 / k;
     c.stroke(P);
     c.globalAlpha = 1;
     if (extra?.sel?.has(it)) {
@@ -1458,6 +1502,21 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.strokeText(t, x, y);
     c.fillStyle = "#000";
     c.fillText(t, x, y);
+  }
+  const an = extra?.angle;
+  if (an) {
+    const label = `${Math.round(an.deg * 10) / 10}°`;
+    c.font = "bold 13px system-ui, Arial, sans-serif";
+    const w = c.measureText(label).width + 14;
+    const bx0 = Math.max(2, Math.min(cv.width - w - 2, an.x * k - w / 2));
+    const by0 = Math.max(2, cv.height - an.y * k - 26);
+    c.fillStyle = an.snap ? "#16a34a" : "rgba(15,23,42,0.85)";
+    c.beginPath();
+    if (typeof c.roundRect === "function") c.roundRect(bx0, by0, w, 20, 10);
+    else c.rect(bx0, by0, w, 20);
+    c.fill();
+    c.fillStyle = "#fff";
+    c.fillText(label, bx0 + w / 2, by0 + 10.5);
   }
   c.restore();
 }

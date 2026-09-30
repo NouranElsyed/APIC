@@ -12,6 +12,7 @@ import { nestKindOf } from "@/features/nesting/part-routing";
 import { register2D } from "../report/report-store";
 import type { Report2DInput } from "../report/report-2d";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import {
@@ -30,6 +31,11 @@ import {
   newSheet,
   nudgeGroup,
   rotateGroup,
+  rotateGroupSnap,
+  rotateSnap,
+  bbox,
+  sides,
+  isDetent,
   parseDXF,
   partColor,
   path,
@@ -144,6 +150,22 @@ type Gesture =
   | { kind: "box"; start: Pt; add: boolean; sx: number; sy: number }
   | { kind: "move"; sx: number; sy: number };
 
+/** Angle readout for the part (or carried block) being held on this sheet, or null. */
+function angleBadge(sheet: Sheet, sel: Sel | null, ms: MultiSel | null): { deg: number; x: number; y: number; snap: boolean } | null {
+  let items: Item[] = [];
+  if (sel && sheet.items.includes(sel.it)) items = [sel.it];
+  else if (!sel && ms?.carry && ms.drag && ms.sh === sheet) items = ms.items;
+  if (!items.length) return null;
+  const bs = items.map((it) => bbox(sides(it).o));
+  const deg = items[0].rot;
+  return {
+    deg,
+    x: (Math.min(...bs.map((q) => q[0])) + Math.max(...bs.map((q) => q[2]))) / 2,
+    y: Math.max(...bs.map((q) => q[3])),
+    snap: isDetent(deg),
+  };
+}
+
 function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef, multiRef, selectMode, onChange }: SheetCanvasProps) {
   const ref = React.useRef<HTMLCanvasElement>(null);
   const k = width / S.W;
@@ -164,6 +186,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
       sel: ms && ms.sh === sheet ? new Set(ms.items) : null,
       selBad: !!ms?.drag?.bad,
       box: boxRef.current,
+      angle: angleBadge(sheet, selRef.current, ms),
     });
   }, [sheet, k, S, selRef, multiRef]);
 
@@ -195,7 +218,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
         const t = performance.now();
         if (t - lastWheel.current < 30) return;
         lastWheel.current = t;
-        rotateGroup(cm, S, ((e.deltaY || e.deltaX) > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5));
+        if (rotateGroupSnap(cm, S, ((e.deltaY || e.deltaX) > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5))) angleClick(cm.items[0].rot);
         onChange();
         return;
       }
@@ -207,7 +230,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
       s.lw = t;
       // free rotation: 5° per notch, hold Shift for 1° fine steps (Shift+wheel may arrive as deltaX)
       const dy = e.deltaY || e.deltaX;
-      rotate(s, S, (dy > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5));
+      if (rotateSnap(s, S, (dy > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5))) angleClick(s.it.rot);
       onChange();
     };
     cv.addEventListener("wheel", onWheel, { passive: false });
@@ -454,6 +477,8 @@ export function NestBoost() {
   const [multiCount, setMultiCount] = React.useState(0);
   const [carrying, setCarrying] = React.useState(false);
   const [carryBad, setCarryBad] = React.useState(false); // carried block rotated into no room (red)
+  const [angleSound, setAngleSound] = React.useState(true); // click + vibration at every 45° while rotating
+  React.useEffect(() => setAngleFeedback(angleSound), [angleSound]);
   const [selectMode, setSelectMode] = React.useState(false); // touch screens: drag on a sheet = selection box
   const [pendingClear, setPendingClear] = React.useState<number | null>(null); // sheet index waiting for "Clear sheet" confirmation
 
@@ -1354,6 +1379,14 @@ export function NestBoost() {
               >
                 Touch select {selectMode ? "on" : "off"}
               </Button>
+              <Button
+                variant={angleSound ? "default" : "outline"}
+                size="sm"
+                onClick={() => setAngleSound((v) => !v)}
+                title="Rotation stops with a click (and a vibration on phones) at every 45° — 0, 45, 90, 135 ... — and the angle badge turns green"
+              >
+                Angle click {angleSound ? "on" : "off"}
+              </Button>
               <span className="text-xs text-muted-foreground">
                 Press a part in the table (&quot;Left / place by hand&quot;) and drop it on a sheet. When its count reaches 0 it can&apos;t be taken again;
                 put a piece back with Delete to free it.
@@ -1372,12 +1405,14 @@ export function NestBoost() {
           </p>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
-            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°), click to place, Esc to cancel. While moving, it can&apos;t overlap other parts,
+            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°) — it stops with a click at every 45° (0, 45, 90, 135 ...) and the angle badge turns green — click to place, Esc to cancel. While moving, it can&apos;t overlap other parts,
             break the spacing, or enter the margin (it stays at the last allowed position). Rotation is never blocked: if there&apos;s no room the part
             turns anyway and goes red — drag it to a free spot to place it.
           </p>
+          {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
+          <div className="mb-2 min-h-[6.5rem]">
           {!held && multiCount > 0 && (
-            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
               <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
               {!carrying && (
                 <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
@@ -1415,7 +1450,7 @@ export function NestBoost() {
             </div>
           )}
           {held && (
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 p-2">
               <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
                 <RotateCcw /> Rotate 90°
               </Button>
@@ -1434,6 +1469,12 @@ export function NestBoost() {
               </span>
             </div>
           )}
+            {!held && multiCount === 0 && (
+              <div className="flex min-h-[6.5rem] items-center justify-center rounded-lg border border-dashed border-border p-2 text-xs text-muted-foreground">
+                Select parts on a sheet (drag a box) or double-click a part to pick it up — its actions appear here.
+              </div>
+            )}
+          </div>
           <div ref={boxRef} className="space-y-4">
             {!result || !resS ? (
               <p className="text-sm text-muted-foreground">Import parts, then press Optimize — or press a part in the table to nest it by hand.</p>
