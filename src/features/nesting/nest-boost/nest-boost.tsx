@@ -264,7 +264,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
       style={{ touchAction: holdingHere || selectMode ? "none" : "auto", cursor: heldIdx !== null ? "move" : "default" }}
       onPointerDown={(e) => {
         // nothing held: press on a part = select it and drag (moves the whole selection); press on empty space = selection box
-        if (e.button !== 0 || selRef.current || dragRef.current) return;
+        if (e.button !== 0 || selRef.current || dragRef.current || multiRef.current?.carry) return;
         if (e.pointerType === "touch" && !selectMode) return;
         const m = mm(e);
         const it = partAt(m);
@@ -309,6 +309,15 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
         for (let j = sheet.items.length - 1; j >= 0; j--) {
           const it = sheet.items[j];
           if (c.isPointInPath(path(it.g, it.rot, it.x, it.y), m[0] * k, cv.height - m[1] * k, "evenodd")) {
+            const ms = multiRef.current;
+            if (ms && ms.sh === sheet && ms.items.length > 1 && ms.items.includes(it)) {
+              // double-click on a selected part with several selected: pick up ALL of them together
+              gesture.current = null;
+              ms.carry = true;
+              startGroupDrag(ms, S, m);
+              onChange();
+              return;
+            }
             multiRef.current = null; // one part in hand replaces any box selection
             selRef.current = startPick(sheet, index, it, m);
             onChange();
@@ -337,6 +346,18 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
           }
           return;
         }
+        const cm = multiRef.current;
+        if (cm?.carry && cm.drag && cm.sh === sheet) {
+          const m = mm(e);
+          moveGroup(cm, S, m[0] - cm.drag.pm[0], m[1] - cm.drag.pm[1]);
+          if (!raf.current) {
+            raf.current = requestAnimationFrame(() => {
+              raf.current = 0;
+              onChange();
+            });
+          }
+          return;
+        }
         const s = selRef.current;
         if (!s) return;
         const m = mm(e);
@@ -352,6 +373,14 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
         }
       }}
       onClick={(e) => {
+        const cm = multiRef.current;
+        if (cm?.carry && cm.sh === sheet) {
+          // click = drop the carried group where it is (it is always in a legal spot)
+          cm.carry = false;
+          cm.drag = undefined;
+          onChange();
+          return;
+        }
         const s = selRef.current;
         if (!s) return;
         if (s.bad) return; // red = overlapping: move to a free spot (or Esc) first
@@ -399,6 +428,7 @@ export function NestBoost() {
   // ---- box selection (CAD style): parts selected together on one sheet, moved as a group
   const multiRef = React.useRef<MultiSel | null>(null);
   const [multiCount, setMultiCount] = React.useState(0);
+  const [carrying, setCarrying] = React.useState(false);
   const [selectMode, setSelectMode] = React.useState(false); // touch screens: drag on a sheet = selection box
   const [pendingClear, setPendingClear] = React.useState<number | null>(null); // sheet index waiting for "Clear sheet" confirmation
 
@@ -451,6 +481,7 @@ export function NestBoost() {
       }
     }
     setMultiCount(multiRef.current?.items.length ?? 0);
+    setCarrying(!!multiRef.current?.carry);
     if (r?.manual && !selRef.current) syncUnplaced(r, groupsRef.current);
     setVersion((v) => v + 1);
     const s = selRef.current;
@@ -1218,7 +1249,7 @@ export function NestBoost() {
           <p className="mb-2 text-xs text-muted-foreground">
             Select like CAD: drag a box on a sheet — <span className="font-medium text-blue-600">left → right</span> selects only the parts completely
             inside the box, <span className="font-medium text-green-600">right → left</span> selects every part the box touches (Shift adds to the
-            selection). Then drag any selected part to move them all together (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
+            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
           </p>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
@@ -1229,13 +1260,33 @@ export function NestBoost() {
           {!held && multiCount > 0 && (
             <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
               <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
-              <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
-                <Undo2 /> Put back to list
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
-                Clear selection
-              </Button>
-              <span className="text-xs text-muted-foreground">Drag one of them to move the whole selection — it stops at other parts, the spacing and the margin.</span>
+              {!carrying && (
+                <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
+                  <Undo2 /> Put back to list
+                </Button>
+              )}
+              {carrying ? (
+                <>
+                  <Button
+                    variant="secondary" size="sm"
+                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; } bump(); }}
+                  >
+                    <Check /> Place here
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Holding the whole selection — move the mouse over the sheet, click to place, Esc to cancel. It stops at other parts, the spacing and the margin.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
+                    Clear selection
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin.
+                  </span>
+                </>
+              )}
             </div>
           )}
           {held && (

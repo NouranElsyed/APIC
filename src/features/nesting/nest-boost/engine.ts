@@ -1136,7 +1136,9 @@ export interface MultiSel {
   sh: Sheet;
   idx: number;
   items: Item[];
-  /** Only while a move is in progress (mouse drag / arrow key). */
+  /** Picked up with a double-click: the whole group follows the mouse until a click places it (Esc cancels). */
+  carry?: boolean;
+  /** Only while a move is in progress (mouse drag / arrow key / carrying). */
   drag?: {
     pm: Pt;
     base: Pt[];
