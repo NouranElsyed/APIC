@@ -1375,6 +1375,52 @@ export function transferGroup(ms: MultiSel, S: Settings, sh: Sheet, idx: number,
   return true;
 }
 
+/**
+ * Splits a group that is being moved (mouse drag or carry): the part under the pointer stays in hand and keeps
+ * following it, every other part of the group goes back to where it was before the move started ("last position":
+ * the pick-up spot for a carry, the drag start for a mouse drag - on its original sheet).
+ * Returns the part that stays in hand, or null when there is nothing to separate (fewer than 2 parts / no move).
+ */
+export function separateGroup(ms: MultiSel, S: Settings): Item | null {
+  const dr = ms.drag;
+  if (!dr || ms.items.length < 2) return null;
+  const [px, py] = dr.ptr;
+  // the part the pointer is on (top-most wins, then nearest centre); if it is on none, the nearest one
+  let keep = 0;
+  let best = Infinity;
+  let inside = false;
+  ms.items.forEach((it, i) => {
+    const b = dr.obb[i];
+    const ins = px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3];
+    const dist = Math.hypot(px - (b[0] + b[2]) / 2, py - (b[1] + b[3]) / 2);
+    if ((ins && !inside) || (ins === inside && dist < best)) {
+      keep = i;
+      best = dist;
+      inside = ins;
+    }
+  });
+  const h = ms.home;
+  const backSh = h ? h.sh : ms.sh;
+  const kept = ms.items[keep];
+  const keptHome = h
+    ? { sh: h.sh, pos: [h.pos[keep]], rot: h.rot ? [h.rot[keep]] : undefined }
+    : undefined;
+  ms.items.forEach((it, i) => {
+    if (i === keep) return;
+    const at = ms.sh.items.indexOf(it);
+    if (at >= 0) ms.sh.items.splice(at, 1);
+    const pos = h ? h.pos[i] : dr.base[i];
+    it.x = pos[0];
+    it.y = pos[1];
+    if (h?.rot) it.rot = h.rot[i];
+    backSh.items.push(it);
+  });
+  ms.items = [kept];
+  ms.home = keptHome;
+  startGroupDrag(ms, S, dr.ptr); // the kept part keeps following the pointer from where it is now
+  return kept;
+}
+
 /** Moves the selected group by a small step (arrow keys); it stops at the last allowed position. */
 export function nudgeGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
   startGroupDrag(ms, S, [0, 0]);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, rotateGroup, setCellCanvasFactory, sides, startGroupDrag, transferGroup,
+  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, rotateGroup, separateGroup, setCellCanvasFactory, sides, startGroupDrag, transferGroup,
   type Group, type Item, type MultiSel, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -249,5 +249,47 @@ describe("free-angle block rotation", () => {
     rotateGroup(ms, S, -35);
     expect(((A.rot % 360) + 360) % 360).toBe(0);
     expect(rel(B)[0] - rel(A)[0]).toBeCloseTo(200, 0);
+  });
+});
+
+describe("separating a moved group (S key)", () => {
+  it("mouse drag: the part under the pointer stays in hand, the other goes back to where it was", () => {
+    const { sh, A, B } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    startGroupDrag(ms, S, [150, 125]); // pointer on A
+    moveGroup(ms, S, 0, 100); // both moved up by 100
+    expect(A.y).toBe(200);
+    expect(B.y).toBe(200);
+    expect(separateGroup(ms, S)).toBe(A);
+    expect([B.x, B.y]).toEqual([300, 100]); // last position
+    expect(ms.items).toEqual([A]);
+    moveGroup(ms, S, 50, 0); // A keeps following the pointer, B stays put
+    expect([A.x, A.y]).toEqual([150, 200]);
+    expect([B.x, B.y]).toEqual([300, 100]);
+  });
+
+  it("carry: the others return to the pick-up spot on the home sheet, even from another sheet", () => {
+    const { sh, A, B } = setup();
+    const other = newSheet(10, "S235");
+    const ms: MultiSel = { sh, idx: 0, items: [A, B], carry: true, home: { sh, pos: [[A.x, A.y], [B.x, B.y]], rot: [0, 0] } };
+    startGroupDrag(ms, S, [350, 125]); // pointer on B
+    expect(transferGroup(ms, S, other, 1, [500, 250])).toBe(true);
+    expect(other.items).toHaveLength(2);
+    const kept = separateGroup(ms, S) as Item; // pointer sits between them after the jump: whichever is nearer stays
+    const back = kept === A ? B : A;
+    const home = back === A ? [100, 100] : [300, 100];
+    expect(sh.items).toContain(back);
+    expect([back.x, back.y]).toEqual(home);
+    expect(other.items).toEqual([kept]); // the kept part stays in hand on the sheet it is over
+    cancelGroupDrag(ms); // Esc later brings it back to its own last position
+    expect(sh.items).toContain(kept);
+    expect([kept.x, kept.y]).toEqual(kept === A ? [100, 100] : [300, 100]);
+  });
+
+  it("does nothing for a single part", () => {
+    const { sh, A } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A] };
+    startGroupDrag(ms, S, [150, 125]);
+    expect(separateGroup(ms, S)).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ import {
   rotateGroup,
   rotateGroupSnap,
   rotateSnap,
+  separateGroup,
   bbox,
   sides,
   isDetent,
@@ -268,6 +269,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
       if (ms) {
         if (cancelled) cancelGroupDrag(ms);
         ms.drag = undefined;
+        if (!ms.carry) ms.home = undefined;
       }
       onChange();
       return true;
@@ -1047,6 +1049,15 @@ export function NestBoost() {
           rotateSelection(90);
           return;
         }
+        // S while several parts are being moved together: the one under the pointer stays in hand, the rest go back
+        if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && !e.altKey && ms.drag && ms.items.length > 1) {
+          e.preventDefault();
+          if (separateGroup(ms, resS)) {
+            toast.info("Separated — the other part(s) went back to their last position");
+            bump();
+          }
+          return;
+        }
         const st = (e.shiftKey ? 10 : 1) * resS.cell; // parts sit on the optimiser's grid, so one step = one grid cell
         const nv: Record<string, Pt> = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] };
         if (nv[e.key] && !ms.drag) {
@@ -1401,7 +1412,7 @@ export function NestBoost() {
           <p className="mb-2 text-xs text-muted-foreground">
             Select like CAD: drag a box on a sheet — <span className="font-medium text-blue-600">left → right</span> selects only the parts completely
             inside the box, <span className="font-medium text-green-600">right → left</span> selects every part the box touches (Shift adds to the
-            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place; R rotates the whole selection as a block (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
+            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place; S while moving them separates: the part under the pointer stays in your hand and the others go back to their last position; R rotates the whole selection as a block (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
           </p>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
@@ -1443,7 +1454,7 @@ export function NestBoost() {
                     Clear selection
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin.
+                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin. Press S while moving to separate them: the part under the pointer stays in hand, the rest go back.
                   </span>
                 </>
               )}
