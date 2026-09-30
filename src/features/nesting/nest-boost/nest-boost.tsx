@@ -28,6 +28,7 @@ import {
   moveTo,
   newSheet,
   nudgeGroup,
+  rotateGroup,
   parseDXF,
   partColor,
   path,
@@ -152,6 +153,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 
   const boxRef = React.useRef<{ x0: number; y0: number; x1: number; y1: number; cross: boolean } | null>(null);
   const gesture = React.useRef<Gesture | null>(null);
+  const lastWheel = React.useRef(0);
 
   const paint = React.useCallback(() => {
     const cv = ref.current;
@@ -159,6 +161,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
     const ms = multiRef.current;
     drawSheet(sheet, cv, k, S, selRef.current?.it ?? null, !!selRef.current?.bad, {
       sel: ms && ms.sh === sheet ? new Set(ms.items) : null,
+      selBad: !!ms?.drag?.bad,
       box: boxRef.current,
     });
   }, [sheet, k, S, selRef, multiRef]);
@@ -184,6 +187,17 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
     const cv = ref.current;
     if (!cv) return;
     const onWheel = (e: WheelEvent) => {
+      const cm = multiRef.current;
+      if (!selRef.current && cm?.carry && cm.drag) {
+        // carrying a block: the wheel turns the whole block (5° per notch, Shift = 1°)
+        e.preventDefault();
+        const t = performance.now();
+        if (t - lastWheel.current < 30) return;
+        lastWheel.current = t;
+        rotateGroup(cm, S, ((e.deltaY || e.deltaX) > 0 ? 1 : -1) * (e.shiftKey ? 1 : 5));
+        onChange();
+        return;
+      }
       const s = selRef.current;
       if (!s) return;
       e.preventDefault();
@@ -197,7 +211,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
     };
     cv.addEventListener("wheel", onWheel, { passive: false });
     return () => cv.removeEventListener("wheel", onWheel);
-  }, [S, selRef, onChange]);
+  }, [S, selRef, multiRef, onChange]);
 
   const mm = (e: { clientX: number; clientY: number }): Pt => {
     const cv = ref.current as HTMLCanvasElement;
@@ -315,7 +329,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
               // double-click on a selected part with several selected: pick up ALL of them together
               gesture.current = null;
               ms.carry = true;
-              ms.home = { sh: ms.sh, pos: ms.items.map((q) => [q.x, q.y] as Pt) };
+              ms.home = { sh: ms.sh, pos: ms.items.map((q) => [q.x, q.y] as Pt), rot: ms.items.map((q) => q.rot) };
               startGroupDrag(ms, S, m);
               onChange();
               return;
@@ -382,7 +396,8 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
       onClick={(e) => {
         const cm = multiRef.current;
         if (cm?.carry && cm.sh === sheet) {
-          // click = drop the carried group where it is (it is always in a legal spot)
+          // click = drop the carried group where it is; refused while it is red (rotated into no room)
+          if (cm.drag?.bad) return;
           cm.carry = false;
           cm.drag = undefined;
           cm.home = undefined;
@@ -437,6 +452,7 @@ export function NestBoost() {
   const multiRef = React.useRef<MultiSel | null>(null);
   const [multiCount, setMultiCount] = React.useState(0);
   const [carrying, setCarrying] = React.useState(false);
+  const [carryBad, setCarryBad] = React.useState(false); // carried block rotated into no room (red)
   const [selectMode, setSelectMode] = React.useState(false); // touch screens: drag on a sheet = selection box
   const [pendingClear, setPendingClear] = React.useState<number | null>(null); // sheet index waiting for "Clear sheet" confirmation
 
@@ -490,6 +506,7 @@ export function NestBoost() {
     }
     setMultiCount(multiRef.current?.items.length ?? 0);
     setCarrying(!!multiRef.current?.carry);
+    setCarryBad(!!multiRef.current?.drag?.bad);
     if (r?.manual && !selRef.current) syncUnplaced(r, groupsRef.current);
     setVersion((v) => v + 1);
     const s = selRef.current;
@@ -759,6 +776,35 @@ export function NestBoost() {
     bump();
   }, [bump]);
 
+  /**
+   * Rotates the box-selected parts as one block (90° from the button / R key, 5° per wheel notch while carrying it).
+   * While carrying, rotation is never blocked (the block goes red until it is moved to a free spot). Not carrying,
+   * it only turns in place when it fits; otherwise it is left as it was.
+   */
+  const rotateSelection = React.useCallback(
+    (d: number) => {
+      const ms = multiRef.current;
+      if (!ms || !resS || selRef.current) return;
+      if (ms.carry && ms.drag) {
+        rotateGroup(ms, resS, d);
+        bump();
+        return;
+      }
+      if (ms.drag) return;
+      const before = ms.items.map((q) => ({ x: q.x, y: q.y, rot: q.rot }));
+      startGroupDrag(ms, resS, [0, 0]);
+      rotateGroup(ms, resS, d);
+      const dr = ms.drag as MultiSel["drag"]; // startGroupDrag / rotateGroup just (re)created it
+      if (dr?.bad) {
+        ms.items.forEach((q, i) => Object.assign(q, before[i]));
+        toast.warning("No room to rotate the block here — double-click it to pick it up, rotate, and drop it in free space");
+      }
+      ms.drag = undefined;
+      bump();
+    },
+    [resS, bump],
+  );
+
   /** Takes every box-selected part off its sheet: their pieces become available in the list again. */
   const removeSelected = React.useCallback(() => {
     const m = multiRef.current;
@@ -927,6 +973,10 @@ export function NestBoost() {
           removeSelected();
           return;
         }
+        if (e.key === "r" || e.key === "R") {
+          rotateSelection(90);
+          return;
+        }
         const st = (e.shiftKey ? 10 : 1) * resS.cell; // parts sit on the optimiser's grid, so one step = one grid cell
         const nv: Record<string, Pt> = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] };
         if (nv[e.key] && !ms.drag) {
@@ -963,7 +1013,7 @@ export function NestBoost() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [resS, bump, removeHeld, removeSelected]);
+  }, [resS, bump, removeHeld, removeSelected, rotateSelection]);
 
   const problems = result && resS ? problemMessages(result, resS) : [];
   const placed = placedCounts(result); // pieces of each part already on a sheet (recomputed on every render/bump)
@@ -1257,7 +1307,7 @@ export function NestBoost() {
           <p className="mb-2 text-xs text-muted-foreground">
             Select like CAD: drag a box on a sheet — <span className="font-medium text-blue-600">left → right</span> selects only the parts completely
             inside the box, <span className="font-medium text-green-600">right → left</span> selects every part the box touches (Shift adds to the
-            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
+            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place; R rotates the whole selection as a block (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
           </p>
           <p className="mb-2 text-xs text-muted-foreground">
             Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
@@ -1273,16 +1323,22 @@ export function NestBoost() {
                   <Undo2 /> Put back to list
                 </Button>
               )}
+              <Button variant="secondary" size="sm" onClick={() => rotateSelection(90)} title="Rotate the whole selection 90° as one block (R key)">
+                <RotateCcw /> Rotate block 90°
+              </Button>
               {carrying ? (
                 <>
                   <Button
-                    variant="secondary" size="sm"
+                    variant="secondary" size="sm" disabled={carryBad}
                     onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
                   >
                     <Check /> Place here
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    Holding the whole selection — move the mouse over this or another sheet of the same material/thickness, click to place, Esc to cancel. It stops at other parts, the spacing and the margin.
+                    {carryBad
+                      ? "The block has no room here (red) — move it to a free spot to place it, or press Esc. "
+                      : "Holding the whole selection — scroll the wheel to rotate it (5° per notch, Shift = 1°, R = 90°), move over this or another sheet of the same material/thickness, click to place, Esc to cancel. "}
+                    It stops at other parts, the spacing and the margin.
                   </span>
                 </>
               ) : (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, setCellCanvasFactory, sides, startGroupDrag, transferGroup,
+  bbox, cancelGroupDrag, isBad, itemsInRect, makeSettings, moveGroup, newSheet, nudgeGroup, rotateGroup, setCellCanvasFactory, sides, startGroupDrag, transferGroup,
   type Group, type Item, type MultiSel, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -158,5 +158,96 @@ describe("carrying the selection to another sheet", () => {
     const bb = bbox(sides(A).o);
     expect(bb[0]).toBeGreaterThanOrEqual(S.mg - 0.01);
     expect(bb[1]).toBeGreaterThanOrEqual(S.mg - 0.01);
+  });
+});
+
+describe("rotating the selection as a block", () => {
+  const corners = (it: Item) => {
+    const b = bbox(sides(it).o);
+    return { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2, w: b[2] - b[0], h: b[3] - b[1] };
+  };
+
+  it("turns the whole block 90° rigidly: sizes swap, distances between parts are kept", () => {
+    const { sh, A, B } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    const a0 = corners(A);
+    const b0 = corners(B);
+    const dist0 = Math.hypot(b0.cx - a0.cx, b0.cy - a0.cy);
+    startGroupDrag(ms, S, [0, 0]);
+    rotateGroup(ms, S, 90);
+    const a1 = corners(A);
+    const b1 = corners(B);
+    expect(A.rot).toBe(90);
+    expect(B.rot).toBe(90);
+    expect([a1.w, a1.h]).toEqual([a0.h, a0.w]); // each part turned
+    expect(Math.hypot(b1.cx - a1.cx, b1.cy - a1.cy)).toBeCloseTo(dist0, 3); // block is rigid
+    // A and B were side by side (horizontal); after 90° they are one above the other
+    expect(Math.abs(b1.cx - a1.cx)).toBeLessThan(0.01);
+    expect(Math.abs(b1.cy - a1.cy)).toBeCloseTo(200, 3);
+  });
+
+  it("four quarter turns bring every part back to where it was", () => {
+    const { sh, A, B, C } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B, C] };
+    for (const q of [A, B, C]) {
+      q.x += 2.5; // parts sit on the optimiser's grid (x0 = 2.5 here)
+      q.y += 2.5;
+    }
+    const before = [A, B, C].map((q) => [q.x, q.y]);
+    startGroupDrag(ms, S, [0, 0]);
+    for (let i = 0; i < 4; i++) rotateGroup(ms, S, 90);
+    [A, B, C].forEach((q, i) => {
+      expect(q.rot % 360).toBe(0);
+      expect(q.x).toBeCloseTo(before[i][0], 3);
+      expect(q.y).toBeCloseTo(before[i][1], 3);
+    });
+  });
+
+  it("is never blocked: with no room it turns anyway and is flagged bad, then Esc restores it", () => {
+    const { sh, A, B } = setup();
+    // a wall of other parts right above A and B so a turned block cannot fit
+    sh.items.push({ g: grp(8, 400, 40), rot: 0, x: 100, y: 160 });
+    sh.items.push({ g: grp(9, 400, 40), rot: 0, x: 100, y: 40 });
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    ms.carry = true;
+    ms.home = { sh, pos: ms.items.map((q) => [q.x, q.y] as Pt), rot: ms.items.map((q) => q.rot) };
+    startGroupDrag(ms, S, [0, 0]);
+    rotateGroup(ms, S, 90);
+    expect(A.rot).toBe(90);
+    expect(ms.drag?.bad).toBe(true);
+    cancelGroupDrag(ms);
+    expect([A.rot, B.rot]).toEqual([0, 0]);
+    expect([A.x, A.y, B.x, B.y]).toEqual([100, 100, 300, 100]);
+  });
+
+  it("keeps the block on the optimiser's grid", () => {
+    const { sh, A, B } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    startGroupDrag(ms, S, [0, 0]);
+    rotateGroup(ms, S, 90);
+    for (const q of [A, B]) {
+      expect(((q.x - S.x0) / S.cell) % 1).toBeCloseTo(0, 6);
+      expect(((q.y - S.x0) / S.cell) % 1).toBeCloseTo(0, 6);
+    }
+  });
+});
+
+describe("free-angle block rotation", () => {
+  it("rotating by 35° keeps the distance between parts (rigid), and -35° undoes it", () => {
+    const { sh, A, B } = setup();
+    const ms: MultiSel = { sh, idx: 0, items: [A, B] };
+    startGroupDrag(ms, S, [0, 0]);
+    rotateGroup(ms, S, 35);
+    expect(A.rot).toBe(35);
+    expect(B.rot).toBe(35);
+    const rel = (it: Item) => {
+      const b = bbox(sides(it).o);
+      return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+    };
+    const d35 = Math.hypot(rel(B)[0] - rel(A)[0], rel(B)[1] - rel(A)[1]);
+    expect(d35).toBeCloseTo(200, 0); // same-size parts: bbox centres are also fixed points
+    rotateGroup(ms, S, -35);
+    expect(((A.rot % 360) + 360) % 360).toBe(0);
+    expect(rel(B)[0] - rel(A)[0]).toBeCloseTo(200, 0);
   });
 });

@@ -1139,7 +1139,7 @@ export interface MultiSel {
   /** Picked up with a double-click: the whole group follows the mouse until a click places it (Esc cancels). */
   carry?: boolean;
   /** Where the group was when it was picked up (so Esc can bring it back, even from another sheet). */
-  home?: { sh: Sheet; pos: Pt[] };
+  home?: { sh: Sheet; pos: Pt[]; rot?: number[] };
   /** Only while a move is in progress (mouse drag / arrow key / carrying). */
   drag?: {
     pm: Pt;
@@ -1148,6 +1148,8 @@ export interface MultiSel {
     obb: BBox[];
     oth: Other[];
     d: Pt;
+    /** Last pointer position (mm) seen by moveGroup; a rotation restarts the drag from here. */
+    ptr: Pt;
     /** Started in an invalid spot: moves freely until valid again (same rule as a single part). */
     bad: boolean;
   };
@@ -1191,6 +1193,7 @@ export function startGroupDrag(ms: MultiSel, S: Settings, m: Pt) {
       return { s: q, bb: bbox(q.o), it: o };
     }),
     d: [0, 0],
+    ptr: m,
     bad: false,
   };
   ms.drag.bad = groupBad(ms, S, 0, 0);
@@ -1217,6 +1220,7 @@ function groupBad(ms: MultiSel, S: Settings, dx: number, dy: number): boolean {
 export function moveGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
   const d = ms.drag;
   if (!d) return;
+  d.ptr = [d.pm[0] + dx, d.pm[1] + dy];
   const c = S.cell;
   const apply = (cx: number, cy: number) => {
     d.d = [cx * c, cy * c];
@@ -1268,6 +1272,7 @@ export function cancelGroupDrag(ms: MultiSel) {
     ms.items.forEach((it, i) => {
       it.x = h.pos[i][0];
       it.y = h.pos[i][1];
+      if (h.rot) it.rot = h.rot[i];
     });
     ms.home = undefined;
     ms.drag = undefined;
@@ -1330,11 +1335,51 @@ export function nudgeGroup(ms: MultiSel, S: Settings, dx: number, dy: number) {
   ms.drag = undefined;
 }
 
+/**
+ * Rotates the whole selection as one rigid block by `d` degrees (counter-clockwise, like a single part) around the
+ * centre of its bounding box. Like a single part, rotation is never blocked: when there is no room the group turns
+ * anyway and is flagged `drag.bad` (drawn red, can't be placed) until it is moved to a free spot.
+ * Needs an active drag (start one with startGroupDrag first).
+ */
+export function rotateGroup(ms: MultiSel, S: Settings, d: number) {
+  const dr = ms.drag;
+  if (!dr) return;
+  const bs = ms.items.map((it) => bbox(sides(it).o));
+  const cx = (Math.min(...bs.map((q) => q[0])) + Math.max(...bs.map((q) => q[2]))) / 2;
+  const cy = (Math.min(...bs.map((q) => q[1])) + Math.max(...bs.map((q) => q[3]))) / 2;
+  const t = (d * Math.PI) / 180;
+  const co = Math.cos(t);
+  const si = Math.sin(t);
+  for (const it of ms.items) {
+    // follow a point that is fixed to the part itself, so the motion is an exact rigid rotation
+    const q: Pt = [it.g.w / 2, it.g.h / 2];
+    const w0 = tp(it.g, it.rot, q);
+    const rx = w0[0] + it.x - cx;
+    const ry = w0[1] + it.y - cy;
+    const tx = cx + rx * co - ry * si;
+    const ty = cy + rx * si + ry * co;
+    it.rot = normAngle(it.rot + d);
+    const w1 = tp(it.g, it.rot, q);
+    it.x = tx - w1[0];
+    it.y = ty - w1[1];
+  }
+  // one shared shift puts the block back on the optimiser's grid without changing the gaps inside it
+  const f = ms.items[0];
+  const sx = snapV(S, f.x) - f.x;
+  const sy = snapV(S, f.y) - f.y;
+  for (const it of ms.items) {
+    it.x += sx;
+    it.y += sy;
+  }
+  startGroupDrag(ms, S, dr.ptr); // keeps following the pointer from where it is now
+}
+
 // --------------------------------------------------------------------- drawing
 
 export interface DrawExtras {
-  /** Parts in the multi-selection (outlined in blue). */
+  /** Parts in the multi-selection (outlined in blue, or red while the block is in an invalid spot). */
   sel?: ReadonlySet<Item> | null;
+  selBad?: boolean;
   /** Selection rectangle being dragged, in mm. `cross` = right-to-left (touch) selection, drawn green + dashed. */
   box?: { x0: number; y0: number; x1: number; y1: number; cross: boolean } | null;
 }
@@ -1361,7 +1406,7 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.stroke(P);
     c.globalAlpha = 1;
     if (extra?.sel?.has(it)) {
-      c.strokeStyle = "#2563eb";
+      c.strokeStyle = extra.selBad ? "#dc2626" : "#2563eb";
       c.lineWidth = 2.5 / k;
       c.stroke(P);
       c.lineWidth = 1 / k;
