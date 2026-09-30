@@ -26,11 +26,11 @@ export function angleClick(deg: number) {
     const gain = ctx.createGain();
     osc.type = "square";
     osc.frequency.value = major ? 520 : 880;
-    gain.gain.setValueAtTime(major ? 0.09 : 0.05, t);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + (major ? 0.07 : 0.045));
+    gain.gain.setValueAtTime(major ? 0.5 : 0.35, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + (major ? 0.11 : 0.08));
     osc.connect(gain).connect(ctx.destination);
     osc.start(t);
-    osc.stop(t + 0.08);
+    osc.stop(t + 0.12);
   } catch {
     /* audio blocked / unsupported */
   }
