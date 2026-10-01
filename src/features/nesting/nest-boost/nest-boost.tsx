@@ -1725,6 +1725,9 @@ export function NestBoost() {
                           <Button variant="outline" size="sm" className="h-7" onClick={() => setSettingsOpen(true)} title="Sheet size, margin, spacing, rotation and optimize time">
                             <SlidersHorizontal /> Settings
                           </Button>
+                          <Button variant="outline" size="sm" className="h-7" disabled={!canExport || !!held} onClick={saveNest} title="Keep this nest so you can try another one and compare them">
+                            <Save /> Save nest
+                          </Button>
                           {status && <span className="max-w-[28ch] truncate" title={status}>{status}</span>}
                         </span>
                       )}
