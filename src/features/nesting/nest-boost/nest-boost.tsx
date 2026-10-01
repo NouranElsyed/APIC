@@ -1702,6 +1702,22 @@ export function NestBoost() {
                           </Button>
                         ))}
                       </span>
+                      {fs === i && (
+                        <span className="inline-flex items-center gap-1">
+                          <Button
+                            size="sm" className="h-7"
+                            disabled={running || !groups.length || !!held}
+                            title="Run the optimiser (uses the settings from the page)"
+                            onClick={() => (result?.manual && result.sheets.some((x) => x.items.length) ? setConfirmOptimize(true) : start())}
+                          >
+                            {running ? <Loader2 className="animate-spin" /> : <Layers />} Optimize nest
+                          </Button>
+                          <Button variant="secondary" size="sm" className="h-7" disabled={!running} onClick={() => (stopRef.current = true)}>
+                            Stop
+                          </Button>
+                          {status && <span className="max-w-[28ch] truncate" title={status}>{status}</span>}
+                        </span>
+                      )}
                       {sh.items.length > 0 && (
                         <Button
                           variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held || running}
