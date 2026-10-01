@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutGrid } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { visibleNavItems } from "@/lib/nav-config";
 import type { Role } from "@prisma/client";
@@ -19,9 +18,8 @@ export function Sidebar({ role, collapsed, open = true }: { role: Role; collapse
       )}
     >
       <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white">
-          <LayoutGrid className="h-4.5 w-4.5" />
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo-icon.png" alt="SteelFlow" className="h-8 w-8 shrink-0 object-contain" />
         {!collapsed && (
           <div className="leading-tight">
             <p className="text-sm font-semibold text-white">SteelFlow</p>
