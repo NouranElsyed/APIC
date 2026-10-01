@@ -1,4 +1,4 @@
-// Content of the Docs page: every feature of the four Nesting & Costing tabs.
+// Content of the Docs page: every feature of the Nesting & Costing tabs that are enabled (see SHOWN_TABS).
 // Text is plain data so it is easy to edit; `code` and **bold** are rendered by DocsView.
 
 export type TabId = "standard" | "nesting" | "scrap" | "pricing";
@@ -19,24 +19,24 @@ export interface DocSection {
   blocks: Block[];
 }
 
-export const TABS: { id: TabId; label: string; blurb: string }[] = [
+const ALL_TABS: { id: TabId; label: string; blurb: string }[] = [
   { id: "standard", label: "Standard Calculations", blurb: "Drawings, parts, areas and weights" },
   { id: "nesting", label: "DXF Nesting", blurb: "2D sheet nesting and 1D bar cutting" },
   { id: "scrap", label: "Scrap & Material", blurb: "Purchased material, scrap and its value" },
   { id: "pricing", label: "Steel Pricing", blurb: "BOQ pricing from rates and profiles" },
 ];
 
-export const SECTIONS: DocSection[] = [
+const ALL_SECTIONS: DocSection[] = [
   // ------------------------------------------------------------------ STANDARD
   {
     id: "sc-overview",
     tab: "standard",
     title: "Overview & workflow",
-    summary: "What the Nesting & Costing area is and how the four tabs fit together.",
+    summary: "What the Nesting & Costing area is and how the two tabs fit together.",
     blocks: [
       {
         t: "p",
-        text: "**Nesting & Costing** has four tabs. They share one **Project** selector at the top: pick the project once and every tab works on it.",
+        text: "**Nesting & Costing** has two tabs. They share one **Project** selector at the top: pick the project once and every tab works on it.",
       },
       {
         t: "table",
@@ -44,8 +44,6 @@ export const SECTIONS: DocSection[] = [
         rows: [
           ["Standard Calculations", "Take-off: drawings and their parts (plates, hot-rolled sections, cones, pipes) with area, weight and paint area."],
           ["DXF Nesting", "Lays plates out on sheets (2D) and cuts bars, pipes and profiles from stock lengths (1D). Exports DXF and Excel reports."],
-          ["Scrap & Material", "Turns the nesting result into purchased weight, scrap, reusable material and their cost/value."],
-          ["Steel Pricing", "Prices a bill of quantities from an editable rate card, with a full cost build-up for each item."],
         ],
       },
       {
@@ -54,8 +52,6 @@ export const SECTIONS: DocSection[] = [
           "Choose the project, then add a drawing in **Standard Calculations**.",
           "Add its parts: one by one, by importing DXF files (plates) or by importing a CSV (hot-rolled sections and pipes).",
           "Send the parts to **DXF Nesting**, optimise or nest by hand, and create the Excel report.",
-          "Open **Scrap & Material** to price the purchased material and scrap.",
-          "Use **Steel Pricing** for the priced BOQ of the job.",
         ],
       },
     ],
@@ -827,3 +823,10 @@ export const SECTIONS: DocSection[] = [
     ],
   },
 ];
+
+// Tabs the Docs page explains. Scrap & Material and Steel Pricing are kept in ALL_SECTIONS above
+// (not deleted) — add "scrap" / "pricing" here to show their guides again.
+const SHOWN_TABS: TabId[] = ["standard", "nesting"];
+
+export const TABS = ALL_TABS.filter((t) => SHOWN_TABS.includes(t.id));
+export const SECTIONS = ALL_SECTIONS.filter((x) => SHOWN_TABS.includes(x.tab));

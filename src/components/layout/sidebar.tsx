@@ -19,9 +19,9 @@ export function Sidebar({ role, collapsed, open = true }: { role: Role; collapse
     >
       <div className="flex h-16 items-center gap-2.5 px-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/logo-icon.png" alt="SteelFlow" className="h-10 w-10 shrink-0 object-contain" />
+        <img src="/logo-icon.png" alt="SteelFlow" className="h-8 w-8 shrink-0 object-contain" />
         {!collapsed && (
-          <p className="text-lg font-semibold text-white">Steelo</p>
+          <p className="text-sm font-semibold text-white">SteelFlow</p>
         )}
       </div>
 

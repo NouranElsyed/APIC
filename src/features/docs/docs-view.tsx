@@ -123,7 +123,7 @@ export function DocsView() {
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><BookOpen className="h-5 w-5" /></div>
           <div>
             <h2 className="text-base font-semibold">Nesting & Costing guide</h2>
-            <p className="text-sm text-muted-foreground">Every feature and every way to use the four Calculations tabs: Standard Calculations, DXF Nesting, Scrap &amp; Material and Steel Pricing.</p>
+            <p className="text-sm text-muted-foreground">Every feature and every way to use the Nesting &amp; Costing tabs: Standard Calculations and DXF Nesting.</p>
           </div>
         </div>
         <div className="relative w-full sm:w-72">
