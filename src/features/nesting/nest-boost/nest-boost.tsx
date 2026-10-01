@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -93,6 +93,120 @@ function PartThumb({ g }: { g: Group }) {
     c.fill(path(g, 0, 0, 0), "evenodd");
   }, [g]);
   return <canvas ref={ref} width={60} height={40} />;
+}
+
+/** Larger part picture for the TruTops-style strip (sharp on high-DPI screens). */
+function StripThumb({ g, w = 112, h = 76 }: { g: Group; w?: number; h?: number }) {
+  const ref = React.useRef<HTMLCanvasElement>(null);
+  React.useEffect(() => {
+    const cv = ref.current;
+    const c = cv?.getContext("2d");
+    if (!cv || !c) return;
+    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, cv.width, cv.height);
+    const pad = 4;
+    const k = Math.min((w - pad * 2) / (g.w || 1), (h - pad * 2) / (g.h || 1)) * dpr;
+    const ox = (cv.width - g.w * k) / 2;
+    const oy = (cv.height + g.h * k) / 2;
+    c.setTransform(k, 0, 0, -k, ox, oy);
+    const P = path(g, 0, 0, 0);
+    c.fillStyle = partColor(g);
+    c.fill(P, "evenodd");
+    c.lineWidth = 1.2 / k;
+    c.strokeStyle = "rgba(0,0,0,0.55)";
+    c.stroke(P);
+  }, [g, w, h]);
+  return <canvas ref={ref} style={{ width: w, height: h }} />;
+}
+
+/**
+ * TruTops-style "parts not nested yet" strip: one card per part (name, picture, "left of total"),
+ * horizontally scrollable, with a search box and sorting. Press a card and drag it onto the sheet.
+ */
+function UnplacedStrip({
+  items, running, onHold,
+}: {
+  items: { g: Group; n: number }[];
+  running: boolean;
+  onHold: (g: Group, e: React.PointerEvent) => void;
+}) {
+  const [q, setQ] = React.useState("");
+  const [sortBy, setSortBy] = React.useState<"name" | "left" | "size">("name");
+  const [asc, setAsc] = React.useState(true);
+  const list = React.useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const f = items.filter(({ g }) => !needle || `${g.name} #${g.sn}`.toLowerCase().includes(needle));
+    const dir = asc ? 1 : -1;
+    return [...f].sort((a, b) => {
+      if (sortBy === "left") return (a.n - b.n) * dir || a.g.sn - b.g.sn;
+      if (sortBy === "size") return (a.g.area - b.g.area) * dir || a.g.sn - b.g.sn;
+      return a.g.name.localeCompare(b.g.name, undefined, { numeric: true, sensitivity: "base" }) * dir || a.g.sn - b.g.sn;
+    });
+  }, [items, q, sortBy, asc]);
+  const total = items.reduce((t, x) => t + x.n, 0);
+
+  return (
+    <div className="mb-2 shrink-0 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-2 py-1.5 text-xs">
+        <span className="font-semibold">Parts not nested yet</span>
+        <span className="tabular-nums text-muted-foreground">{items.length} parts · {total} pcs</span>
+        <div className="relative ml-2">
+          <Search className="pointer-events-none absolute left-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search part"
+            className="h-7 w-40 rounded-md border border-input bg-card pl-6 pr-6 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {q && (
+            <button type="button" onClick={() => setQ("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" title="Clear search">×</button>
+          )}
+        </div>
+        <label className="ml-1 flex items-center gap-1 text-muted-foreground">
+          Sort by
+          <select
+            value={sortBy} onChange={(e) => setSortBy(e.target.value as "name" | "left" | "size")}
+            className="h-7 rounded-md border border-input bg-card px-1 text-xs text-foreground"
+          >
+            <option value="name">Name</option>
+            <option value="left">Qty left</option>
+            <option value="size">Size</option>
+          </select>
+        </label>
+        <button
+          type="button" onClick={() => setAsc((v) => !v)}
+          className="flex h-7 items-center gap-1 rounded-md border border-input bg-card px-2 text-xs hover:bg-muted"
+          title="Toggle ascending / descending"
+        >
+          {asc ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />} {asc ? "Ascending" : "Descending"}
+        </button>
+        <span className="ml-auto text-muted-foreground">Press a part, drag it onto the sheet and release (or click, then click on the sheet)</span>
+      </div>
+      <div className="flex gap-0 overflow-x-auto overflow-y-hidden [scrollbar-gutter:stable]">
+        {list.length === 0 && <div className="p-3 text-xs text-muted-foreground">No part matches “{q}”.</div>}
+        {list.map(({ g, n }) => (
+          <button
+            key={g.id}
+            type="button"
+            disabled={running}
+            onPointerDown={(e) => onHold(g, e)}
+            title={`Part #${g.sn} ${g.name} — ${n} of ${g.qty} left to nest`}
+            style={{ touchAction: "none" }}
+            className="flex w-[128px] shrink-0 cursor-grab select-none flex-col items-stretch gap-0.5 border-r border-border px-2 pb-1.5 pt-1 text-left hover:bg-primary/10 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="truncate text-xs font-semibold">#{g.sn} {g.name}</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              <span className="font-semibold text-primary">{n}</span> of {g.qty} left
+            </span>
+            <span className="mt-0.5 flex h-[76px] items-center justify-center rounded border border-border/60 bg-muted/30">
+              <StripThumb g={g} />
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /** Small picture of the part that follows the cursor while it is held but not over a sheet yet. */
@@ -1635,23 +1749,7 @@ export function NestBoost() {
                     </div>
                     {fs === i && <div className="mb-2 shrink-0">{actionBar}</div>}
                     {fs === i && stillToPlace.length > 0 && (
-                      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2">
-                        <span className="text-xs font-medium">Not nested yet — press a part, drag it onto the sheet and release (or click, then click on the sheet):</span>
-                        {stillToPlace.map(({ g, n }) => (
-                          <button
-                            key={g.id}
-                            type="button"
-                            disabled={running}
-                            onPointerDown={(e) => holdFromList(g, e)}
-                            className="flex cursor-grab select-none items-center gap-1.5 rounded-md border border-primary/40 bg-card px-2 py-1 text-xs font-medium hover:bg-primary/10 active:cursor-grabbing"
-                            style={{ touchAction: "none" }}
-                            title={`Part #${g.sn} ${g.name} — ${n} left`}
-                          >
-                            <span className="inline-block h-3 w-3 rounded-sm border border-black/20" style={{ background: partColor(g) }} />
-                            #{g.sn} {g.name} <span className="tabular-nums text-primary">{n} left</span>
-                          </button>
-                        ))}
-                      </div>
+                      <UnplacedStrip items={stillToPlace} running={running} onHold={holdFromList} />
                     )}
                     <div
                       ref={fs === i ? fsBoxRef : undefined}
