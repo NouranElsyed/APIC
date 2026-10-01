@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -13,6 +13,7 @@ import { nestKindOf } from "@/features/nesting/part-routing";
 import { register2D } from "../report/report-store";
 import type { Report2DInput } from "../report/report-2d";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
@@ -589,6 +590,7 @@ export function NestBoost() {
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
   const [confirmOptimize, setConfirmOptimize] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   // ---- box selection (CAD style): parts selected together on one sheet, moved as a group
   const multiRef = React.useRef<MultiSel | null>(null);
   const [multiCount, setMultiCount] = React.useState(0);
@@ -1266,6 +1268,51 @@ export function NestBoost() {
   const canExport = !!result && !running && result.sheets.length > 0;
 
   // selection / held-part bar (shown in the page and, while a sheet is fullscreen, above that sheet)
+  // sheet settings fields — shared by the page card and the full-screen settings popup
+  const settingsGrid = (
+    <div className="grid grid-cols-2 gap-2">
+      <Field label="Sheet length (mm)">
+        <Input type="number" value={cfg.W} onChange={(e) => setCfg({ ...cfg, W: e.target.value })} />
+      </Field>
+      <Field label="Sheet width (mm)">
+        <Input type="number" value={cfg.H} onChange={(e) => setCfg({ ...cfg, H: e.target.value })} />
+      </Field>
+      <Field label="Edge margin (mm)">
+        <Input type="number" value={cfg.mg} onChange={(e) => setCfg({ ...cfg, mg: e.target.value })} />
+      </Field>
+      <Field label="Part spacing (mm)">
+        <Input type="number" value={cfg.gp} onChange={(e) => setCfg({ ...cfg, gp: e.target.value })} />
+      </Field>
+      {/* <Field label="Grid cell (mm) – smaller = tighter, slower">
+        <select className={selectCls} value={cfg.cell} onChange={(e) => setCfg({ ...cfg, cell: e.target.value })}>
+          <option>3</option>
+          <option>5</option>
+          <option>8</option>
+        </select>
+      </Field> */}
+      <Field label="Rotation">
+        <select className={selectCls} value={cfg.ro} onChange={(e) => setCfg({ ...cfg, ro: e.target.value })}>
+          <option value="0">None</option>
+          <option value="1">0° / 180°</option>
+          <option value="2">90° steps</option>
+          <option value="3">45° steps</option>
+          <option value="4">15° steps (slower)</option>
+        </select>
+      </Field>
+      <Field label="Optimize time (s)">
+        <Input type="number" value={cfg.tm} onChange={(e) => setCfg({ ...cfg, tm: e.target.value })} />
+      </Field>
+      <label className="flex items-center gap-2 self-end pb-2 text-xs text-muted-foreground">
+        <Checkbox checked={cfg.pair} onCheckedChange={(v) => setCfg({ ...cfg, pair: v === true })} />
+        Auto-pair triangles
+      </label>
+      <label className="col-span-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <Checkbox checked={cfg.common} onCheckedChange={(v) => setCfg({ ...cfg, common: v === true })} />
+        Common cut line (no gap inside pair)
+      </label>
+    </div>
+  );
+
   const actionBar = (
           <div className="mb-2 min-h-[6.5rem]">
           {!held && multiCount > 0 && (
@@ -1384,47 +1431,7 @@ export function NestBoost() {
 
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Sheet &amp; settings</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Sheet length (mm)">
-              <Input type="number" value={cfg.W} onChange={(e) => setCfg({ ...cfg, W: e.target.value })} />
-            </Field>
-            <Field label="Sheet width (mm)">
-              <Input type="number" value={cfg.H} onChange={(e) => setCfg({ ...cfg, H: e.target.value })} />
-            </Field>
-            <Field label="Edge margin (mm)">
-              <Input type="number" value={cfg.mg} onChange={(e) => setCfg({ ...cfg, mg: e.target.value })} />
-            </Field>
-            <Field label="Part spacing (mm)">
-              <Input type="number" value={cfg.gp} onChange={(e) => setCfg({ ...cfg, gp: e.target.value })} />
-            </Field>
-            {/* <Field label="Grid cell (mm) – smaller = tighter, slower">
-              <select className={selectCls} value={cfg.cell} onChange={(e) => setCfg({ ...cfg, cell: e.target.value })}>
-                <option>3</option>
-                <option>5</option>
-                <option>8</option>
-              </select>
-            </Field> */}
-            <Field label="Rotation">
-              <select className={selectCls} value={cfg.ro} onChange={(e) => setCfg({ ...cfg, ro: e.target.value })}>
-                <option value="0">None</option>
-                <option value="1">0° / 180°</option>
-                <option value="2">90° steps</option>
-                <option value="3">45° steps</option>
-                <option value="4">15° steps (slower)</option>
-              </select>
-            </Field>
-            <Field label="Optimize time (s)">
-              <Input type="number" value={cfg.tm} onChange={(e) => setCfg({ ...cfg, tm: e.target.value })} />
-            </Field>
-            <label className="flex items-center gap-2 self-end pb-2 text-xs text-muted-foreground">
-              <Checkbox checked={cfg.pair} onCheckedChange={(v) => setCfg({ ...cfg, pair: v === true })} />
-              Auto-pair triangles
-            </label>
-            <label className="col-span-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <Checkbox checked={cfg.common} onCheckedChange={(v) => setCfg({ ...cfg, common: v === true })} />
-              Common cut line (no gap inside pair)
-            </label>
-          </div>
+          {settingsGrid}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button
               onClick={() => (result?.manual && result.sheets.some((x) => x.items.length) ? setConfirmOptimize(true) : start())}
@@ -1715,6 +1722,9 @@ export function NestBoost() {
                           <Button variant="secondary" size="sm" className="h-7" disabled={!running} onClick={() => (stopRef.current = true)}>
                             Stop
                           </Button>
+                          <Button variant="outline" size="sm" className="h-7" onClick={() => setSettingsOpen(true)} title="Sheet size, margin, spacing, rotation and optimize time">
+                            <SlidersHorizontal /> Settings
+                          </Button>
                           {status && <span className="max-w-[28ch] truncate" title={status}>{status}</span>}
                         </span>
                       )}
@@ -1819,6 +1829,29 @@ export function NestBoost() {
           onRename={(id, name) => setSavedNests((p) => p.map((n) => (n.id === id ? { ...n, name } : n)))}
         />
       </div>
+
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Sheet &amp; settings</DialogTitle>
+            <DialogDescription>Used the next time you press Optimize nest.</DialogDescription>
+          </DialogHeader>
+          {settingsGrid}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setSettingsOpen(false)}>Close</Button>
+            <Button
+              disabled={running || !groups.length || !!held}
+              onClick={() => {
+                setSettingsOpen(false);
+                if (result?.manual && result.sheets.some((x) => x.items.length)) setConfirmOptimize(true);
+                else void start();
+              }}
+            >
+              <Layers /> Optimize nest
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={!!pendingRemove}
