@@ -1,4 +1,4 @@
-// Content of the Docs page: every feature of the four Calculations tabs.
+// Content of the Docs page: every feature of the four Nesting & Costing tabs.
 // Text is plain data so it is easy to edit; `code` and **bold** are rendered by DocsView.
 
 export type TabId = "standard" | "nesting" | "scrap" | "pricing";
@@ -32,11 +32,11 @@ export const SECTIONS: DocSection[] = [
     id: "sc-overview",
     tab: "standard",
     title: "Overview & workflow",
-    summary: "What the Calculations area is and how the four tabs fit together.",
+    summary: "What the Nesting & Costing area is and how the four tabs fit together.",
     blocks: [
       {
         t: "p",
-        text: "**Calculations** has four tabs. They share one **Project** selector at the top: pick the project once and every tab works on it.",
+        text: "**Nesting & Costing** has four tabs. They share one **Project** selector at the top: pick the project once and every tab works on it.",
       },
       {
         t: "table",

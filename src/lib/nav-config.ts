@@ -9,17 +9,18 @@ export interface NavItem {
   href: string;
   icon: LucideIcon;
   roles?: Role[]; // omit = visible to all authenticated roles
+  hidden?: boolean; // kept (routes + page titles still work) but not shown in the sidebar / mobile menu for now
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Projects", href: "/projects", icon: FolderKanban },
-  { label: "Clients", href: "/customers", icon: Users2 },
+  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, hidden: true },
+  { label: "Projects", href: "/projects", icon: FolderKanban, hidden: true },
+  { label: "Clients", href: "/customers", icon: Users2, hidden: true },
   // { label: "Documents", href: "/documents", icon: FileText },
-  { label: "Calculations", href: "/takeoff", icon: Ruler },
+  { label: "Nesting & Costing", href: "/takeoff", icon: Ruler },
   // { label: "Reports", href: "/reports", icon: BarChart3 },
-  { label: "Users", href: "/users", icon: UserCog, roles: ["ADMIN"] },
-  { label: "Settings", href: "/settings", icon: Settings, roles: ["ADMIN"] },
+  { label: "Users", href: "/users", icon: UserCog, roles: ["ADMIN"], hidden: true },
+  { label: "Settings", href: "/settings", icon: Settings, roles: ["ADMIN"], hidden: true },
   { label: "Docs", href: "/docs", icon: BookOpen },
 
   // ---------------------------------------------------------------------
@@ -32,5 +33,5 @@ export const NAV_ITEMS: NavItem[] = [
 ];
 
 export function visibleNavItems(role: Role | undefined) {
-  return NAV_ITEMS.filter((item) => !item.roles || (role && item.roles.includes(role)));
+  return NAV_ITEMS.filter((item) => !item.hidden).filter((item) => !item.roles || (role && item.roles.includes(role)));
 }
