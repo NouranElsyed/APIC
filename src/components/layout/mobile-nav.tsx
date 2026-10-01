@@ -14,7 +14,7 @@ export function MobileNav({ role, open, onOpenChange }: { role: Role; open: bool
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="left-0 top-0 h-full max-h-full w-72 max-w-[80vw] translate-x-0 translate-y-0 rounded-none border-0 bg-sidebar p-0 text-sidebar-foreground data-[state=open]:slide-in-from-left">
         <DialogTitle className="sr-only">Navigation</DialogTitle>
-        <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
+        <div className="flex h-16 items-center gap-2.5 px-5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo-icon.png" alt="SteelFlow" className="h-8 w-8 shrink-0 object-contain" />
           <p className="text-sm font-semibold text-white">SteelFlow</p>

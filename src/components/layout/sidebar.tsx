@@ -17,14 +17,11 @@ export function Sidebar({ role, collapsed, open = true }: { role: Role; collapse
         collapsed ? "w-[76px]" : "w-64"
       )}
     >
-      <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
+      <div className="flex h-16 items-center gap-2.5 px-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo-icon.png" alt="SteelFlow" className="h-8 w-8 shrink-0 object-contain" />
         {!collapsed && (
-          <div className="leading-tight">
-            <p className="text-sm font-semibold text-white">SteelFlow</p>
-            <p className="text-[11px] text-sidebar-foreground/70">Core Platform</p>
-          </div>
+          <p className="text-sm font-semibold text-white">SteelFlow</p>
         )}
       </div>
 
@@ -50,16 +47,6 @@ export function Sidebar({ role, collapsed, open = true }: { role: Role; collapse
           );
         })}
       </nav>
-
-      {!collapsed && (
-        <div className="border-t border-sidebar-border p-4">
-          <p className="text-[11px] leading-relaxed text-sidebar-foreground/50">
-            SteelFlow ERP — Phase 1
-            <br />
-            Core Platform Foundation
-          </p>
-        </div>
-      )}
     </aside>
   );
 }
