@@ -1,11 +1,12 @@
 "use client";
 import * as React from "react";
-import { Check, FolderOpen, Pencil, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import type { Group, OptResult, Settings, Sheet } from "./engine";
+import { SheetStrip } from "./sheet-strip";
 
 /** The sheet/setting inputs of the page (all strings, exactly as typed). */
 export interface NestCfg {
@@ -120,7 +121,7 @@ function bestIndexes(vals: number[], better: "high" | "low"): Set<number> {
 interface Props {
   nests: SavedNest[];
   activeId: number | null;
-  onLoad: (n: SavedNest) => void;
+  onLoad: (n: SavedNest, sheetIdx?: number) => void;
   onDelete: (id: number) => void;
   onRename: (id: number, name: string) => void;
 }
@@ -128,6 +129,7 @@ interface Props {
 export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: Props) {
   const [picked, setPicked] = React.useState<Set<number>>(new Set());
   const [editing, setEditing] = React.useState<{ id: number; name: string } | null>(null);
+  const [shown, setShown] = React.useState<Set<number>>(new Set()); // nests whose sheets are expanded
   const metrics = React.useMemo(() => new Map(nests.map((n) => [n.id, nestMetrics(n.result, n.S)])), [nests]);
 
   // forget selections of nests that were deleted
@@ -141,6 +143,14 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
 
   const toggle = (id: number) =>
     setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
+  const toggleShown = (id: number) =>
+    setShown((p) => {
       const n = new Set(p);
       if (n.has(id)) n.delete(id);
       else n.add(id);
@@ -191,8 +201,10 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
                 {nests.map((n) => {
                   const m = metrics.get(n.id)!;
                   const isEditing = editing?.id === n.id;
+                  const open = shown.has(n.id);
                   return (
-                    <tr key={n.id} className={`border-t border-border ${activeId === n.id ? "bg-secondary/60" : ""}`}>
+                    <React.Fragment key={n.id}>
+                    <tr className={`border-t border-border ${activeId === n.id ? "bg-secondary/60" : ""}`}>
                       <td className="p-1">
                         <Checkbox checked={picked.has(n.id)} onCheckedChange={() => toggle(n.id)} aria-label={`Compare ${n.name}`} />
                       </td>
@@ -221,6 +233,13 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
                       <td className="p-1">{m.utilization.toFixed(1)}%</td>
                       <td className="p-1">{m.scrapM2.toFixed(2)}</td>
                       <td className="whitespace-nowrap p-1 text-right">
+                        <Button
+                          variant="ghost" size="sm" className="h-7" aria-expanded={open}
+                          title={open ? "Hide the sheets of this nest" : "Show the sheets of this nest"}
+                          onClick={() => toggleShown(n.id)}
+                        >
+                          {open ? <ChevronUp /> : <ChevronDown />}
+                        </Button>
                         <Button variant="ghost" size="sm" className="h-7" title="Show this nest again (restores its settings and parts)" onClick={() => onLoad(n)}>
                           <FolderOpen /> Open
                         </Button>
@@ -232,6 +251,17 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
                         </Button>
                       </td>
                     </tr>
+                    {open && (
+                      <tr className={activeId === n.id ? "bg-secondary/30" : ""}>
+                        <td colSpan={6} className="p-1 pb-2">
+                          <SheetStrip
+                            sheets={n.result.sheets} S={n.S} version={0} active={-1}
+                            onSelect={(i) => onLoad(n, i)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
