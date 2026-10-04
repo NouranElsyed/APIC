@@ -1488,6 +1488,8 @@ export interface DrawExtras {
   angle?: { deg: number; x: number; y: number; snap: boolean } | null;
   /** Pixels per CSS px of the target canvas (devicePixelRatio × any extra supersampling). Default 1. */
   dpr?: number;
+  /** Measure tool: segment in mm (drawn with its length). */
+  measure?: { a: Pt; b: Pt } | null;
 }
 
 export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false, extra?: DrawExtras) {
@@ -1553,6 +1555,37 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.strokeText(t, x, y);
     c.fillStyle = "#000";
     c.fillText(t, x, y);
+  }
+  const ms = extra?.measure;
+  if (ms) {
+    const ax = ms.a[0] * k, ay = cv.height - ms.a[1] * k, bx1 = ms.b[0] * k, by1 = cv.height - ms.b[1] * k;
+    c.strokeStyle = "#7c3aed";
+    c.fillStyle = "#7c3aed";
+    c.lineWidth = 1.5 * u;
+    c.beginPath();
+    c.moveTo(ax, ay);
+    c.lineTo(bx1, by1);
+    c.stroke();
+    for (const [px, py] of [[ax, ay], [bx1, by1]]) {
+      c.beginPath();
+      c.arc(px, py, 3.5 * u, 0, Math.PI * 2);
+      c.fill();
+    }
+    const dx = Math.abs(ms.b[0] - ms.a[0]);
+    const dy = Math.abs(ms.b[1] - ms.a[1]);
+    const len = Math.hypot(dx, dy);
+    const label = `${len.toFixed(1)} mm  (Δx ${dx.toFixed(1)} · Δy ${dy.toFixed(1)})`;
+    c.font = `bold ${12 * u}px system-ui, Arial, sans-serif`;
+    const w = c.measureText(label).width + 12 * u;
+    const lx = Math.max(2 * u, Math.min(cv.width - w - 2 * u, (ax + bx1) / 2 - w / 2));
+    const ly = Math.max(2 * u, Math.min(cv.height - 20 * u, (ay + by1) / 2 - 24 * u));
+    c.fillStyle = "rgba(124,58,237,0.95)";
+    c.beginPath();
+    if (typeof c.roundRect === "function") c.roundRect(lx, ly, w, 18 * u, 9 * u);
+    else c.rect(lx, ly, w, 18 * u);
+    c.fill();
+    c.fillStyle = "#fff";
+    c.fillText(label, lx + w / 2, ly + 9.5 * u);
   }
   const an = extra?.angle;
   if (an) {
