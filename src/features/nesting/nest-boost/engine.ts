@@ -1486,18 +1486,23 @@ export interface DrawExtras {
   box?: { x0: number; y0: number; x1: number; y1: number; cross: boolean } | null;
   /** Angle badge of the part / block being held: shown above (x, y) in mm; `snap` = exactly on a 45° step (drawn green). */
   angle?: { deg: number; x: number; y: number; snap: boolean } | null;
+  /** Pixels per CSS px of the target canvas (devicePixelRatio × any extra supersampling). Default 1. */
+  dpr?: number;
 }
 
 export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settings, selItem: Item | null, selBad = false, extra?: DrawExtras) {
   const c = cv.getContext("2d") as CanvasRenderingContext2D;
+  /** Device-pixel ratio: line widths / dashes / text are authored in CSS px and scaled by this so hi-DPI + zoomed canvases stay crisp. */
+  const u = extra?.dpr ?? 1;
+  c.imageSmoothingQuality = "high";
   const W = sh.W ?? S.W;
   const H = sh.H ?? S.H;
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, cv.width, cv.height);
   c.setTransform(k, 0, 0, -k, 0, cv.height);
-  c.lineWidth = 1 / k;
+  c.lineWidth = u / k;
   c.strokeStyle = "#94a3b8";
-  c.setLineDash([6 / k, 4 / k]);
+  c.setLineDash([6 * u / k, 4 * u / k]);
   c.strokeRect(S.mg, S.mg, W - 2 * S.mg, H - 2 * S.mg);
   c.setLineDash([]);
   for (const it of sh.items) {
@@ -1506,14 +1511,14 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.fill(P, "evenodd");
     c.globalAlpha = selItem === it ? 0.75 : 1;
     c.strokeStyle = selBad && selItem === it ? "#991b1b" : selItem === it && extra?.angle?.snap ? "#16a34a" : "#0008";
-    c.lineWidth = selItem === it && extra?.angle?.snap ? 2.5 / k : 1 / k;
+    c.lineWidth = selItem === it && extra?.angle?.snap ? 2.5 * u / k : u / k;
     c.stroke(P);
     c.globalAlpha = 1;
     if (extra?.sel?.has(it)) {
       c.strokeStyle = extra.selBad ? "#dc2626" : "#2563eb";
-      c.lineWidth = 2.5 / k;
+      c.lineWidth = 2.5 * u / k;
       c.stroke(P);
-      c.lineWidth = 1 / k;
+      c.lineWidth = u / k;
     }
   }
   const bx = extra?.box;
@@ -1522,12 +1527,12 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     const col = bx.cross ? "#16a34a" : "#2563eb";
     c.fillStyle = bx.cross ? "rgba(22,163,74,0.14)" : "rgba(37,99,235,0.14)";
     c.strokeStyle = col;
-    c.lineWidth = 1.5 / k;
-    c.setLineDash(bx.cross ? [6 / k, 4 / k] : []);
+    c.lineWidth = 1.5 * u / k;
+    c.setLineDash(bx.cross ? [6 * u / k, 4 * u / k] : []);
     c.fillRect(bx.x0, bx.y0, bx.x1 - bx.x0, bx.y1 - bx.y0);
     c.strokeRect(bx.x0, bx.y0, bx.x1 - bx.x0, bx.y1 - bx.y0);
     c.setLineDash([]);
-    c.lineWidth = 1 / k;
+    c.lineWidth = u / k;
   }
   // serial numbers on every part (drawn un-flipped so the text is readable)
   c.save();
@@ -1538,12 +1543,12 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
   for (const it of sh.items) {
     const b = bbox(sides(it).o);
     const m = Math.min(b[2] - b[0], b[3] - b[1]) * k;
-    if (m < 16) continue;
-    c.font = `bold ${Math.max(9, Math.min(16, m / 3))}px system-ui, Arial, sans-serif`;
+    if (m < 16 * u) continue;
+    c.font = `bold ${Math.max(9 * u, Math.min(16 * u, m / 3))}px system-ui, Arial, sans-serif`;
     const x = ((b[0] + b[2]) / 2) * k;
     const y = cv.height - ((b[1] + b[3]) / 2) * k;
     const t = `#${it.g.sn}`;
-    c.lineWidth = 3;
+    c.lineWidth = 3 * u;
     c.strokeStyle = "#fff";
     c.strokeText(t, x, y);
     c.fillStyle = "#000";
@@ -1552,17 +1557,17 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
   const an = extra?.angle;
   if (an) {
     const label = `${Math.round(an.deg * 10) / 10}°`;
-    c.font = "bold 13px system-ui, Arial, sans-serif";
-    const w = c.measureText(label).width + 14;
-    const bx0 = Math.max(2, Math.min(cv.width - w - 2, an.x * k - w / 2));
-    const by0 = Math.max(2, cv.height - an.y * k - 26);
+    c.font = `bold ${13 * u}px system-ui, Arial, sans-serif`;
+    const w = c.measureText(label).width + 14 * u;
+    const bx0 = Math.max(2 * u, Math.min(cv.width - w - 2 * u, an.x * k - w / 2));
+    const by0 = Math.max(2 * u, cv.height - an.y * k - 26 * u);
     c.fillStyle = an.snap ? "#16a34a" : "rgba(15,23,42,0.85)";
     c.beginPath();
-    if (typeof c.roundRect === "function") c.roundRect(bx0, by0, w, 20, 10);
-    else c.rect(bx0, by0, w, 20);
+    if (typeof c.roundRect === "function") c.roundRect(bx0, by0, w, 20 * u, 10 * u);
+    else c.rect(bx0, by0, w, 20 * u);
     c.fill();
     c.fillStyle = "#fff";
-    c.fillText(label, bx0 + w / 2, by0 + 10.5);
+    c.fillText(label, bx0 + w / 2, by0 + 10.5 * u);
   }
   c.restore();
 }
