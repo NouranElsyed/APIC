@@ -49,6 +49,7 @@ import {
   rotate,
   rotBox,
   runOptimize,
+  sameSheetSettings,
   sheetStats,
   startGroupDrag,
   startNew,
@@ -1249,7 +1250,7 @@ export function NestBoost() {
     bump();
   }, [bump]);
 
-  async function start(only?: { groups: Group[]; c: typeof cfg }) {
+  async function start(only?: { groups: Group[]; c: typeof cfg; base?: OptResult | null }) {
     multiRef.current = null;
     const c = only?.c ?? cfg;
     const S = readSettings(c);
@@ -1269,6 +1270,7 @@ export function NestBoost() {
       pair: c.pair,
       common: c.common,
       timeSec: Number(c.tm) || 20,
+      base: only?.base ?? null,
       shouldStop: () => stopRef.current || my !== runRef.current,
       onBest: (r) => {
         if (my !== runRef.current) return;
@@ -1286,6 +1288,30 @@ export function NestBoost() {
       setResult(res);
     }
     setRunning(false);
+  }
+
+  /** Is the popup's sheet info the same as the current nest's? Then the part is nested into that nest's free space. */
+  function soloContinues(c: typeof cfg): boolean {
+    const S = readSettings(c);
+    return !!(S && result && resS && result.sheets.length > 0 && sameSheetSettings(S, resS));
+  }
+
+  /** "Nest this part alone": continues the current nest when the sheet info matches, otherwise starts a new nest. */
+  function runSolo(s: { g: Group; c: typeof cfg }, replaceOk = false) {
+    const g = groupsRef.current.find((x) => x.id === s.g.id) ?? s.g;
+    if (leftOf(g, placedCounts(resultRef.current)) <= 0) {
+      toast.info(`All pieces of part #${g.sn} are already placed.`);
+      return;
+    }
+    if (soloContinues(s.c)) {
+      void start({ groups: [g], c: s.c, base: resultRef.current });
+      return;
+    }
+    if (!replaceOk && result?.sheets.some((x) => x.items.length)) {
+      setConfirmSolo(true);
+      return;
+    }
+    void start({ groups: [g], c: s.c, base: null });
   }
 
   /** Keeps a copy of the current nest (result + settings + parts) so it can be compared with other attempts. */
@@ -1804,10 +1830,19 @@ export function NestBoost() {
                       <td className="p-1">
                         <Button
                           variant="outline" size="sm" className="h-7 whitespace-nowrap"
-                          disabled={running || !!held || g.qty <= 0}
-                          title="Nest only this part, with its own settings"
+                          disabled={running || !!held || leftOf(g, placed) <= 0}
+                          title={
+                            leftOf(g, placed) > 0
+                              ? "Nest this part with its own settings — it continues in the free space of the current nest"
+                              : "All pieces of this part are already placed"
+                          }
                           onClick={() => {
-                            setSolo({ g, c: { ...cfg } });
+                            // start from the current nest's sheet info, so the part simply continues on those sheets
+                            const c0 =
+                              result && resS && result.sheets.length
+                                ? { ...cfg, W: String(resS.W), H: String(resS.H), mg: String(resS.mg), gp: String(resS.gp), cell: String(resS.cell) }
+                                : { ...cfg };
+                            setSolo({ g, c: c0 });
                             setSoloOpen(true);
                           }}
                         >
@@ -2149,7 +2184,7 @@ export function NestBoost() {
               <DialogHeader>
                 <DialogTitle>Nest part #{solo.g.sn} alone</DialogTitle>
                 <DialogDescription>
-                  {solo.g.name} — {solo.g.qty} pcs. Only this part is nested, using the settings below (the page settings stay as they are).
+                  {solo.g.name} — {leftOf(solo.g, placed)} pcs left to nest. Only this part is nested, using the settings below (the page settings stay as they are).
                 </DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-2 gap-2">
@@ -2187,7 +2222,11 @@ export function NestBoost() {
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">
-                The nesting result will show only this part. To nest another part with different settings, run it the same way — the result is replaced each time.
+                {soloContinues(solo.c)
+                  ? "Same sheet info as the current nest: this part continues in the free space of the sheets already nested (same material and thickness), then opens new sheets if needed."
+                  : result?.sheets.some((x) => x.items.length)
+                    ? "The sheet size / margin / gap differ from the current nest, so this will start a new nest and replace the current one."
+                    : "A new nest will be built for this part."}
               </p>
               <DialogFooter>
                 <Button variant="secondary" onClick={() => setSoloOpen(false)}>Cancel</Button>
@@ -2195,11 +2234,10 @@ export function NestBoost() {
                   disabled={running || !!held}
                   onClick={() => {
                     setSoloOpen(false);
-                    if (result?.manual && result.sheets.some((x) => x.items.length)) setConfirmSolo(true);
-                    else void start({ groups: [solo.g], c: solo.c });
+                    runSolo(solo);
                   }}
                 >
-                  <Layers /> Nest this part
+                  <Layers /> {soloContinues(solo.c) ? "Add to current nest" : "Nest this part"}
                 </Button>
               </DialogFooter>
             </>
@@ -2210,12 +2248,12 @@ export function NestBoost() {
       <ConfirmDialog
         open={confirmSolo}
         onOpenChange={setConfirmSolo}
-        title="Replace your manual nesting?"
-        description="Nesting this part alone builds a new nest and discards the parts you placed by hand. Save this nest first if you want to keep it."
+        title="Start a new nest?"
+        description="The sheet size, margin or gap you chose differ from the current nest, so this part can't share its sheets. The current nest will be replaced — save it first if you want to keep it."
         confirmLabel="Nest this part"
         onConfirm={() => {
           setConfirmSolo(false);
-          if (solo) void start({ groups: [solo.g], c: solo.c });
+          if (solo) runSolo(solo, true);
         }}
       />
 

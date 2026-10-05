@@ -645,8 +645,42 @@ function commit(S: Settings, sh: Sheet, g: Group, b: Slot) {
 
 const tick = () => new Promise<void>((r) => setTimeout(r));
 
-async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[], stop: () => boolean) {
-  const sheets: Sheet[] = [];
+/** True when two settings share the same sheet grid (size, margin, spacing, cell), so parts can be added to an existing nest. */
+export function sameSheetSettings(a: Settings, b: Settings): boolean {
+  return a.W === b.W && a.H === b.H && a.mg === b.mg && a.gp === b.gp && a.cell === b.cell;
+}
+
+/** Marks the cells taken by the parts already on `sh` (same cells the manual-nesting checks use). */
+function seedOf(S: Settings, sh: Sheet): Seed {
+  const grid = new Uint8Array(S.GW * S.GH);
+  let used = 0;
+  for (const it of sh.items) {
+    const cs = cellsOf(S, it.g, it.rot);
+    const [ax, ay] = cellOrigin(S, cs, it.x, it.y);
+    used = Math.max(used, ax + cs.maxC + 1);
+    cs.rows.forEach((runs, r) => {
+      const gy = ay + r;
+      if (gy < 0 || gy >= S.GH) return;
+      for (let i = 0; i < runs.length; i += 2)
+        for (let q = runs[i]; q <= runs[i + 1]; q++) {
+          const gx = ax + q;
+          if (gx >= 0 && gx < S.GW) grid[gy * S.GW + gx] = 1;
+        }
+    });
+  }
+  return { sh, grid, used };
+}
+
+/** An existing sheet whose occupied cells are known, so new parts can be fitted into its free space. */
+interface Seed {
+  sh: Sheet;
+  grid: Uint8Array;
+  used: number;
+}
+
+async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[], stop: () => boolean, seeds: Seed[] = []) {
+  // seeded sheets come first (they are filled before any new sheet is opened); copies, so every attempt starts from the same state
+  const sheets: Sheet[] = seeds.map((x) => ({ ...x.sh, items: x.sh.items.slice(), grid: x.grid.slice(), used: x.used }));
   const un: Group[] = [];
   for (let n = 0; n < items.length; n++) {
     const g = items[n];
@@ -670,8 +704,10 @@ async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[
     if (n % 2 === 0) await tick();
     if (stop()) break;
   }
-  const sc =
-    un.length * 1e9 + (sheets.length - 1) * 1e7 + (sheets.length ? sheets[sheets.length - 1].used : 0);
+  const nNew = sheets.length - seeds.length;
+  const sc = seeds.length
+    ? un.length * 1e9 + nNew * 1e7 + (nNew ? sheets[sheets.length - 1].used : sheets.reduce((a, x, i) => a + x.used - seeds[i].used, 0))
+    : un.length * 1e9 + (sheets.length - 1) * 1e7 + (sheets.length ? sheets[sheets.length - 1].used : 0);
   return { sheets, un, sc };
 }
 
@@ -680,6 +716,9 @@ export interface OptimizeOptions {
   pair: boolean;
   common: boolean;
   timeSec: number;
+  /** Continue an existing nest: only the pieces of each part not placed yet are nested, first into the free space of the
+   *  sheets already there (same thickness + material, full stock size), then onto new sheets. Needs the same sheet settings. */
+  base?: OptResult | null;
   shouldStop: () => boolean;
   onBest: (res: OptResult) => void;
   onStatus: (text: string) => void;
@@ -689,10 +728,13 @@ export interface OptimizeOptions {
 export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<OptResult | null> {
   const { S } = o;
   const rc: MaskCache = new Map();
+  const base = o.base ?? null;
+  const baseSheets = base ? base.sheets : [];
+  const placedBefore = placedCounts(base);
   const skip = groups.filter((g) => !g.qty).map((g) => `Part #${g.sn} (${g.name}) was skipped: quantity is 0`);
   const items: Group[] = [];
   groups.forEach((g) => {
-    let n = g.qty;
+    let n = Math.max(0, g.qty - (placedBefore.get(g.id) ?? 0));
     const pg = o.pair ? pairOf(g, o.common, S.gp) : null;
     if (pg) {
       for (let i = 0; i < n >> 1; i++) items.push(pg);
@@ -716,17 +758,30 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
       return { th: +k.slice(0, i), material: k.slice(i + 1) };
     })
     .sort((a, b) => a.th - b.th || a.material.localeCompare(b.material));
-  const done: Sheet[] = [];
+  const done: Sheet[] = []; // new sheets of the lots already finished
   const dun: Group[] = [];
+  const replaced = new Map<number, Sheet>(); // base sheet index -> same sheet with the new parts added
   let it = 0;
-  const cur = (b: { sheets: Sheet[]; un: Group[] } | null): OptResult => ({
-    sheets: done.concat(b ? b.sheets : []),
-    un: dun.concat(b ? b.un : []),
-    skip,
-  });
+  const ids = new Set(groups.map((g) => g.id));
+  const cur = (b: { sheets: Sheet[]; un: Group[] } | null, seedIdx: number[] = []): OptResult => {
+    const sheets = baseSheets.map((x, i) => replaced.get(i) ?? x);
+    seedIdx.forEach((bi, j) => b && sheets.splice(bi, 1, b.sheets[j]));
+    return {
+      sheets: sheets.concat(done, b ? b.sheets.slice(seedIdx.length) : []),
+      un: (base ? base.un.filter((g) => !ids.has(g.cid ?? g.id)) : []).concat(dun, b ? b.un : []),
+      skip: base ? Array.from(new Set(base.skip.concat(skip))) : skip,
+      ...(base?.manual ? { manual: true } : {}),
+    };
+  };
 
   for (const { th, material } of lots) {
     const sub = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
+    // existing sheets of this lot that still have their full stock size can take more parts
+    const seedIdx: number[] = [];
+    baseSheets.forEach((x, i) => {
+      if ((x.th || 0) === th && (x.material || "") === material && x.W === undefined && x.H === undefined) seedIdx.push(i);
+    });
+    const seeds = seedIdx.map((i) => seedOf(S, baseSheets[i]));
     const t0 = performance.now();
     const lim = (o.timeSec * 1000) / lots.length;
     let best: { sheets: Sheet[]; un: Group[]; sc: number } | null = null;
@@ -743,7 +798,7 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
           rr = pick === 0 ? R : pick === 1 ? R.filter((a) => a % 90 === 0) : R.slice().sort(() => Math.random() - 0.5);
         }
       }
-      const r = await attempt(S, rc, ord, rr, o.shouldStop);
+      const r = await attempt(S, rc, ord, rr, o.shouldStop, seeds);
       k++;
       it++;
       r.sheets.forEach((x) => {
@@ -752,18 +807,20 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
       });
       if (!o.shouldStop() && (!best || r.sc < best.sc)) {
         best = r;
-        o.onBest(cur(best));
+        o.onBest(cur(best, seedIdx));
       }
       const lbl = material ? `${material} • ${th || "?"} mm` : `${th || "?"} mm`;
-      o.onStatus(`${lbl} • iteration ${it} • sheets: ${done.length + (best ? best.sheets.length : 0)}`);
+      o.onStatus(`${lbl} • iteration ${it} • sheets: ${baseSheets.length + done.length + (best ? best.sheets.length - seedIdx.length : 0)}`);
     }
     if (best) {
-      done.push(...best.sheets);
+      seedIdx.forEach((bi, j) => replaced.set(bi, best!.sheets[j]));
+      done.push(...best.sheets.slice(seedIdx.length));
       dun.push(...best.un);
     }
   }
-  done.forEach((s) => delete s.grid);
-  return cur(null);
+  const out = cur(null);
+  out.sheets.forEach((s) => delete s.grid);
+  return out;
 }
 
 // ----------------------------------------------------- manual editing (pick up)
