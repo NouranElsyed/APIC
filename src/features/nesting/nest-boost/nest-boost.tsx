@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Copy, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -985,10 +985,11 @@ export function NestBoost() {
     let text = "";
     for (const f of files) {
       const r = parseDXF(await f.text());
-      const added = addFileParts(gs, r.loops, f.name, +units, counters.current);
+      const added = addFileParts(gs, r.loops, f.name, +units, counters.current, { labels: r.labels });
       gs = added.groups;
       text +=
         `${f.name}: ${r.loops.length} contours → ${added.count} part(s)` +
+        (r.labels.length ? ` (quantity / thickness read from the drawing's QTY / thk notes for ${added.labelled} part(s))` : "") +
         (r.skip.length ? ` (unsupported/approximated: ${r.skip.join(", ")})` : "") +
         "\n";
     }
@@ -1075,6 +1076,16 @@ export function NestBoost() {
   const updateGroup = (id: number, patch: Partial<Group>) => {
     setG(groupsRef.current.map((g) => (g.id === id ? { ...g, ...patch } : g)));
     if (resultRef.current?.manual) bump(); // quantity changed: what is left to place changes too
+  };
+
+  /** Adds a copy of a part right under it (same shape, size and quantity) so its thickness / material / quantity can differ. */
+  const duplicatePart = (id: number) => {
+    const gs = groupsRef.current;
+    const i = gs.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const copy: Group = { ...gs[i], id: counters.current.id++, sn: ++counters.current.sn };
+    setG([...gs.slice(0, i + 1), copy, ...gs.slice(i + 1)]);
+    setMsg(`Part #${gs[i].sn} duplicated as #${copy.sn} — set its own thickness / material / quantity.`);
   };
 
   const removeParts = (ids: number[]) => {
@@ -1849,7 +1860,10 @@ export function NestBoost() {
                           <Layers /> Nest
                         </Button>
                       </td>
-                      <td className="p-1">
+                      <td className="p-1 whitespace-nowrap">
+                        <Button variant="ghost" size="sm" title="Duplicate this part (e.g. to give the copy another thickness)" onClick={() => duplicatePart(g.id)}>
+                          <Copy /> Duplicate
+                        </Button>
                         <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
                           <Trash2 /> Remove
                         </Button>

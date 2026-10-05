@@ -191,7 +191,68 @@ function chain(paths: Pt[][]): Pt[][] {
   return loops;
 }
 
-export function parseDXF(text: string): { loops: Pt[][]; skip: string[] } {
+/** A "QTY: 2 / thk: 10" note drawn in the DXF above a group of parts (x, y in drawing units). */
+export interface DxfLabel {
+  x: number;
+  y: number;
+  qty?: number;
+  th?: number;
+}
+
+/** Plain text of a TEXT / MTEXT entity (MTEXT formatting codes removed, line breaks kept as \n). */
+function entText(e: { d: [number, string][] }): string {
+  const parts = e.d.filter((a) => a[0] === 3).map((a) => a[1]);
+  const last = e.d.filter((a) => a[0] === 1).map((a) => a[1]);
+  return parts
+    .concat(last)
+    .join("")
+    .replace(/\\P/gi, "\n")
+    .replace(/\\~/g, " ")
+    .replace(/\\[A-Za-z][^;\\]*;/g, "")
+    .replace(/\\\\/g, "\\")
+    .replace(/[{}]/g, "")
+    .replace(/%%[uUoOkK]/g, "");
+}
+
+const QTY_RE = /\b(?:qty|quantity)\b\s*[:=]?\s*(\d+)/i;
+const TH_RE = /\b(?:thk|thick(?:ness)?)\b\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i;
+
+/** Reads the "QTY: n" / "thk: t" notes out of the TEXT and MTEXT entities (a note may be one text or two nearby ones). */
+function readLabels(texts: { x: number; y: number; h: number; text: string }[]): DxfLabel[] {
+  const toks = texts
+    .map((t) => {
+      const q = t.text.match(QTY_RE);
+      const k = t.text.match(TH_RE);
+      return { x: t.x, y: t.y, h: t.h, qty: q ? +q[1] : undefined, th: k ? +k[1].replace(",", ".") : undefined };
+    })
+    .filter((t) => t.qty !== undefined || t.th !== undefined);
+  const out: DxfLabel[] = toks.filter((t) => t.qty !== undefined && t.th !== undefined).map((t) => ({ x: t.x, y: t.y, qty: t.qty, th: t.th }));
+  // a quantity and a thickness written as two separate texts: pair each with the closest partner
+  const qs = toks.filter((t) => t.qty !== undefined && t.th === undefined);
+  const ks = toks.filter((t) => t.th !== undefined && t.qty === undefined);
+  const used = new Set<(typeof ks)[number]>();
+  for (const q of qs) {
+    let best: (typeof ks)[number] | null = null;
+    let bd = Infinity;
+    for (const k of ks) {
+      if (used.has(k)) continue;
+      const d = Math.hypot(k.x - q.x, k.y - q.y);
+      if (d < bd) {
+        bd = d;
+        best = k;
+      }
+    }
+    const reach = 8 * Math.max(q.h, best?.h ?? 0, 1e-9);
+    if (best && bd <= reach) {
+      used.add(best);
+      out.push({ x: (q.x + best.x) / 2, y: Math.max(q.y, best.y), qty: q.qty, th: best.th });
+    } else out.push({ x: q.x, y: q.y, qty: q.qty });
+  }
+  for (const k of ks) if (!used.has(k)) out.push({ x: k.x, y: k.y, th: k.th });
+  return out;
+}
+
+export function parseDXF(text: string): { loops: Pt[][]; skip: string[]; labels: DxfLabel[] } {
   const L = text.split(/\r?\n/);
   const E: Ent[] = [];
   let cur: Ent | null = null;
@@ -225,6 +286,7 @@ export function parseDXF(text: string): { loops: Pt[][]; skip: string[] } {
   const loops: Pt[][] = [];
   const open: Pt[][] = [];
   const skip: Record<string, number> = {};
+  const texts: { x: number; y: number; h: number; text: string }[] = [];
   const g = (e: Ent, c: number) => {
     const x = e.d.find((a) => a[0] === c);
     return x ? +x[1] : 0;
@@ -234,6 +296,11 @@ export function parseDXF(text: string): { loops: Pt[][]; skip: string[] } {
   for (const e of E) {
     let p: Pt[] | null = null;
     let cl = false;
+    if (e.t === "TEXT" || e.t === "MTEXT") {
+      // TEXT with an alignment (center / right / ...) is positioned by its second point (11, 21)
+      const aligned = e.t === "TEXT" && (g(e, 72) !== 0 || g(e, 73) !== 0) && e.d.some((a) => a[0] === 11);
+      texts.push({ x: aligned ? g(e, 11) : g(e, 10), y: aligned ? g(e, 21) : g(e, 20), h: g(e, 40), text: entText(e) });
+    }
     if (e.t === "LINE") p = [[g(e, 10), g(e, 20)], [g(e, 11), g(e, 21)]];
     else if (e.t === "CIRCLE") {
       p = arcPts(g(e, 10), g(e, 20), g(e, 40), 0, 2 * Math.PI);
@@ -272,7 +339,7 @@ export function parseDXF(text: string): { loops: Pt[][]; skip: string[] } {
     } else if (!["POINT", "TEXT", "MTEXT", "DIMENSION", "HATCH", "SOLID"].includes(e.t)) skip[e.t] = 1;
     if (p && p.length > 1) (cl ? loops : open).push(p);
   }
-  return { loops: loops.concat(chain(open)), skip: Object.keys(skip) };
+  return { loops: loops.concat(chain(open)), skip: Object.keys(skip), labels: readLabels(texts) };
 }
 
 // ------------------------------------------------------------ geometry helpers
@@ -298,6 +365,8 @@ function inside(pt: Pt, poly: Pt[]) {
 }
 
 interface RawPart {
+  /** Where the part sat in the drawing before it was moved to 0,0: [minX, minY, maxX, maxY] (scaled). */
+  box: [number, number, number, number];
   outer: Pt[];
   holes: Pt[][];
   w: number;
@@ -338,7 +407,7 @@ function extractParts(loops: Pt[][], sc: number): RawPart[] {
   const parts: RawPart[] = [];
   L.forEach((l) => {
     if (l.d % 2 === 0) {
-      const part: RawPart = { outer: l.pts, holes: [], w: 0, h: 0, area: 0, per: 0 };
+      const part: RawPart = { box: [0, 0, 0, 0], outer: l.pts, holes: [], w: 0, h: 0, area: 0, per: 0 };
       parts.push(part);
       l.part = part;
     }
@@ -351,6 +420,7 @@ function extractParts(loops: Pt[][], sc: number): RawPart[] {
     const ys = p.outer.map((q) => q[1]);
     const mx = Math.min(...xs);
     const my = Math.min(...ys);
+    p.box = [mx, my, Math.max(...xs), Math.max(...ys)];
     const mv = (r: Pt[]) => r.map((q) => [q[0] - mx, q[1] - my] as Pt);
     p.outer = mv(p.outer);
     p.holes = p.holes.map(mv);
@@ -379,14 +449,20 @@ export function addFileParts(
   scale: number,
   counters: Counters,
   /** Override the thickness / material / per-contour quantity (used when importing from Standard Calculations). */
-  opts: { th?: number; material?: string; qty?: number } = {},
-): { groups: Group[]; count: number } {
-  const th = opts.th && opts.th > 0 ? opts.th : thicknessFromName(name);
+  opts: { th?: number; material?: string; qty?: number; labels?: DxfLabel[] } = {},
+): { groups: Group[]; count: number; labelled: number } {
+  const fileTh = opts.th && opts.th > 0 ? opts.th : thicknessFromName(name);
   const material = (opts.material ?? "").trim();
-  const add = Math.max(1, Math.round(opts.qty ?? 1));
+  const addAll = Math.max(1, Math.round(opts.qty ?? 1));
   const out = groups.slice();
   const parts = extractParts(loops, scale);
+  let labelled = 0;
   for (const p of parts) {
+    // the "QTY / thk" note belonging to this part (the closest note above it); it wins over the file name
+    const lb = opts.th && opts.th > 0 ? null : labelFor(p.box, opts.labels ?? [], scale);
+    if (lb) labelled++;
+    const th = lb?.th && lb.th > 0 ? lb.th : fileTh;
+    const add = lb?.qty && lb.qty > 0 ? Math.round(lb.qty) * (opts.qty ? addAll : 1) : addAll;
     const m = out.find(
       (g) =>
         g.th === th &&
@@ -399,7 +475,31 @@ export function addFileParts(
     if (m) out[out.indexOf(m)] = { ...m, qty: m.qty + add };
     else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th, material });
   }
-  return { groups: out, count: parts.length };
+  return { groups: out, count: parts.length, labelled };
+}
+
+/**
+ * The note ("QTY: n  thk: t") that belongs to a part: notes are written above their group of parts, so it is the
+ * closest note that sits above the part (horizontally nearest first); if none is above, the closest one overall.
+ */
+function labelFor(box: [number, number, number, number], labels: DxfLabel[], scale: number): DxfLabel | null {
+  let best: DxfLabel | null = null;
+  let bd = Infinity;
+  let bestAbove = false;
+  for (const l of labels) {
+    const x = l.x * scale;
+    const y = l.y * scale;
+    const dx = x < box[0] ? box[0] - x : x > box[2] ? x - box[2] : 0;
+    const above = y >= box[3] - 1e-6;
+    const dy = above ? y - box[3] : box[1] - y > 0 ? box[1] - y : 0;
+    const d = Math.hypot(dx, dy);
+    if ((above && !bestAbove) || (above === bestAbove && d < bd)) {
+      best = l;
+      bd = d;
+      bestAbove = above;
+    }
+  }
+  return best;
 }
 
 // ------------------------------------------------------------- transformations
