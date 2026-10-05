@@ -588,6 +588,131 @@ function nodeKey(p: Point): string {
   return `${gx},${gy}`;
 }
 
+
+// ---------------------------------------------------------------------------
+// Drawing clean-up (what AutoCAD users do by hand with OVERKILL / TRIM)
+// ---------------------------------------------------------------------------
+//
+// Real CAD drawings are rarely tidy: a line often runs a few mm PAST the
+// corner it should stop at (a "tail"), lines are drawn twice or overlap
+// partially, and a line may end exactly ON the middle of another (T-junction).
+// Any of these gives a node a degree != 2, which used to make the whole
+// outline look "open" and blocked the import. So before looking for loops we:
+//   1. split every LINE wherever another entity touches/crosses it,
+//   2. let the edge de-duplication collapse the now-identical overlaps,
+//   3. prune dangling edges (tails) until every node has degree >= 2.
+
+/**
+ * Splits each straight LINE at every point where another segment ends on it
+ * (T-junction / overshoot) or crosses it. ARCs are never split; their end
+ * points can split lines. Piece lengths below the tolerance are never created.
+ */
+function splitLinesAtJunctions(segments: Segment[], tol: number): Segment[] {
+  const out: Segment[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.arc) {
+      out.push(seg);
+      continue;
+    }
+    const a = seg.start;
+    const b = seg.end;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const len = Math.sqrt(len2);
+    const minX = Math.min(a.x, b.x) - tol;
+    const maxX = Math.max(a.x, b.x) + tol;
+    const minY = Math.min(a.y, b.y) - tol;
+    const maxY = Math.max(a.y, b.y) + tol;
+
+    const cuts: { t: number; p: Point }[] = [];
+    const consider = (t: number, p: Point) => {
+      if (t * len > tol && (1 - t) * len > tol) cuts.push({ t, p });
+    };
+
+    for (let j = 0; j < segments.length; j++) {
+      if (j === i) continue;
+      const o = segments[j];
+      // 1. other segment's end points lying on this line's interior
+      for (const q of [o.start, o.end]) {
+        if (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY) continue;
+        const t = ((q.x - a.x) * dx + (q.y - a.y) * dy) / len2;
+        if (t <= 0 || t >= 1) continue;
+        const dist = Math.hypot(q.x - (a.x + t * dx), q.y - (a.y + t * dy));
+        if (dist <= tol) consider(t, q);
+      }
+      // 2. proper crossings with other straight lines (an "X")
+      if (!o.arc) {
+        const ex = o.end.x - o.start.x;
+        const ey = o.end.y - o.start.y;
+        const denom = dx * ey - dy * ex;
+        if (Math.abs(denom) < 1e-12) continue; // parallel / collinear
+        const t = ((o.start.x - a.x) * ey - (o.start.y - a.y) * ex) / denom;
+        const u = ((o.start.x - a.x) * dy - (o.start.y - a.y) * dx) / denom;
+        if (t > 0 && t < 1 && u > 0 && u < 1) consider(t, { x: a.x + t * dx, y: a.y + t * dy });
+      }
+    }
+
+    if (cuts.length === 0) {
+      out.push(seg);
+      continue;
+    }
+    cuts.sort((m, n) => m.t - n.t);
+    let prev = a;
+    let prevT = 0;
+    for (const c of cuts) {
+      if ((c.t - prevT) * len <= tol) continue; // same cut found twice
+      out.push({ start: prev, end: c.p });
+      prev = c.p;
+      prevT = c.t;
+    }
+    out.push({ start: prev, end: b });
+  }
+  return out;
+}
+
+/**
+ * Removes dangling edges (a node touched by exactly one edge), repeatedly,
+ * so whole open "whiskers" disappear. Returns the surviving edges and
+ * whether anything was removed. A self-loop (full circle) counts twice on its
+ * node and is therefore never pruned.
+ */
+function pruneDanglingEdges<E extends { a: number; b: number }>(edges: E[]): { edges: E[]; removed: number } {
+  const alive = edges.map(() => true);
+  const degree = new Map<number, number>();
+  const incident = new Map<number, number[]>();
+  edges.forEach((e, id) => {
+    degree.set(e.a, (degree.get(e.a) ?? 0) + 1);
+    degree.set(e.b, (degree.get(e.b) ?? 0) + 1);
+    if (!incident.has(e.a)) incident.set(e.a, []);
+    incident.get(e.a)!.push(id);
+    if (e.b !== e.a) {
+      if (!incident.has(e.b)) incident.set(e.b, []);
+      incident.get(e.b)!.push(id);
+    }
+  });
+
+  const stack: number[] = [];
+  for (const [n, d] of degree) if (d === 1) stack.push(n);
+  let removed = 0;
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    if (degree.get(n) !== 1) continue;
+    const id = (incident.get(n) ?? []).find((eid) => alive[eid]);
+    if (id === undefined) continue;
+    alive[id] = false;
+    removed++;
+    const e = edges[id];
+    const other = e.a === n ? e.b : e.a;
+    degree.set(n, 0);
+    const nd = (degree.get(other) ?? 0) - 1;
+    degree.set(other, nd);
+    if (nd === 1) stack.push(other);
+  }
+  return { edges: edges.filter((_, id) => alive[id]), removed };
+}
+
 interface LineReconstructionResult {
   loops: RawLoop[];
   hadAnySegments: boolean; // true if there were >=1 usable LINE/ARC segments at all
@@ -616,18 +741,32 @@ function reverseArc(arc: ArcEdge): ArcEdge {
 function reconstructLoopsFromSegments(segments: Segment[], arcToleranceMm: number): LineReconstructionResult {
   if (segments.length === 0) return { loops: [], hadAnySegments: false, hadOpenLeftover: false };
 
+  // Clean-up step 1: cut lines at T-junctions / crossings / overshoots.
+  segments = splitLinesAtJunctions(segments, LINE_CONNECTION_TOLERANCE_MM);
+
   // Assign each distinct (tolerance-collapsed) endpoint a node id, keeping
   // the first concrete coordinate seen for that node.
-  const nodeIdByKey = new Map<string, number>();
+  //
+  // Nearby end points are merged by a real distance test against the 3×3
+  // neighbouring grid cells (plain rounding would split two points 0.01 mm
+  // apart whenever they straddle a cell border).
+  const nodesByCell = new Map<string, number[]>();
   const nodeCoord: Point[] = [];
   function nodeIdFor(p: Point): number {
-    const key = nodeKey(p);
-    let id = nodeIdByKey.get(key);
-    if (id === undefined) {
-      id = nodeCoord.length;
-      nodeIdByKey.set(key, id);
-      nodeCoord.push(p);
+    const cx = Math.floor(p.x / LINE_CONNECTION_TOLERANCE_MM);
+    const cy = Math.floor(p.y / LINE_CONNECTION_TOLERANCE_MM);
+    for (let ix = cx - 1; ix <= cx + 1; ix++) {
+      for (let iy = cy - 1; iy <= cy + 1; iy++) {
+        for (const id of nodesByCell.get(`${ix},${iy}`) ?? []) {
+          if (Math.hypot(nodeCoord[id].x - p.x, nodeCoord[id].y - p.y) <= LINE_CONNECTION_TOLERANCE_MM) return id;
+        }
+      }
     }
+    const id = nodeCoord.length;
+    const key = `${cx},${cy}`;
+    if (!nodesByCell.has(key)) nodesByCell.set(key, []);
+    nodesByCell.get(key)!.push(id);
+    nodeCoord.push(p);
     return id;
   }
 
@@ -653,6 +792,12 @@ function reconstructLoopsFromSegments(segments: Segment[], arcToleranceMm: numbe
     edges.push({ a, b, arc: seg.arc });
   }
 
+  // Clean-up step 3: drop tails / whiskers (dangling edges). Duplicates and
+  // partial overlaps were already collapsed by the de-duplication above.
+  const pruned = pruneDanglingEdges(edges);
+  edges.splice(0, edges.length, ...pruned.edges);
+  if (edges.length === 0) return { loops: [], hadAnySegments: true, hadOpenLeftover: true };
+
   // Incident edge ids per node. A self-loop is listed twice on its node, so
   // "degree === 2" is the uniform simple-cycle test.
   const incident = new Map<number, number[]>();
@@ -666,7 +811,7 @@ function reconstructLoopsFromSegments(segments: Segment[], arcToleranceMm: numbe
   // Connected components over nodes that have at least one edge.
   const visited = new Set<number>();
   const loops: RawLoop[] = [];
-  let hadOpenLeftover = false;
+  let hadOpenLeftover = pruned.removed > 0;
 
   for (const startNode of incident.keys()) {
     if (visited.has(startNode)) continue;

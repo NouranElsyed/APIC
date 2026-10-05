@@ -218,9 +218,12 @@ describe("parseDxf — LINE-based closed contour reconstruction", () => {
       line(0, 0, 100, 0),
       line(100, 0, 100, 100),
       line(100, 100, 0, 100),
-      // Endpoint deliberately 1mm away from (0,0) — well beyond
-      // LINE_CONNECTION_TOLERANCE_MM (0.05mm) — so the loop must NOT close.
-      line(0, 100, 1, 0),
+      // Endpoint deliberately 2mm away from (0,0) and not touching any other
+      // line — well beyond LINE_CONNECTION_TOLERANCE_MM (0.05mm) — so the
+      // loop must NOT close. (An endpoint that lands ON another line, e.g.
+      // (1, 0), is a T-junction + tail and is cleaned up — see
+      // dxf-cleanup.test.ts.)
+      line(0, 100, 1, 2),
     ]);
     const result = parseDxf(dxf);
     expect(result.valid).toBe(false);
