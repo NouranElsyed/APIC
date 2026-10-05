@@ -50,4 +50,18 @@ describe("nest DXF import", () => {
     expect(r.loops).toHaveLength(1);
     expect(r.unclosed).toHaveLength(2);
   });
+
+  it("imports parts as big as the sheet and parts whose boxes overlap (interlocking)", () => {
+    const big = mk(10, poly([[0, 0], [1000, 0], [1000, 300], [120, 300], [0, 180]]));
+    const t1 = mk(11, poly([[0, 0], [100, 0], [0, 100]]));
+    const t2 = mk(12, poly([[100, 0], [100, 100], [0, 100]]));
+    const sheets: Sheet[] = [
+      { items: [{ g: big, rot: 0, x: 0, y: 0 }], th: 8, material: "", used: 0, W: 1000, H: 300 },
+      { items: [{ g: t1, rot: 0, x: 0, y: 0 }, { g: t2, rot: 0, x: 0, y: 0 }], th: 8, material: "", used: 0, W: 1000, H: 300 },
+    ];
+    const nest = splitNestLoops(parseDXF(buildDxf(sheets, S)).loops, 1);
+    expect(nest.stray).toBe(0);
+    expect(nest.sheets.map((x) => x.parts.length)).toEqual([1, 2]);
+    expect(nest.sheets.map((x) => x.parts.every((p) => p.holes.length === 0))).toEqual([true, true]);
+  });
 });

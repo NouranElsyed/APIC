@@ -421,7 +421,7 @@ export function thicknessFromName(name: string): number {
   return tm ? +tm[1].replace(",", ".") : 0;
 }
 
-function extractParts(loops: Pt[][], sc: number): RawPart[] {
+function extractParts(loops: Pt[][], sc: number, contains: (outer: Pt[], inner: Pt[]) => boolean = (o, i) => inside(i[0], o)): RawPart[] {
   const L: Loop[] = loops
     .map((l) => {
       const pts = l.map((p) => [p[0] * sc, p[1] * sc] as Pt);
@@ -431,7 +431,7 @@ function extractParts(loops: Pt[][], sc: number): RawPart[] {
     .sort((x, y) => y.a - x.a);
   L.forEach((l, i) => {
     for (let j = 0; j < i; j++)
-      if (inside(l.pts[0], L[j].pts)) {
+      if (contains(L[j].pts, l.pts)) {
         l.d++;
         l.par = j;
       }
@@ -529,29 +529,60 @@ const isAxisRect = (pts: Pt[]) => {
   return bw > 1 && bh > 1 && Math.abs(Math.abs(area(pts)) - bw * bh) <= bw * bh * 0.001;
 };
 
+const boxOf = (pts: Pt[]) => {
+  const xs = pts.map((q) => q[0]);
+  const ys = pts.map((q) => q[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+};
+const boxWithin = (a: number[], b: number[], tol: number) => a[0] >= b[0] - tol && a[1] >= b[1] - tol && a[2] <= b[2] + tol && a[3] <= b[3] + tol;
+
+function distToPoly(p: Pt, poly: Pt[]): number {
+  let m = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const q = poly[i];
+    const r = poly[(i + 1) % poly.length];
+    const dx = r[0] - q[0];
+    const dy = r[1] - q[1];
+    const l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l2)) : 0;
+    m = Math.min(m, Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy));
+  }
+  return m;
+}
+
+/** `inner` lies entirely inside (or touching the edge of) `outer` — every vertex, not just the first one. */
+function containsLoop(outer: Pt[], inner: Pt[]): boolean {
+  if (!boxWithin(boxOf(inner), boxOf(outer), 0.1)) return false;
+  return inner.every((p) => inside(p, outer) || distToPoly(p, outer) <= 0.1);
+}
+
 /**
  * Reads a nest DXF (sheet outlines + the parts placed on them, e.g. the file exported by this tool): every
- * top-level rectangle is a sheet, everything inside it is a part (holes handled like a normal DXF).
- * `stray` = top-level contours that are not rectangles (ignored).
+ * axis-aligned rectangle that is not inside another sheet's box is a sheet, every other contour inside a
+ * sheet's box is a part (holes handled like a normal DXF). Parts may touch the sheet edge or even be as big as
+ * the sheet, and parts may interlock (overlapping boxes).
+ * `stray` = contours that belong to no sheet (ignored).
  */
 export function splitNestLoops(loops: Pt[][], sc: number): { sheets: NestSheetImport[]; stray: number } {
   const L = loops.map((l) => l.map((p) => [p[0] * sc, p[1] * sc] as Pt)).filter((l) => Math.abs(area(l)) > 1);
-  const top = L.filter((l, i) => !L.some((o, j) => j !== i && Math.abs(area(o)) > Math.abs(area(l)) && inside(l[0], o)));
-  const rects = top.filter(isAxisRect);
-  const stray = top.length - rects.length;
-  const sheets = rects
-    .map((r) => {
-      const xs = r.map((q) => q[0]);
-      const ys = r.map((q) => q[1]);
-      return { r, x0: Math.min(...xs), y0: Math.min(...ys), W: Math.max(...xs) - Math.min(...xs), H: Math.max(...ys) - Math.min(...ys) };
-    })
-    .sort((a, b) => a.x0 - b.x0 || a.y0 - b.y0)
+  const rects = L.filter(isAxisRect).sort((a, b) => Math.abs(area(b)) - Math.abs(area(a)));
+  const sheetLoops: { r: Pt[]; b: number[] }[] = [];
+  for (const r of rects) {
+    const b = boxOf(r);
+    if (!sheetLoops.some((s) => boxWithin(b, s.b, 0.1))) sheetLoops.push({ r, b });
+  }
+  const isSheet = new Set(sheetLoops.map((s) => s.r));
+  const rest = L.filter((l) => !isSheet.has(l));
+  const used = new Set<Pt[]>();
+  const sheets = sheetLoops
+    .sort((a, b) => a.b[0] - b.b[0] || a.b[1] - b.b[1])
     .map((s) => {
-      const inner = L.filter((l) => l !== s.r && inside(l[0], s.r));
-      const parts = extractParts(inner, 1).map((p) => ({ ...p, box: [p.box[0] - s.x0, p.box[1] - s.y0, p.box[2] - s.x0, p.box[3] - s.y0] as [number, number, number, number] }));
-      return { W: s.W, H: s.H, parts };
+      const inner = rest.filter((l) => !used.has(l) && boxWithin(boxOf(l), s.b, 0.1));
+      inner.forEach((l) => used.add(l));
+      const parts = extractParts(inner, 1, containsLoop).map((p) => ({ ...p, box: [p.box[0] - s.b[0], p.box[1] - s.b[1], p.box[2] - s.b[0], p.box[3] - s.b[1]] as [number, number, number, number] }));
+      return { W: s.b[2] - s.b[0], H: s.b[3] - s.b[1], parts };
     });
-  return { sheets, stray };
+  return { sheets, stray: rest.length - used.size };
 }
 
 /** Do the vertices of a and b coincide (same shape, any start vertex), within tol? */
