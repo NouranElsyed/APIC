@@ -161,7 +161,7 @@ interface Ent {
   v: Ent[];
 }
 
-function chain(paths: Pt[][]): Pt[][] {
+function chain(paths: Pt[][], dropped?: Pt[][]): Pt[][] {
   const loops: Pt[][] = [];
   while (paths.length) {
     let cur = paths.pop() as Pt[];
@@ -186,9 +186,33 @@ function chain(paths: Pt[][]): Pt[][] {
     if (cur.length > 3 && dist(cur[0], cur[cur.length - 1]) < TOL) {
       cur.pop();
       loops.push(cur);
-    }
+    } else if (cur.length > 2) dropped?.push(cur);
   }
   return loops;
+}
+
+/** Groups the pieces that could not be closed into loops by where they lie (overlapping boxes = one shape). */
+function groupUnclosed(chains: Pt[][]): { x: number; y: number }[] {
+  const boxes = chains.map((c) => {
+    const xs = c.map((p) => p[0]);
+    const ys = c.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  });
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < boxes.length && !merged; i++)
+      for (let j = i + 1; j < boxes.length && !merged; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (a[0] <= b[2] + TOL && b[0] <= a[2] + TOL && a[1] <= b[3] + TOL && b[1] <= a[3] + TOL) {
+          boxes[i] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+          boxes.splice(j, 1);
+          merged = true;
+        }
+      }
+  }
+  return boxes.map((b) => ({ x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 }));
 }
 
 /** A "QTY: 2 / thk: 10" note drawn in the DXF above a group of parts (x, y in drawing units). */
@@ -252,7 +276,13 @@ function readLabels(texts: { x: number; y: number; h: number; text: string }[]):
   return out;
 }
 
-export function parseDXF(text: string): { loops: Pt[][]; skip: string[]; labels: DxfLabel[] } {
+export function parseDXF(text: string): {
+  loops: Pt[][];
+  skip: string[];
+  labels: DxfLabel[];
+  /** Shapes whose lines could not be closed into a contour (duplicate / overlapping lines, gaps) — they are NOT imported. Positions in drawing units. */
+  unclosed: { x: number; y: number }[];
+} {
   const L = text.split(/\r?\n/);
   const E: Ent[] = [];
   let cur: Ent | null = null;
@@ -339,7 +369,9 @@ export function parseDXF(text: string): { loops: Pt[][]; skip: string[]; labels:
     } else if (!["POINT", "TEXT", "MTEXT", "DIMENSION", "HATCH", "SOLID"].includes(e.t)) skip[e.t] = 1;
     if (p && p.length > 1) (cl ? loops : open).push(p);
   }
-  return { loops: loops.concat(chain(open)), skip: Object.keys(skip), labels: readLabels(texts) };
+  const dropped: Pt[][] = [];
+  const chained = chain(open, dropped);
+  return { loops: loops.concat(chained), skip: Object.keys(skip), labels: readLabels(texts), unclosed: groupUnclosed(dropped) };
 }
 
 // ------------------------------------------------------------ geometry helpers
@@ -476,6 +508,127 @@ export function addFileParts(
     else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th, material });
   }
   return { groups: out, count: parts.length, labelled };
+}
+
+// ------------------------------------------------------- nest DXF import
+
+/** One sheet found in a nest DXF (as written by buildDxf): its size and the parts lying on it. */
+export interface NestSheetImport {
+  W: number;
+  H: number;
+  /** Parts on the sheet; `box` is relative to the sheet's lower-left corner. */
+  parts: RawPart[];
+}
+
+const isAxisRect = (pts: Pt[]) => {
+  if (pts.length !== 4) return false;
+  const xs = pts.map((q) => q[0]);
+  const ys = pts.map((q) => q[1]);
+  const bw = Math.max(...xs) - Math.min(...xs);
+  const bh = Math.max(...ys) - Math.min(...ys);
+  return bw > 1 && bh > 1 && Math.abs(Math.abs(area(pts)) - bw * bh) <= bw * bh * 0.001;
+};
+
+/**
+ * Reads a nest DXF (sheet outlines + the parts placed on them, e.g. the file exported by this tool): every
+ * top-level rectangle is a sheet, everything inside it is a part (holes handled like a normal DXF).
+ * `stray` = top-level contours that are not rectangles (ignored).
+ */
+export function splitNestLoops(loops: Pt[][], sc: number): { sheets: NestSheetImport[]; stray: number } {
+  const L = loops.map((l) => l.map((p) => [p[0] * sc, p[1] * sc] as Pt)).filter((l) => Math.abs(area(l)) > 1);
+  const top = L.filter((l, i) => !L.some((o, j) => j !== i && Math.abs(area(o)) > Math.abs(area(l)) && inside(l[0], o)));
+  const rects = top.filter(isAxisRect);
+  const stray = top.length - rects.length;
+  const sheets = rects
+    .map((r) => {
+      const xs = r.map((q) => q[0]);
+      const ys = r.map((q) => q[1]);
+      return { r, x0: Math.min(...xs), y0: Math.min(...ys), W: Math.max(...xs) - Math.min(...xs), H: Math.max(...ys) - Math.min(...ys) };
+    })
+    .sort((a, b) => a.x0 - b.x0 || a.y0 - b.y0)
+    .map((s) => {
+      const inner = L.filter((l) => l !== s.r && inside(l[0], s.r));
+      const parts = extractParts(inner, 1).map((p) => ({ ...p, box: [p.box[0] - s.x0, p.box[1] - s.y0, p.box[2] - s.x0, p.box[3] - s.y0] as [number, number, number, number] }));
+      return { W: s.W, H: s.H, parts };
+    });
+  return { sheets, stray };
+}
+
+/** Do the vertices of a and b coincide (same shape, any start vertex), within tol? */
+function sameOutline(a: Pt[], b: Pt[], tol: number): boolean {
+  const near = (p: Pt, poly: Pt[]) => {
+    let m = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const q = poly[i];
+      const r = poly[(i + 1) % poly.length];
+      const dx = r[0] - q[0];
+      const dy = r[1] - q[1];
+      const l2 = dx * dx + dy * dy;
+      const t = l2 ? Math.max(0, Math.min(1, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l2)) : 0;
+      m = Math.min(m, Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy));
+    }
+    return m;
+  };
+  return a.every((p) => near(p, b) <= tol) && b.every((p) => near(p, a) <= tol);
+}
+
+const NEST_ROTS = [0, 90, 180, 270, ...Array.from({ length: 24 }, (_, i) => i * 15).filter((r) => r % 90)];
+
+/**
+ * Turns the sheets of a nest DXF into part rows (`groups`, identical parts share one row) and ready-made
+ * sheets with every part already placed where the DXF has it. Parts that are the same shape turned by a
+ * known angle (0/90/180/270, or any 15° step) share a row and keep that rotation.
+ */
+export function addNestParts(
+  groups: Group[],
+  nest: NestSheetImport[],
+  name: string,
+  counters: Counters,
+  opts: { th: number; material: string },
+): { groups: Group[]; sheets: Sheet[]; count: number } {
+  const out = groups.slice();
+  const sheets: Sheet[] = [];
+  let count = 0;
+  for (const ns of nest) {
+    const sh: Sheet = { items: [], th: opts.th, material: opts.material, used: 0, W: ns.W, H: ns.H };
+    for (const p of ns.parts) {
+      const tol = Math.max(0.5, Math.max(p.w, p.h) * 0.0005);
+      let found: { gi: number; rot: number } | null = null;
+      for (let gi = 0; gi < out.length && !found; gi++) {
+        const g = out[gi];
+        if (
+          g.th !== opts.th || g.material !== opts.material || g.holes.length !== p.holes.length ||
+          Math.abs(g.area - p.area) > g.area * 0.002 + 0.5 || Math.abs(g.per - p.per) > g.per * 0.005 + 0.5
+        )
+          continue;
+        for (const rot of NEST_ROTS) {
+          const mapped = g.outer.map((pt) => tp(g, rot, pt));
+          const mh = g.holes.map((h) => h.map((pt) => tp(g, rot, pt)));
+          if (sameOutline(mapped, p.outer, tol) && p.holes.every((h) => mh.some((m) => sameOutline(m, h, tol)))) {
+            found = { gi, rot };
+            break;
+          }
+        }
+      }
+      let g: Group;
+      let rot = 0;
+      if (found) {
+        out[found.gi] = { ...out[found.gi], qty: out[found.gi].qty + 1 };
+        g = out[found.gi];
+        rot = found.rot;
+      } else {
+        g = { ...p, id: counters.id++, sn: ++counters.sn, name, qty: 1, th: opts.th, material: opts.material };
+        out.push(g);
+      }
+      sh.items.push({ g, rot, x: p.box[0], y: p.box[1] });
+      count++;
+    }
+    sheets.push(sh);
+  }
+  // items must point at the final (quantity-updated) group objects
+  const byId = new Map(out.map((g) => [g.id, g]));
+  for (const sh of sheets) for (const it of sh.items) it.g = byId.get(it.g.id) ?? it.g;
+  return { groups: out, sheets, count };
 }
 
 /**

@@ -22,6 +22,9 @@ import { decodeSnapshot, encodeSnapshot } from "./persist";
 import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import {
   addFileParts,
+  addNestParts,
+  splitNestLoops,
+  thicknessFromName,
   buildDxf,
   cancelGroupDrag,
   cancelPick,
@@ -981,6 +984,10 @@ export function NestBoost() {
     bump();
   };
 
+  const unclosedWarning = (name: string, n: number) =>
+    `\n⚠ ${name}: ${n} part(s) could NOT be imported — their lines don't close into a contour (usually duplicate / overlapping lines).` +
+    `\n   Fix in AutoCAD: EXPLODE → ALL, then OVERKILL → ALL (keep the default options), save the DXF and import it again.\n`;
+
   async function handleFiles(files: File[]) {
     if (!files.length) return;
     // Read every file first, so no project gets created for files that contain nothing usable.
@@ -1006,7 +1013,67 @@ export function NestBoost() {
         "\n";
     }
     setG(gs);
+    const bad = parsedFiles.filter((x) => x.r.unclosed.length);
+    for (const { f, r } of bad) text += unclosedWarning(f.name, r.unclosed.length);
     setMsg(text);
+    if (bad.length) toast.warning(`${bad.reduce((n, x) => n + x.r.unclosed.length, 0)} part(s) were NOT imported — run OVERKILL in AutoCAD (see the message on the left)`, { duration: 12000 });
+  }
+
+  /**
+   * Imports a nest DXF (sheet outlines with the parts placed on them, e.g. the file exported from here):
+   * every part goes into the list and the sheets are rebuilt with each part where the DXF has it.
+   */
+  async function handleNestFile(f: File) {
+    const r = parseDXF(await f.text());
+    const nest = splitNestLoops(r.loops, +units);
+    if (!nest.sheets.length) {
+      toast.error("No sheets found — a nest DXF needs a rectangle for each sheet with the parts inside it.");
+      return;
+    }
+    let th = r.labels.find((l) => l.th && l.th > 0)?.th ?? thicknessFromName(f.name);
+    if (!th) {
+      const a = window.prompt("Plate thickness (mm) of this nest? (the file has no 'thk: n' note or '8mm' in its name)", "");
+      if (a === null) return;
+      th = Number(a.replace(",", ".")) || 0;
+    }
+    const maxW = Math.round(Math.max(...nest.sheets.map((x) => x.W)));
+    const maxH = Math.round(Math.max(...nest.sheets.map((x) => x.H)));
+    // with a nest already open the new sheets are added to it (they must fit its sheet size); otherwise the sheet size follows the file
+    const cur = resultRef.current && resS ? resS : null;
+    if (cur && (maxW > cur.W + 0.5 || maxH > cur.H + 0.5)) {
+      toast.error(`The sheets in this file (${maxW}×${maxH}) are bigger than the sheet size of the current nest (${cur.W}×${cur.H}). Reset the nest first.`);
+      return;
+    }
+    const c = cur ? cfg : { ...cfg, W: String(maxW), H: String(maxH) };
+    const S = cur ?? readSettings(c);
+    if (!S) {
+      toast.error("Check the sheet settings (length, width, margin, spacing).");
+      return;
+    }
+    if (!projectId) {
+      try {
+        await ensureProject();
+      } catch (err) {
+        toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+      }
+    }
+    const added = addNestParts(groupsRef.current, nest.sheets, f.name, counters.current, { th, material: "" });
+    if (!cur) setCfg(c);
+    const res = manualResult(S);
+    res.sheets.push(...added.sheets);
+    res.manual = true;
+    setG(added.groups);
+    syncUnplaced(res, added.groups);
+    bump();
+    setMsg(
+      `${f.name}: ${added.sheets.length} sheet(s), ${added.count} part(s) in ${added.groups.length} row(s)` +
+        (th ? ` — ${th} mm` : " — thickness unknown, set it in the parts list") +
+        (nest.stray ? `\n${nest.stray} loose contour(s) outside any sheet were ignored` : "") +
+        (r.unclosed.length ? unclosedWarning(f.name, r.unclosed.length) : "") +
+        "\nThe nest was rebuilt exactly as drawn; parts can still be moved by hand.",
+    );
+    if (r.unclosed.length) toast.warning(`${r.unclosed.length} part(s) were NOT imported — run OVERKILL in AutoCAD (see the message on the left)`, { duration: 12000 });
+    else toast.success(`Imported nest: ${added.sheets.length} sheet(s), ${added.count} part(s)`);
   }
 
   /**
@@ -1738,6 +1805,19 @@ export function NestBoost() {
                 const fs = Array.from(e.target.files ?? []);
                 e.target.value = ""; // allow re-importing the same file after a reset
                 handleFiles(fs);
+              }}
+            />
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted" title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
+            <FolderInput className="h-4 w-4" /> Import nest DXF (sheets + parts)
+            <input
+              type="file"
+              accept=".dxf"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void handleNestFile(f);
               }}
             />
           </label>
