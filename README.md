@@ -71,14 +71,16 @@ npm run dev
 
 Visit http://localhost:3000 — you'll be redirected to `/login`.
 
-### Demo accounts (password: `password123`)
+### Accounts (password: `password123`)
 
-| Role     | Email                     |
-| -------- | -------------------------- |
-| Admin    | admin@steelflow.com        |
-| Manager  | manager@steelflow.com      |
-| Engineer | engineer@steelflow.com     |
-| Viewer   | viewer@steelflow.com       |
+| Name           | Role     | Email                         |
+| -------------- | -------- | ----------------------------- |
+| Nouran Elsayed | Engineer | nouran.elsayed@steelflow.com  |
+| Reham Elsayed  | Engineer | reham.elsayed@steelflow.com   |
+| Mohamed Taher  | Engineer | mohamed.taher@steelflow.com   |
+| Nada Mohamed   | Engineer | nada.mohamed@steelflow.com    |
+
+On an existing database run `npm run db:replace-users` once to swap the old demo accounts for these.
 
 The login screen has one-click buttons to fill these in.
 

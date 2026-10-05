@@ -137,6 +137,7 @@ model Project {
   notices         Notice[]
   meetingMinutes  MeetingMinute[]
   nestingJobs     NestingJob[]
+  nestingWorkspaces NestingWorkspace[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -759,4 +760,29 @@ model ProjectStatusConfig {
   sortOrder Int           @default(0)
 
   @@map("project_status_config")
+}
+
+
+// ----------------------------------------------------------------------------
+// Nesting workspace (auto-save of the DXF / CSV Nesting tabs)
+//
+// One row per (project, kind): the whole working state of the client-side Nest
+// Boost tools — imported parts, settings, the current result and the saved
+// nests — stored as a JSON snapshot so it comes back when the project is opened.
+//   kind = "2D"  (DXF Nesting tool)   |   "1D"  (bars / pipes / profiles tool)
+// ----------------------------------------------------------------------------
+model NestingWorkspace {
+  id        String   @id @default(cuid())
+  kind      String // "2D" | "1D"
+  dataJson  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  updatedById String?
+
+  @@unique([projectId, kind])
+  @@map("nesting_workspaces")
 }

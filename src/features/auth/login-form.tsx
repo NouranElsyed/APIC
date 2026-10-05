@@ -18,10 +18,10 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 const DEMO_USERS = [
-  { role: "Admin", email: "admin@steelflow.com" },
-  { role: "Manager", email: "manager@steelflow.com" },
-  { role: "Engineer", email: "engineer@steelflow.com" },
-  { role: "Viewer", email: "viewer@steelflow.com" },
+  { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com" },
+  { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com" },
+  { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com" },
+  { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com" },
 ];
 
 export function LoginForm() {
@@ -32,7 +32,7 @@ export function LoginForm() {
 
   const {
     register, handleSubmit, setValue, formState: { errors },
-  } = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { email: "admin@steelflow.com", password: "password123" } });
+  } = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { email: "nouran.elsayed@steelflow.com", password: "password123" } });
 
   async function onSubmit(values: FormValues) {
     setError(null);
@@ -79,7 +79,7 @@ export function LoginForm() {
         </form>
 
         <div className="mt-6 rounded-lg border border-border bg-muted/50 p-3">
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Demo accounts (password: password123)</p>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Engineers (password: password123)</p>
           <div className="grid grid-cols-2 gap-1.5">
             {DEMO_USERS.map((u) => (
               <button
@@ -91,7 +91,7 @@ export function LoginForm() {
                 }}
                 className="rounded-md border border-border bg-card px-2 py-1.5 text-left text-xs hover:bg-secondary"
               >
-                <span className="block font-medium text-foreground">{u.role}</span>
+                <span className="block font-medium text-foreground">{u.name}</span>
                 <span className="block truncate text-muted-foreground">{u.email}</span>
               </button>
             ))}

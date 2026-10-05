@@ -12,14 +12,10 @@ async function main() {
 
   // --- Users -----------------------------------------------------------
   const usersData: { name: string; email: string; role: Role; department: string }[] = [
-    { name: "Ahmed Salah", email: "admin@steelflow.com", role: Role.ADMIN, department: "Management" },
-    { name: "Mona Farouk", email: "manager@steelflow.com", role: Role.MANAGER, department: "Operations" },
-    { name: "Karim El-Sayed", email: "engineer@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
-    { name: "Laila Hassan", email: "viewer@steelflow.com", role: Role.VIEWER, department: "Finance" },
-    { name: "Youssef Adel", email: "youssef.adel@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
-    { name: "Nour Ibrahim", email: "nour.ibrahim@steelflow.com", role: Role.MANAGER, department: "Projects" },
-    { name: "Hossam Zaki", email: "hossam.zaki@steelflow.com", role: Role.ENGINEER, department: "Fabrication" },
-    { name: "Dina Mostafa", email: "dina.mostafa@steelflow.com", role: Role.VIEWER, department: "Quality" },
+    { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
+    { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
+    { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
+    { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
   ];
 
   const users = [];
@@ -31,7 +27,7 @@ async function main() {
     });
     users.push(user);
   }
-  const admin = users[0];
+  const admin = users[0]; // owner of the sample records below
   console.log(`Created ${users.length} users`);
 
   // --- Customers ---------------------------------------------------------
@@ -187,12 +183,12 @@ async function main() {
     await prisma.projectStatusConfig.upsert({ where: { status: s.status }, update: s, create: s });
   }
 
-  // Login activity for admin so dashboard isn't empty
+  // Login activity so the dashboard isn't empty
   await prisma.activityLog.create({ data: { userId: admin.id, action: "LOGIN", entity: "USER", entityId: admin.id } });
 
   console.log("Seeding complete.");
-  console.log("\nDemo accounts (password: password123):");
-  usersData.slice(0, 4).forEach((u) => console.log(`  ${u.role.padEnd(10)} ${u.email}`));
+  console.log("\nAccounts (password: password123):");
+  usersData.forEach((u) => console.log(`  ${u.role.padEnd(10)} ${u.email}`));
 }
 
 main()

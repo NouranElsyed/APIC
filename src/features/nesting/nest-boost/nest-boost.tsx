@@ -18,6 +18,8 @@ import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
+import { decodeSnapshot, encodeSnapshot } from "./persist";
+import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import {
   addFileParts,
   buildDxf,
@@ -772,7 +774,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 const UNIT_SCALE: Record<string, number> = { in: 25.4, ft: 304.8, mm: 1, cm: 10, m: 1000, "µm": 0.001, dm: 100 };
 
 export function NestBoost() {
-  const { projectId, projects, nestingQueue, clearNestingQueue } = useTakeoffProject();
+  const { projectId, projects, nestingQueue, clearNestingQueue, ensureProject, consumeFresh } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   // Takeoff part ids already imported into this session, so pressing
@@ -981,10 +983,20 @@ export function NestBoost() {
 
   async function handleFiles(files: File[]) {
     if (!files.length) return;
+    // Read every file first, so no project gets created for files that contain nothing usable.
+    const parsedFiles: { f: File; r: ReturnType<typeof parseDXF> }[] = [];
+    for (const f of files) parsedFiles.push({ f, r: parseDXF(await f.text()) });
+    // No project open: the import becomes a new project "<user> — <date>" that is auto-saved from now on.
+    if (!projectId && parsedFiles.some((x) => x.r.loops.length)) {
+      try {
+        await ensureProject();
+      } catch (err) {
+        toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+      }
+    }
     let gs = groupsRef.current;
     let text = "";
-    for (const f of files) {
-      const r = parseDXF(await f.text());
+    for (const { f, r } of parsedFiles) {
       const added = addFileParts(gs, r.loops, f.name, +units, counters.current, { labels: r.labels });
       gs = added.groups;
       text +=
@@ -1360,6 +1372,54 @@ export function NestBoost() {
     toast.success(`Opened "${n.name}" — its settings and parts were restored`);
   }
 
+  // ---- Auto-save of the whole 2D workspace (parts, settings, result, saved nests) to the selected project.
+  const autosave = useNestingAutosave({
+    kind: "2D",
+    projectId,
+    consumeFresh,
+    capture: () =>
+      encodeSnapshot({
+        cfg, units, groups: groupsRef.current, counters: counters.current, savedSeq: savedSeq.current,
+        importedIds: importedIds.current, result: resultRef.current, resS, savedNests, activeNestId,
+      }),
+    restore: (data) => {
+      runRef.current++;
+      stopRef.current = true;
+      selRef.current = null;
+      setRunning(false);
+      setStatus("");
+      const d = data ? decodeSnapshot(data) : null;
+      if (!d) {
+        setG([]);
+        counters.current = { id: 0, sn: 0 };
+        savedSeq.current = 0;
+        importedIds.current = new Set();
+        setSavedNests([]);
+        setActiveNestId(null);
+        setResult(null);
+        setResS(null);
+        setMsg(DEFAULT_MSG);
+        bump();
+        return;
+      }
+      setCfg({ ...d.cfg });
+      setUnits(d.units);
+      setG(d.groups);
+      counters.current = d.counters;
+      savedSeq.current = d.savedSeq;
+      importedIds.current = new Set(d.importedIds);
+      setSavedNests(d.savedNests);
+      setActiveNestId(d.activeNestId);
+      setResS(d.resS);
+      setResult(d.result);
+      setActiveSheet(0);
+      setMsg(`Restored the saved nest of this project (${d.groups.length} part type(s)${d.result ? `, ${d.result.sheets.length} sheet(s)` : ""}).`);
+      bump();
+    },
+    busy: () => !!selRef.current || !!multiRef.current || running,
+    deps: [groups, result, resS, cfg, units, savedNests, activeNestId, version],
+  });
+
   function exportDxf() {
     if (!result || !resS) return;
     const a = document.createElement("a");
@@ -1652,6 +1712,13 @@ export function NestBoost() {
       <div className="space-y-4">
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import</h3>
+          <div className="mb-2">
+            {projectId ? (
+              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={projects.find((p) => p.id === projectId)?.name} />
+            ) : (
+              <p className="text-xs text-muted-foreground">No project selected — importing a DXF creates a new project (your name + date) and auto-saves into it.</p>
+            )}
+          </div>
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-5 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
+import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import { dxfToPiece } from "../dxf-piece";
 import { nestKindOf, partTo1DPiece } from "../part-routing";
 import { pieceColor, renderBarPng } from "../report/draw-1d";
@@ -184,7 +185,7 @@ export function NestBoost1D() {
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
 
-  const { projectId, projects, nestingQueue1D, clearNestingQueue1D } = useTakeoffProject();
+  const { projectId, projects, nestingQueue1D, clearNestingQueue1D, ensureProject, consumeFresh } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState("");
@@ -266,11 +267,13 @@ export function NestBoost1D() {
     setDxfBusy(true);
     try {
       const scale = dxfUnits === "auto" ? null : Number(dxfUnits);
+      const parsedDxf: { f: File; r: ReturnType<typeof dxfToPiece> }[] = [];
+      for (const f of files) parsedDxf.push({ f, r: dxfToPiece(await f.text(), f.name, scale) });
+      await ensureProjectFor(parsedDxf.some((x) => !("error" in x.r)));
       let next = piecesRef.current;
       const lines: string[] = [];
       let added = 0;
-      for (const f of files) {
-        const r = dxfToPiece(await f.text(), f.name, scale);
+      for (const { f, r } of parsedDxf) {
         if ("error" in r) {
           lines.push(`${f.name}: skipped — ${r.error}`);
           continue;
@@ -292,12 +295,57 @@ export function NestBoost1D() {
     }
   }
 
+  /** No project open: an import with usable parts becomes a new project "<user> — <date>", auto-saved from now on. */
+  async function ensureProjectFor(hasParts: boolean) {
+    if (projectId || !hasParts) return;
+    try {
+      await ensureProject();
+    } catch (err) {
+      toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+    }
+  }
+
+  // ---- Auto-save of the whole 1D workspace (parts, sources, settings, result) to the selected project.
+  const autosave = useNestingAutosave({
+    kind: "1D",
+    projectId,
+    consumeFresh,
+    capture: () => ({
+      v: 1, pieces: piecesRef.current, sources: sourcesRef.current, cfg, result, resS,
+      pieceCounters: pieceCounters.current, sourceCounters: sourceCounters.current, importedIds: [...importedIds.current],
+    }),
+    restore: (data) => {
+      const d = data as {
+        v?: number; pieces?: Piece1D[]; sources?: Source1D[]; cfg?: typeof cfg; result?: Result1D | null; resS?: Settings1D | null;
+        pieceCounters?: { id: number; sn: number }; sourceCounters?: { id: number; sn: number }; importedIds?: string[];
+      } | null;
+      const ok = !!d && d.v === 1 && Array.isArray(d.pieces) && Array.isArray(d.sources);
+      const pcs = ok ? d!.pieces! : [];
+      const srcs = ok ? d!.sources! : [];
+      piecesRef.current = pcs;
+      sourcesRef.current = srcs;
+      setPieces(pcs);
+      setSources(srcs);
+      pieceCounters.current = ok && d!.pieceCounters ? d!.pieceCounters : { id: Math.max(0, ...pcs.map((p) => p.id)), sn: Math.max(0, ...pcs.map((p) => p.sn)) };
+      sourceCounters.current = ok && d!.sourceCounters ? d!.sourceCounters : { id: Math.max(100000, ...srcs.map((s) => s.id)), sn: Math.max(0, ...srcs.map((s) => s.sn)) };
+      importedIds.current = new Set(ok ? d!.importedIds ?? [] : []);
+      if (ok && d!.cfg) setCfg((c) => ({ ...c, ...d!.cfg }));
+      setResult(ok ? d!.result ?? null : null);
+      setResS(ok ? d!.resS ?? null : null);
+      setStatus("");
+      setImportMsg(ok ? `Restored the saved nest of this project (${pcs.length} part row(s)).` : "");
+    },
+    deps: [pieces, sources, cfg, result, resS],
+  });
+
   async function handleCsv(files: File[]) {
     let added = 0;
     const lines: string[] = [];
+    const parsedCsv: { f: File; r: ReturnType<typeof parsePartsCsv> }[] = [];
+    for (const f of files) parsedCsv.push({ f, r: parsePartsCsv(await f.text()) });
+    await ensureProjectFor(parsedCsv.some((x) => x.r.pieces.length > 0));
     let next: Piece1D[] = piecesRef.current;
-    for (const f of files) {
-      const r = parsePartsCsv(await f.text());
+    for (const { f, r } of parsedCsv) {
       for (const p of r.pieces) next = addPiece(next, p, pieceCounters.current);
       added += r.pieces.length;
       lines.push(`${f.name}: ${r.pieces.length} part(s) imported` + (r.errors.length ? `, ${r.errors.length} row(s) skipped:\n  ${r.errors.join("\n  ")}` : ""));
@@ -493,6 +541,13 @@ export function NestBoost1D() {
       <div className="space-y-4">
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import parts</h3>
+          <div className="mb-2">
+            {projectId ? (
+              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={projects.find((p) => p.id === projectId)?.name} />
+            ) : (
+              <p className="text-xs text-muted-foreground">No project selected — importing a CSV / DXF creates a new project (your name + date) and auto-saves into it.</p>
+            )}
+          </div>
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}

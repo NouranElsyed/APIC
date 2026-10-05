@@ -57,9 +57,9 @@ async function main() {
     );
   }
 
-  const admin = await prisma.user.findUnique({ where: { email: "admin@steelflow.com" } });
+  const admin = await prisma.user.findFirst({ where: { active: true }, orderBy: { createdAt: "asc" } });
   if (!admin) {
-    throw new Error('User "admin@steelflow.com" not found. Run the base seed first: npx prisma db seed');
+    throw new Error("No users found. Run the base seed first: npx prisma db seed");
   }
 
   console.log(`Seeding Takeoff data for project ${project.number} — ${project.name}`);
