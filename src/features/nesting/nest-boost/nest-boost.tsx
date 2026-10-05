@@ -538,231 +538,231 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 
   return (
     <div className="relative">
-      <div
-        ref={scrollRef}
-        className={fullscreen ? undefined : "overflow-auto [scrollbar-gutter:stable]"}
-        style={fullscreen ? undefined : { maxHeight: "80vh" }}
-      >
-        <canvas
-          ref={ref}
-          width={bufW}
-          height={h}
-          data-sheet-index={index}
-          className="block max-w-none select-none rounded border border-border bg-card"
-          style={{
-            width: cssW,
-            height: cssH,
-            touchAction: holdingHere || selectMode ? "none" : "auto",
-            cursor: measureOn ? "crosshair" : heldIdx !== null ? "move" : "default",
-          }}
-          onAuxClick={(e) => e.preventDefault()}
-          onPointerDown={(e) => {
-            if (e.button === 1) {
-              const sc = getScroller();
-              if (!sc) return;
-              e.preventDefault();
-              panStart.current = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop };
-              const move = (ev: PointerEvent) => {
-                const p = panStart.current;
-                if (!p) return;
-                sc.scrollLeft = p.l - (ev.clientX - p.x);
-                sc.scrollTop = p.t - (ev.clientY - p.y);
-              };
-              const up = () => {
-                panStart.current = null;
-                window.removeEventListener("pointermove", move);
-                window.removeEventListener("pointerup", up);
-              };
-              window.addEventListener("pointermove", move);
-              window.addEventListener("pointerup", up);
+    <div
+      ref={scrollRef}
+      className={fullscreen ? undefined : "overflow-auto [scrollbar-gutter:stable]"}
+      style={fullscreen ? undefined : { maxHeight: "80vh" }}
+    >
+      <canvas
+        ref={ref}
+        width={bufW}
+        height={h}
+        data-sheet-index={index}
+        className="block max-w-none select-none rounded border border-border bg-card"
+        style={{
+          width: cssW,
+          height: cssH,
+          touchAction: holdingHere || selectMode ? "none" : "auto",
+          cursor: measureOn ? "crosshair" : heldIdx !== null ? "move" : "default",
+        }}
+        onAuxClick={(e) => e.preventDefault()}
+        onPointerDown={(e) => {
+          if (e.button === 1) {
+            const sc = getScroller();
+            if (!sc) return;
+            e.preventDefault();
+            panStart.current = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop };
+            const move = (ev: PointerEvent) => {
+              const p = panStart.current;
+              if (!p) return;
+              sc.scrollLeft = p.l - (ev.clientX - p.x);
+              sc.scrollTop = p.t - (ev.clientY - p.y);
+            };
+            const up = () => {
+              panStart.current = null;
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+            return;
+          }
+          if (measureOn && e.button === 0) {
+            const m = snapPt(mm(e));
+            const cur = measureRef.current;
+            measureRef.current = !cur || cur.done ? { a: m, b: m, done: false } : { a: cur.a, b: m, done: true };
+            paint();
+            return;
+          }
+          // nothing held: press on a part = select it and drag (moves the whole selection); press on empty space = selection box
+          if (e.button !== 0 || selRef.current || dragRef.current || multiRef.current?.carry) return;
+          if (e.pointerType === "touch" && !selectMode) return;
+          const m = mm(e);
+          const it = partAt(m);
+          const cur = multiRef.current && multiRef.current.sh === sheet ? multiRef.current : null;
+          if (it) {
+            if (e.shiftKey) {
+              // Shift+click adds / removes one part without moving anything
+              const items = cur ? (cur.items.includes(it) ? cur.items.filter((x) => x !== it) : [...cur.items, it]) : [it];
+              multiRef.current = items.length ? { sh: sheet, idx: index, items } : null;
+              onChange();
               return;
             }
-            if (measureOn && e.button === 0) {
-              const m = snapPt(mm(e));
-              const cur = measureRef.current;
-              measureRef.current = !cur || cur.done ? { a: m, b: m, done: false } : { a: cur.a, b: m, done: true };
+            if (!cur || !cur.items.includes(it)) multiRef.current = { sh: sheet, idx: index, items: [it] };
+            const ms = multiRef.current as MultiSel;
+            startGroupDrag(ms, S, m);
+            gesture.current = { kind: "move", sx: e.clientX, sy: e.clientY };
+          } else {
+            gesture.current = { kind: "box", start: m, add: e.shiftKey, sx: e.clientX, sy: e.clientY };
+            boxRef.current = { x0: m[0], y0: m[1], x1: m[0], y1: m[1], cross: false };
+          }
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+          onChange();
+        }}
+        onPointerCancel={(e) => {
+          endGesture(e, true);
+        }}
+        onPointerUp={(e) => {
+          if (endGesture(e, false)) return;
+          // press on a part in the list, keep the button down, release over the sheet = drop it here
+          const s = selRef.current;
+          if (!dragRef.current || !s || !s.fresh || s.idx !== index || s.bad) return;
+          dragRef.current = false;
+          selRef.current = null;
+          onChange();
+        }}
+        onDoubleClick={(e) => {
+          if (measureOn) return;
+          const cv = ref.current;
+          const c = cv?.getContext("2d");
+          if (!cv || !c) return;
+          const m = mm(e);
+          c.setTransform(k, 0, 0, -k, 0, cv.height);
+          for (let j = sheet.items.length - 1; j >= 0; j--) {
+            const it = sheet.items[j];
+            if (c.isPointInPath(path(it.g, it.rot, it.x, it.y), m[0] * k, cv.height - m[1] * k, "evenodd")) {
+              const ms = multiRef.current;
+              if (ms && ms.sh === sheet && ms.items.length > 1 && ms.items.includes(it)) {
+                // double-click on a selected part with several selected: pick up ALL of them together
+                gesture.current = null;
+                ms.carry = true;
+                ms.home = { sh: ms.sh, pos: ms.items.map((q) => [q.x, q.y] as Pt), rot: ms.items.map((q) => q.rot) };
+                startGroupDrag(ms, S, m);
+                onChange();
+                return;
+              }
+              multiRef.current = null; // one part in hand replaces any box selection
+              selRef.current = startPick(sheet, index, it, m);
+              onChange();
+              return;
+            }
+          }
+        }}
+        onPointerEnter={() => { overRef.current = true; }}
+        onPointerLeave={() => { overRef.current = false; setHover(null); }}
+        onPointerMove={(e) => {
+          if (measureOn) {
+            const cur = measureRef.current;
+            if (cur && !cur.done) {
+              measureRef.current = { a: cur.a, b: snapPt(mm(e)), done: false };
               paint();
-              return;
             }
-            // nothing held: press on a part = select it and drag (moves the whole selection); press on empty space = selection box
-            if (e.button !== 0 || selRef.current || dragRef.current || multiRef.current?.carry) return;
-            if (e.pointerType === "touch" && !selectMode) return;
-            const m = mm(e);
-            const it = partAt(m);
-            const cur = multiRef.current && multiRef.current.sh === sheet ? multiRef.current : null;
-            if (it) {
-              if (e.shiftKey) {
-                // Shift+click adds / removes one part without moving anything
-                const items = cur ? (cur.items.includes(it) ? cur.items.filter((x) => x !== it) : [...cur.items, it]) : [it];
-                multiRef.current = items.length ? { sh: sheet, idx: index, items } : null;
-                onChange();
-                return;
+            return;
+          }
+          if (!gesture.current && !selRef.current && !multiRef.current?.carry) {
+            const t = performance.now();
+            if (t - lastHover.current > 40) {
+              lastHover.current = t;
+              const it = partAt(mm(e));
+              if (!it) setHover(null);
+              else {
+                const b = bbox(sides(it).o);
+                const next = { sn: it.g.sn, name: it.g.name, w: b[2] - b[0], h: b[3] - b[1], rot: it.rot, area: it.g.area };
+                setHover((p) => (p && p.sn === next.sn && Math.abs(p.w - next.w) < 1e-6 && Math.abs(p.h - next.h) < 1e-6 && p.rot === next.rot ? p : next));
               }
-              if (!cur || !cur.items.includes(it)) multiRef.current = { sh: sheet, idx: index, items: [it] };
-              const ms = multiRef.current as MultiSel;
-              startGroupDrag(ms, S, m);
-              gesture.current = { kind: "move", sx: e.clientX, sy: e.clientY };
+            }
+          } else setHover(null);
+          const gs = gesture.current;
+          if (gs) {
+            const m = mm(e);
+            if (gs.kind === "box") {
+              boxRef.current = { x0: gs.start[0], y0: gs.start[1], x1: m[0], y1: m[1], cross: m[0] < gs.start[0] };
+              paint(); // rubber band only: no need to re-render the page
             } else {
-              gesture.current = { kind: "box", start: m, add: e.shiftKey, sx: e.clientX, sy: e.clientY };
-              boxRef.current = { x0: m[0], y0: m[1], x1: m[0], y1: m[1], cross: false };
+              const ms = multiRef.current;
+              if (ms?.drag) {
+                moveGroup(ms, S, m[0] - ms.drag.pm[0], m[1] - ms.drag.pm[1]);
+                if (!raf.current) {
+                  raf.current = requestAnimationFrame(() => {
+                    raf.current = 0;
+                    onChange();
+                  });
+                }
+              }
             }
-            e.currentTarget.setPointerCapture?.(e.pointerId);
-            onChange();
-          }}
-          onPointerCancel={(e) => {
-            endGesture(e, true);
-          }}
-          onPointerUp={(e) => {
-            if (endGesture(e, false)) return;
-            // press on a part in the list, keep the button down, release over the sheet = drop it here
-            const s = selRef.current;
-            if (!dragRef.current || !s || !s.fresh || s.idx !== index || s.bad) return;
-            dragRef.current = false;
-            selRef.current = null;
-            onChange();
-          }}
-          onDoubleClick={(e) => {
-            if (measureOn) return;
-            const cv = ref.current;
-            const c = cv?.getContext("2d");
-            if (!cv || !c) return;
+            return;
+          }
+          const cm = multiRef.current;
+          if (cm?.carry && cm.drag && cm.sh !== sheet) {
+            // pointer is over another sheet: the whole group jumps there if it fits (same thickness/material)
+            if (transferGroup(cm, S, sheet, index, mm(e))) onChange();
+            return;
+          }
+          if (cm?.carry && cm.drag && cm.sh === sheet) {
             const m = mm(e);
-            c.setTransform(k, 0, 0, -k, 0, cv.height);
-            for (let j = sheet.items.length - 1; j >= 0; j--) {
-              const it = sheet.items[j];
-              if (c.isPointInPath(path(it.g, it.rot, it.x, it.y), m[0] * k, cv.height - m[1] * k, "evenodd")) {
-                const ms = multiRef.current;
-                if (ms && ms.sh === sheet && ms.items.length > 1 && ms.items.includes(it)) {
-                  // double-click on a selected part with several selected: pick up ALL of them together
-                  gesture.current = null;
-                  ms.carry = true;
-                  ms.home = { sh: ms.sh, pos: ms.items.map((q) => [q.x, q.y] as Pt), rot: ms.items.map((q) => q.rot) };
-                  startGroupDrag(ms, S, m);
-                  onChange();
-                  return;
-                }
-                multiRef.current = null; // one part in hand replaces any box selection
-                selRef.current = startPick(sheet, index, it, m);
-                onChange();
-                return;
-              }
-            }
-          }}
-          onPointerEnter={() => { overRef.current = true; }}
-          onPointerLeave={() => { overRef.current = false; setHover(null); }}
-          onPointerMove={(e) => {
-            if (measureOn) {
-              const cur = measureRef.current;
-              if (cur && !cur.done) {
-                measureRef.current = { a: cur.a, b: snapPt(mm(e)), done: false };
-                paint();
-              }
-              return;
-            }
-            if (!gesture.current && !selRef.current && !multiRef.current?.carry) {
-              const t = performance.now();
-              if (t - lastHover.current > 40) {
-                lastHover.current = t;
-                const it = partAt(mm(e));
-                if (!it) setHover(null);
-                else {
-                  const b = bbox(sides(it).o);
-                  const next = { sn: it.g.sn, name: it.g.name, w: b[2] - b[0], h: b[3] - b[1], rot: it.rot, area: it.g.area };
-                  setHover((p) => (p && p.sn === next.sn && Math.abs(p.w - next.w) < 1e-6 && Math.abs(p.h - next.h) < 1e-6 && p.rot === next.rot ? p : next));
-                }
-              }
-            } else setHover(null);
-            const gs = gesture.current;
-            if (gs) {
-              const m = mm(e);
-              if (gs.kind === "box") {
-                boxRef.current = { x0: gs.start[0], y0: gs.start[1], x1: m[0], y1: m[1], cross: m[0] < gs.start[0] };
-                paint(); // rubber band only: no need to re-render the page
-              } else {
-                const ms = multiRef.current;
-                if (ms?.drag) {
-                  moveGroup(ms, S, m[0] - ms.drag.pm[0], m[1] - ms.drag.pm[1]);
-                  if (!raf.current) {
-                    raf.current = requestAnimationFrame(() => {
-                      raf.current = 0;
-                      onChange();
-                    });
-                  }
-                }
-              }
-              return;
-            }
-            const cm = multiRef.current;
-            if (cm?.carry && cm.drag && cm.sh !== sheet) {
-              // pointer is over another sheet: the whole group jumps there if it fits (same thickness/material)
-              if (transferGroup(cm, S, sheet, index, mm(e))) onChange();
-              return;
-            }
-            if (cm?.carry && cm.drag && cm.sh === sheet) {
-              const m = mm(e);
-              moveGroup(cm, S, m[0] - cm.drag.pm[0], m[1] - cm.drag.pm[1]);
-              if (!raf.current) {
-                raf.current = requestAnimationFrame(() => {
-                  raf.current = 0;
-                  onChange();
-                });
-              }
-              return;
-            }
-            const s = selRef.current;
-            if (!s) return;
-            const m = mm(e);
-            if (s.idx !== index && !transfer(s, S, sheet, index, m)) return;
-            s.pm = m;
-            moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
-            // redraw at most once per frame so dragging stays smooth
+            moveGroup(cm, S, m[0] - cm.drag.pm[0], m[1] - cm.drag.pm[1]);
             if (!raf.current) {
               raf.current = requestAnimationFrame(() => {
                 raf.current = 0;
                 onChange();
               });
             }
-          }}
-          onClick={(e) => {
-            const cm = multiRef.current;
-            if (cm?.carry && cm.sh === sheet) {
-              // click = drop the carried group where it is; refused while it is red (rotated into no room)
-              if (cm.drag?.bad) return;
-              cm.carry = false;
-              cm.drag = undefined;
-              cm.home = undefined;
+            return;
+          }
+          const s = selRef.current;
+          if (!s) return;
+          const m = mm(e);
+          if (s.idx !== index && !transfer(s, S, sheet, index, m)) return;
+          s.pm = m;
+          moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
+          // redraw at most once per frame so dragging stays smooth
+          if (!raf.current) {
+            raf.current = requestAnimationFrame(() => {
+              raf.current = 0;
               onChange();
-              return;
-            }
-            const s = selRef.current;
-            if (!s) return;
-            if (s.bad) return; // red = overlapping: move to a free spot (or Esc) first
-            // a part still floating outside every sheet drops in only if there is room at the click
-            if (inGhost(s) && !transfer(s, S, sheet, index, mm(e))) return;
-            if (s.idx === index) {
-              const m = mm(e);
-              moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
-            }
-            selRef.current = null;
+            });
+          }
+        }}
+        onClick={(e) => {
+          const cm = multiRef.current;
+          if (cm?.carry && cm.sh === sheet) {
+            // click = drop the carried group where it is; refused while it is red (rotated into no room)
+            if (cm.drag?.bad) return;
+            cm.carry = false;
+            cm.drag = undefined;
+            cm.home = undefined;
             onChange();
-          }}
-        />
-      </div>
-      <div className="sticky bottom-0 z-10 flex h-5 items-center gap-3 bg-card/90 px-1 text-[11px] tabular-nums text-muted-foreground">
-        {measureOn ? (
-          <span>Measure (M to exit): click a start point, then an end point. Esc clears.</span>
-        ) : hover ? (
-          <>
-            <span className="font-semibold text-foreground">#{hover.sn}</span>
-            <span className="truncate">{hover.name}</span>
-            <span>{hover.w.toFixed(1)} × {hover.h.toFixed(1)} mm</span>
-            {hover.rot % 360 !== 0 && <span>rot {Math.round(hover.rot * 10) / 10}°</span>}
-            <span>area {Math.round(hover.area).toLocaleString()} mm²</span>
-          </>
-        ) : (
-          <span className="opacity-60">Hover a part to see its size · Alt+scroll zoom · M measure</span>
-        )}
-      </div>
+            return;
+          }
+          const s = selRef.current;
+          if (!s) return;
+          if (s.bad) return; // red = overlapping: move to a free spot (or Esc) first
+          // a part still floating outside every sheet drops in only if there is room at the click
+          if (inGhost(s) && !transfer(s, S, sheet, index, mm(e))) return;
+          if (s.idx === index) {
+            const m = mm(e);
+            moveTo(s, S, m[0] - s.off[0], m[1] - s.off[1]);
+          }
+          selRef.current = null;
+          onChange();
+        }}
+      />
+    </div>
+    <div className="sticky bottom-0 z-10 flex h-5 items-center gap-3 bg-card/90 px-1 text-[11px] tabular-nums text-muted-foreground">
+      {measureOn ? (
+        <span>Measure (M to exit): click a start point, then an end point. Esc clears.</span>
+      ) : hover ? (
+        <>
+          <span className="font-semibold text-foreground">#{hover.sn}</span>
+          <span className="truncate">{hover.name}</span>
+          <span>{hover.w.toFixed(1)} × {hover.h.toFixed(1)} mm</span>
+          {hover.rot % 360 !== 0 && <span>rot {Math.round(hover.rot * 10) / 10}°</span>}
+          <span>area {Math.round(hover.area).toLocaleString()} mm²</span>
+        </>
+      ) : (
+        <span className="opacity-60">Hover a part to see its size · Alt+scroll zoom · M measure</span>
+      )}
+    </div>
     </div>
   );
 }
@@ -796,6 +796,10 @@ export function NestBoost() {
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
   const [confirmOptimize, setConfirmOptimize] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  // "Nest this part alone": the part + its own settings (spacing, margin, rotation ...), chosen in a popup
+  const [solo, setSolo] = React.useState<{ g: Group; c: typeof cfg } | null>(null);
+  const [soloOpen, setSoloOpen] = React.useState(false);
+  const [confirmSolo, setConfirmSolo] = React.useState(false);
   // ---- box selection (CAD style): parts selected together on one sheet, moved as a group
   const multiRef = React.useRef<MultiSel | null>(null);
   const [multiCount, setMultiCount] = React.useState(0);
@@ -1096,10 +1100,10 @@ export function NestBoost() {
   };
 
   /** Sheet settings typed on the left, or null when they are invalid. */
-  function readSettings(): Settings | null {
+  function readSettings(c: typeof cfg = cfg): Settings | null {
     const v = {
-      W: Number(cfg.W), H: Number(cfg.H), mg: Number(cfg.mg), gp: Number(cfg.gp),
-      cell: Number(cfg.cell), ro: Number(cfg.ro),
+      W: Number(c.W), H: Number(c.H), mg: Number(c.mg), gp: Number(c.gp),
+      cell: Number(c.cell), ro: Number(c.ro),
     };
     if (!(v.W > 0 && v.H > 0 && v.cell > 0 && v.mg >= 0 && v.gp >= 0)) return null;
     return makeSettings(v);
@@ -1245,9 +1249,10 @@ export function NestBoost() {
     bump();
   }, [bump]);
 
-  async function start() {
+  async function start(only?: { groups: Group[]; c: typeof cfg }) {
     multiRef.current = null;
-    const S = readSettings();
+    const c = only?.c ?? cfg;
+    const S = readSettings(c);
     if (!S) {
       setStatus("Check the sheet settings (length, width, margin, spacing).");
       return;
@@ -1259,11 +1264,11 @@ export function NestBoost() {
     bump();
     setRunning(true);
     setStatus("");
-    const res = await runOptimize(groupsRef.current, {
+    const res = await runOptimize(only?.groups ?? groupsRef.current, {
       S,
-      pair: cfg.pair,
-      common: cfg.common,
-      timeSec: Number(cfg.tm) || 20,
+      pair: c.pair,
+      common: c.common,
+      timeSec: Number(c.tm) || 20,
       shouldStop: () => stopRef.current || my !== runRef.current,
       onBest: (r) => {
         if (my !== runRef.current) return;
@@ -1543,66 +1548,66 @@ export function NestBoost() {
   );
 
   const actionBar = (
-    <div className="mb-2 min-h-[6.5rem]">
-      {!held && multiCount > 0 && (
-        <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
-          <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
-          {!carrying && (
-            <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
-              <Undo2 /> Put back to list
-            </Button>
+          <div className="mb-2 min-h-[6.5rem]">
+          {!held && multiCount > 0 && (
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
+              <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
+              {!carrying && (
+                <Button variant="outline" size="sm" className="text-destructive" onClick={removeSelected} title="Take the selected parts off the sheet (Delete key)">
+                  <Undo2 /> Put back to list
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => rotateSelection(90)} title="Rotate the whole selection 90° as one block (R key)">
+                <RotateCcw /> Rotate block 90°
+              </Button>
+              {carrying ? (
+                <>
+                  <Button
+                    variant="secondary" size="sm" disabled={carryBad}
+                    onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
+                  >
+                    <Check /> Place here
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {carryBad
+                      ? "The block has no room here (red) — move it to a free spot to place it, or press Esc. "
+                      : "Holding the whole selection — scroll the wheel to rotate it (5° per notch, Shift = 1°, R = 90°), move over this or another sheet of the same material/thickness, click to place, Esc to cancel. "}
+                    It stops at other parts, the spacing and the margin.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
+                    Clear selection
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin. Press S while moving to separate them: the part under the pointer stays in hand, the rest go back.
+                  </span>
+                </>
+              )}
+            </div>
           )}
-          <Button variant="secondary" size="sm" onClick={() => rotateSelection(90)} title="Rotate the whole selection 90° as one block (R key)">
-            <RotateCcw /> Rotate block 90°
-          </Button>
-          {carrying ? (
-            <>
-              <Button
-                variant="secondary" size="sm" disabled={carryBad}
-                onClick={() => { const m = multiRef.current; if (m) { m.carry = false; m.drag = undefined; m.home = undefined; } bump(); }}
-              >
-                <Check /> Place here
+          {held && (
+            <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 p-2">
+              <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
+                <RotateCcw /> Rotate 90°
+              </Button>
+              <Button variant="secondary" size="sm" disabled={held.bad || held.ghost} onClick={() => { selRef.current = null; bump(); }}>
+                <Check /> Done
+              </Button>
+              <Button variant="outline" size="sm" className="text-destructive" onClick={removeHeld} title="Take this piece off the sheets (Delete key) — it becomes available in the list again">
+                <Undo2 /> {held.fresh ? "Drop it" : "Put back to list"}
               </Button>
               <span className="text-xs text-muted-foreground">
-                {carryBad
-                  ? "The block has no room here (red) — move it to a free spot to place it, or press Esc. "
-                  : "Holding the whole selection — scroll the wheel to rotate it (5° per notch, Shift = 1°, R = 90°), move over this or another sheet of the same material/thickness, click to place, Esc to cancel. "}
-                It stops at other parts, the spacing and the margin.
+                {held.ghost
+                  ? `Holding a new Part #${held.sn} (${held.name}) — move it over a sheet of the same material/thickness and click`
+                  : held.bad
+                    ? `Part #${held.sn} overlaps something (red) — move it to a free spot to place it, or press Esc to cancel`
+                    : `Holding: Part #${held.sn} (${held.name}) — move the mouse, scroll to rotate, click to place`}
               </span>
-            </>
-          ) : (
-            <>
-              <Button variant="secondary" size="sm" onClick={() => { multiRef.current = null; bump(); }}>
-                Clear selection
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Drag one of them to move the whole selection, or double-click one to pick them all up — it stops at other parts, the spacing and the margin. Press S while moving to separate them: the part under the pointer stays in hand, the rest go back.
-              </span>
-            </>
+            </div>
           )}
-        </div>
-      )}
-      {held && (
-        <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 p-2">
-          <Button variant="secondary" size="sm" onClick={() => { if (resS && selRef.current) { rotate(selRef.current, resS, 90); bump(); } }}>
-            <RotateCcw /> Rotate 90°
-          </Button>
-          <Button variant="secondary" size="sm" disabled={held.bad || held.ghost} onClick={() => { selRef.current = null; bump(); }}>
-            <Check /> Done
-          </Button>
-          <Button variant="outline" size="sm" className="text-destructive" onClick={removeHeld} title="Take this piece off the sheets (Delete key) — it becomes available in the list again">
-            <Undo2 /> {held.fresh ? "Drop it" : "Put back to list"}
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            {held.ghost
-              ? `Holding a new Part #${held.sn} (${held.name}) — move it over a sheet of the same material/thickness and click`
-              : held.bad
-                ? `Part #${held.sn} overlaps something (red) — move it to a free spot to place it, or press Esc to cancel`
-                : `Holding: Part #${held.sn} (${held.name}) — move the mouse, scroll to rotate, click to place`}
-          </span>
-        </div>
-      )}
-    </div>
+          </div>
   );
 
   return (
@@ -1679,20 +1684,20 @@ export function NestBoost() {
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parts &amp; quantities</h3>
             <div className="flex items-center gap-2">
-              {checked.size > 0 && (
-                <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove([...checked])}>
-                  <Trash2 /> Remove selected ({checked.size})
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive"
-                disabled={!groups.length}
-                onClick={() => setConfirmReset(true)}
-              >
-                <Trash2 /> Reset all
+            {checked.size > 0 && (
+              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove([...checked])}>
+                <Trash2 /> Remove selected ({checked.size})
               </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive"
+              disabled={!groups.length}
+              onClick={() => setConfirmReset(true)}
+            >
+              <Trash2 /> Reset all
+            </Button>
             </div>
           </div>
           {!groups.length ? (
@@ -1724,6 +1729,7 @@ export function NestBoost() {
                     <th className="p-1">Qty</th>
                     <th className="p-1">Placed</th>
                     <th className="p-1" title="Press a part's picture to take one piece and place it by hand">Left / place by hand</th>
+                    <th className="p-1" title="Nest only this part, with its own spacing / margin / rotation">Nest alone</th>
                     <th className="p-1" />
                   </tr>
                 </thead>
@@ -1783,16 +1789,30 @@ export function NestBoost() {
                                   ? "Press and hold, drag onto a sheet and release — or click, then click on the sheet"
                                   : "All pieces of this part are already placed"
                               }
-                              className={`flex select-none items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${left > 0
+                              className={`flex select-none items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${
+                                left > 0
                                   ? "cursor-grab border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 active:cursor-grabbing"
                                   : "cursor-not-allowed border-border text-muted-foreground opacity-60"
-                                }`}
+                              }`}
                               style={{ touchAction: "none" }}
                             >
                               <Plus className="h-3 w-3" /> {left} left
                             </button>
                           );
                         })()}
+                      </td>
+                      <td className="p-1">
+                        <Button
+                          variant="outline" size="sm" className="h-7 whitespace-nowrap"
+                          disabled={running || !!held || g.qty <= 0}
+                          title="Nest only this part, with its own settings"
+                          onClick={() => {
+                            setSolo({ g, c: { ...cfg } });
+                            setSoloOpen(true);
+                          }}
+                        >
+                          <Layers /> Nest
+                        </Button>
                       </td>
                       <td className="p-1">
                         <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
@@ -1863,17 +1883,6 @@ export function NestBoost() {
               Still to place: {stillToPlace.map(({ g, n }) => `#${g.sn} ×${n}`).join(" • ")}
             </p>
           )}
-          <p className="mb-2 text-xs text-muted-foreground">
-            Select like CAD: drag a box on a sheet — <span className="font-medium text-blue-600">left → right</span> selects only the parts completely
-            inside the box, <span className="font-medium text-green-600">right → left</span> selects every part the box touches (Shift adds to the
-            selection). Then drag any selected part to move them all together, or double-click one to pick them all up and click to place; S while moving them separates: the part under the pointer stays in your hand and the others go back to their last position; R rotates the whole selection as a block (arrow keys move one grid cell, Delete puts them back to the list, Esc clears).
-          </p>
-          <p className="mb-2 text-xs text-muted-foreground">
-            Double-click a part to pick it up: it follows the mouse (move it onto another sheet of the same thickness to
-            transfer it), scroll the wheel to rotate freely (5° per notch, hold Shift for 1°; R = 90°) — it stops with a click at every 45° (0, 45, 90, 135 ...) and the angle badge turns green — click to place, Esc to cancel. While moving, it can&apos;t overlap other parts,
-            break the spacing, or enter the margin (it stays at the last allowed position). Rotation is never blocked: if there&apos;s no room the part
-            turns anyway and goes red — drag it to a free spot to place it.
-          </p>
           {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
           {actionBar}
           {result && resS && (
@@ -2130,6 +2139,83 @@ export function NestBoost() {
         onConfirm={() => {
           if (pendingClear !== null) clearSheet(pendingClear);
           setPendingClear(null);
+        }}
+      />
+
+      <Dialog open={soloOpen} onOpenChange={setSoloOpen}>
+        <DialogContent className="max-w-md">
+          {solo && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Nest part #{solo.g.sn} alone</DialogTitle>
+                <DialogDescription>
+                  {solo.g.name} — {solo.g.qty} pcs. Only this part is nested, using the settings below (the page settings stay as they are).
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Sheet length (mm)">
+                  <Input type="number" value={solo.c.W} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, W: e.target.value } })} />
+                </Field>
+                <Field label="Sheet width (mm)">
+                  <Input type="number" value={solo.c.H} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, H: e.target.value } })} />
+                </Field>
+                <Field label="Edge margin (mm)">
+                  <Input type="number" value={solo.c.mg} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, mg: e.target.value } })} />
+                </Field>
+                <Field label="Gap between parts (mm) — 0 = none">
+                  <Input type="number" min={0} value={solo.c.gp} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, gp: e.target.value } })} />
+                </Field>
+                <Field label="Rotation">
+                  <select className={selectCls} value={solo.c.ro} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, ro: e.target.value } })}>
+                    <option value="0">None</option>
+                    <option value="1">0° / 180°</option>
+                    <option value="2">90° steps</option>
+                    <option value="3">45° steps</option>
+                    <option value="4">15° steps (slower)</option>
+                  </select>
+                </Field>
+                <Field label="Optimize time (s)">
+                  <Input type="number" value={solo.c.tm} onChange={(e) => setSolo({ ...solo, c: { ...solo.c, tm: e.target.value } })} />
+                </Field>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox checked={solo.c.pair} onCheckedChange={(v) => setSolo({ ...solo, c: { ...solo.c, pair: v === true } })} />
+                  Auto-pair triangles
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox checked={solo.c.common} onCheckedChange={(v) => setSolo({ ...solo, c: { ...solo.c, common: v === true } })} />
+                  Common cut line
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The nesting result will show only this part. To nest another part with different settings, run it the same way — the result is replaced each time.
+              </p>
+              <DialogFooter>
+                <Button variant="secondary" onClick={() => setSoloOpen(false)}>Cancel</Button>
+                <Button
+                  disabled={running || !!held}
+                  onClick={() => {
+                    setSoloOpen(false);
+                    if (result?.manual && result.sheets.some((x) => x.items.length)) setConfirmSolo(true);
+                    else void start({ groups: [solo.g], c: solo.c });
+                  }}
+                >
+                  <Layers /> Nest this part
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmSolo}
+        onOpenChange={setConfirmSolo}
+        title="Replace your manual nesting?"
+        description="Nesting this part alone builds a new nest and discards the parts you placed by hand. Save this nest first if you want to keep it."
+        confirmLabel="Nest this part"
+        onConfirm={() => {
+          setConfirmSolo(false);
+          if (solo) void start({ groups: [solo.g], c: solo.c });
         }}
       />
 
