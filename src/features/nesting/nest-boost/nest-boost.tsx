@@ -776,6 +776,39 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 // mm-per-unit for the unit label the server-side DXF parser detected.
 const UNIT_SCALE: Record<string, number> = { in: 25.4, ft: 304.8, mm: 1, cm: 10, m: 1000, "µm": 0.001, dm: 100 };
 
+/**
+ * Sheet cut-size field: you can type a whole number freely; it is applied (and clamped to what the parts need /
+ * the stock sheet size) only on Enter or when the field loses focus. Esc cancels.
+ */
+function CutSizeInput({ value, max, onCommit }: { value: number; max: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = React.useState<string | null>(null);
+  const commit = () => {
+    const v = Number(draft);
+    setDraft(null);
+    if (draft !== null && Number.isFinite(v) && v > 0 && Math.round(v) !== value) onCommit(v);
+  };
+  return (
+    <Input
+      type="number"
+      min={1}
+      max={max}
+      className="h-7 w-20"
+      title={`Smaller than the stock sheet (max ${max}) and not smaller than the parts need. Press Enter to apply.`}
+      value={draft ?? value}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setDraft(null);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
 export function NestBoost() {
   const { projectId, projects, nestingQueue, clearNestingQueue, ensureProject, consumeFresh } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
@@ -2120,22 +2153,20 @@ export function NestBoost() {
                       </span>
                       <span className="flex items-center gap-1">
                         Cut size
-                        <Input
-                          type="number" min={1} className="h-7 w-20"
+                        <CutSizeInput
                           value={Math.round(sh.W ?? resS.W)}
-                          onChange={(e) => {
-                            const v = Number(e.target.value);
-                            if (v > 0) resizeSheet(sh, resS, v, sh.H ?? resS.H);
+                          max={Math.round(resS.W)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, v, sh.H ?? resS.H);
                             bump();
                           }}
                         />
                         ×
-                        <Input
-                          type="number" min={1} className="h-7 w-20"
+                        <CutSizeInput
                           value={Math.round(sh.H ?? resS.H)}
-                          onChange={(e) => {
-                            const v = Number(e.target.value);
-                            if (v > 0) resizeSheet(sh, resS, sh.W ?? resS.W, v);
+                          max={Math.round(resS.H)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, sh.W ?? resS.W, v);
                             bump();
                           }}
                         />
