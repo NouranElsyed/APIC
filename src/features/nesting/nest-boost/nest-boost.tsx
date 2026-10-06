@@ -795,6 +795,11 @@ export function NestBoost() {
   // Multi-select in "Parts & quantities" + the "Are you sure?" for removals.
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
+  // Filters of the "Parts & quantities" list ("" = no filter on that column)
+  const [fFile, setFFile] = React.useState("");
+  const [fTh, setFTh] = React.useState("");
+  const [fMat, setFMat] = React.useState("");
+  const [fLeft, setFLeft] = React.useState<"" | "left" | "done">("");
   const [confirmOptimize, setConfirmOptimize] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   // What "Optimize nest" does when a nest already exists: rebuild everything, or only nest the pieces not placed yet
@@ -1547,6 +1552,30 @@ export function NestBoost() {
   const problems = result && resS ? problemMessages(result, resS) : [];
   const placed = placedCounts(result); // pieces of each part already on a sheet (recomputed on every render/bump)
   const stillToPlace = groups.map((g) => ({ g, n: leftOf(g, placed) })).filter((x) => x.n > 0);
+  // ---- Parts list: filter options (built from what is in the list) and the rows that pass the filters
+  const fileOpts = [...new Set(groups.map((g) => g.name))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const thOpts = [...new Set(groups.map((g) => g.th))].sort((a, b) => a - b);
+  const matOpts = [...new Set(groups.map((g) => g.material || ""))].sort((a, b) => a.localeCompare(b));
+  // a filter whose value is no longer in the list (part removed ...) simply stops filtering
+  const eFile = fileOpts.includes(fFile) ? fFile : "";
+  const eTh = thOpts.some((t) => String(t) === fTh) ? fTh : "";
+  const eMat = fMat === "__none__" ? (matOpts.includes("") ? fMat : "") : matOpts.includes(fMat) ? fMat : "";
+  const visible = groups.filter(
+    (g) =>
+      (!eFile || g.name === eFile) &&
+      (!eTh || String(g.th) === eTh) &&
+      (!eMat || (eMat === "__none__" ? !g.material : g.material === eMat)) &&
+      (!fLeft || (fLeft === "left" ? leftOf(g, placed) > 0 : leftOf(g, placed) <= 0)),
+  );
+  const filtersOn = !!(eFile || eTh || eMat || fLeft);
+  const clearFilters = () => {
+    setFFile("");
+    setFTh("");
+    setFMat("");
+    setFLeft("");
+  };
+  // only the selected parts that are on screen are acted on, so a hidden row is never removed by accident
+  const checkedVis = visible.filter((g) => checked.has(g.id)).map((g) => g.id);
   const lotMap = new Map<string, { key: string; th: number; material: string; label: string }>();
   for (const g of groups) {
     const th = g.th || 0;
@@ -1757,11 +1786,18 @@ export function NestBoost() {
       <div className="min-w-0 space-y-4">
         <Card className="p-4">
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parts &amp; quantities</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Parts &amp; quantities
+              {groups.length > 0 && (
+                <span className="ml-2 font-normal normal-case tracking-normal">
+                  {filtersOn ? `${visible.length} of ${groups.length} shown` : `${groups.length} part(s)`}
+                </span>
+              )}
+            </h3>
             <div className="flex items-center gap-2">
-            {checked.size > 0 && (
-              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove([...checked])}>
-                <Trash2 /> Remove selected ({checked.size})
+            {checkedVis.length > 0 && (
+              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove(checkedVis)}>
+                <Trash2 /> Remove selected ({checkedVis.length})
               </Button>
             )}
             <Button
@@ -1775,8 +1811,57 @@ export function NestBoost() {
             </Button>
             </div>
           </div>
+          {groups.length > 0 && (
+            <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-border bg-secondary/30 p-2 md:grid-cols-4 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto] xl:items-end">
+              <Field label="File">
+                <select className={selectCls} value={eFile} onChange={(e) => setFFile(e.target.value)}>
+                  <option value="">All files ({groups.length})</option>
+                  {fileOpts.map((n) => (
+                    <option key={n} value={n}>{n} ({groups.filter((g) => g.name === n).length})</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Thickness">
+                <select className={selectCls} value={eTh} onChange={(e) => setFTh(e.target.value)}>
+                  <option value="">All thicknesses</option>
+                  {thOpts.map((t) => (
+                    <option key={t} value={String(t)}>
+                      {t ? `${t} mm` : "Unknown (?)"} ({groups.filter((g) => g.th === t).length})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Material">
+                <select className={selectCls} value={eMat} onChange={(e) => setFMat(e.target.value)}>
+                  <option value="">All materials</option>
+                  {matOpts.map((m) => (
+                    <option key={m || "__none__"} value={m || "__none__"}>
+                      {m || "— none —"} ({groups.filter((g) => (g.material || "") === m).length})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Remaining">
+                <select className={selectCls} value={fLeft} onChange={(e) => setFLeft(e.target.value as "" | "left" | "done")}>
+                  <option value="">All</option>
+                  <option value="left">Has pieces left ({groups.filter((g) => leftOf(g, placed) > 0).length})</option>
+                  <option value="done">Fully placed ({groups.filter((g) => leftOf(g, placed) <= 0).length})</option>
+                </select>
+              </Field>
+              <Button variant="ghost" size="sm" className="col-span-2 h-9 md:col-span-4 xl:col-span-1" disabled={!filtersOn} onClick={clearFilters}>
+                Clear filters
+              </Button>
+            </div>
+          )}
           {!groups.length ? (
             <p className="text-sm text-muted-foreground">No parts yet.</p>
+          ) : !visible.length ? (
+            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+              No part matches these filters.
+              <div className="mt-2">
+                <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button>
+              </div>
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
@@ -1784,13 +1869,21 @@ export function NestBoost() {
                   <tr className="text-left text-muted-foreground">
                     <th className="p-1">
                       <Checkbox
-                        aria-label="Select all parts"
+                        aria-label="Select all shown parts"
                         checked={
-                          groups.length > 0 && groups.every((g) => checked.has(g.id))
+                          visible.every((g) => checked.has(g.id))
                             ? true
-                            : checked.size > 0 ? "indeterminate" : false
+                            : visible.some((g) => checked.has(g.id)) ? "indeterminate" : false
                         }
-                        onCheckedChange={(v) => setChecked(v === true ? new Set(groups.map((g) => g.id)) : new Set())}
+                        onCheckedChange={(v) =>
+                          setChecked((prev) => {
+                            const next = new Set(prev);
+                            for (const g of visible) {
+                              if (v === true) next.add(g.id); else next.delete(g.id);
+                            }
+                            return next;
+                          })
+                        }
                       />
                     </th>
                     <th className="p-1">#</th>
@@ -1809,7 +1902,7 @@ export function NestBoost() {
                   </tr>
                 </thead>
                 <tbody>
-                  {groups.map((g) => (
+                  {visible.map((g) => (
                     <tr key={g.id} className={`border-t border-border ${checked.has(g.id) ? "bg-primary/5" : ""}`}>
                       <td className="p-1">
                         <Checkbox
