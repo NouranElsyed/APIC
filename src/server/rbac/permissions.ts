@@ -11,7 +11,7 @@ export const PERMISSIONS = {
   "projects.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
   "projects.create": ["ADMIN", "MANAGER", "ENGINEER"],
   "projects.edit": ["ADMIN", "MANAGER", "ENGINEER"],
-  "projects.delete": ["ADMIN"],
+  "projects.delete": ["ADMIN", "MANAGER", "ENGINEER"],
 
   "customers.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
   "customers.create": ["ADMIN", "MANAGER"],

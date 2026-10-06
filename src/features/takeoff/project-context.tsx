@@ -199,7 +199,7 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
 
   const deleteProject = React.useCallback(
     async (id: string) => {
-      await api(`/api/projects/${id}`, { method: "DELETE" }, { 403: "Only an administrator can delete a project" });
+      await api(`/api/projects/${id}`, { method: "DELETE" }, { 403: "You are not allowed to delete projects" });
       setProjects((prev) => prev.filter((p) => p.id !== id));
       setHistory((prev) => prev.map((h) => (h.savedProjectId === id ? { ...h, savedProjectId: null } : h)));
       if (projectIdRef.current === id) select("", "");
