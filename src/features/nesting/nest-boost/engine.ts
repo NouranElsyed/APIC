@@ -45,7 +45,13 @@ export interface Sheet {
    *  cut less material / scrap. Undefined = use the stock sheet size. */
   W?: number;
   H?: number;
+  /** One part that is as big as the whole sheet (it does not fit inside the edge margins, but fits the raw sheet).
+   *  Nothing else is on this sheet, so neither the edge margin nor the spacing applies: margin = 0. */
+  solo?: boolean;
 }
+
+/** Edge margin that applies to this sheet: 0 for a part-sized (solo) sheet, the setting otherwise. */
+export const mgOf = (sh: Sheet, S: Settings): number => (sh.solo ? 0 : S.mg);
 
 /** The extent (max x, max y) reached by any part currently on the sheet. */
 export function sheetExtent(sh: Sheet): { w: number; h: number } {
@@ -62,7 +68,8 @@ export function sheetExtent(sh: Sheet): { w: number; h: number } {
 /** Smallest physical size this sheet can be trimmed to without cutting into its parts. */
 export function minSheetSize(sh: Sheet, S: Settings): { w: number; h: number } {
   const e = sheetExtent(sh);
-  return { w: Math.round(e.w + S.mg), h: Math.round(e.h + S.mg) };
+  const m = mgOf(sh, S);
+  return { w: Math.round(e.w + m), h: Math.round(e.h + m) };
 }
 
 /**
@@ -833,6 +840,22 @@ export interface OptimizeOptions {
   onStatus: (text: string) => void;
 }
 
+/**
+ * Rotation that lets `g` sit on a bare sheet, when the part does NOT fit inside the sheet's edge margins but does fit
+ * the raw sheet (W x H). null = the part is not that big (normal nesting), or it fits no rotation at all.
+ */
+export function soloRot(g: Group, S: Settings, rots: number[]): number | null {
+  const uw = S.W - 2 * S.mg;
+  const uh = S.H - 2 * S.mg;
+  const fits = (r: number, w: number, h: number) => {
+    const b = rotBox(g, r);
+    return b.w <= w + 0.01 && b.h <= h + 0.01;
+  };
+  if (rots.some((r) => fits(r, uw, uh))) return null;
+  const r = rots.find((q) => fits(q, S.W, S.H));
+  return r === undefined ? null : r;
+}
+
 /** Returns null when there is nothing to nest (all quantities are 0). */
 export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<OptResult | null> {
   const { S } = o;
@@ -884,11 +907,32 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
   };
 
   for (const { th, material } of lots) {
-    const sub = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
+    const lot = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
+    // A part as big as the sheet (too big for the margins, but it fits the raw sheet) gets a sheet of its own with
+    // NO edge margin and NO spacing: it is the only thing on that sheet, so there is nothing to keep clear of.
+    const sub: Group[] = [];
+    for (const g of lot) {
+      const r = soloRot(g, S, R);
+      if (r === null) {
+        sub.push(g);
+        continue;
+      }
+      const b = rotBox(g, r);
+      const sh: Sheet = {
+        items: [{ g, rot: r, x: (S.W - b.w) / 2, y: (S.H - b.h) / 2 }],
+        th,
+        material,
+        used: 0,
+        solo: true,
+      };
+      done.push(sh);
+    }
+    if (done.length) o.onBest(cur(null));
+    if (!sub.length) continue;
     // existing sheets of this lot that still have their full stock size can take more parts
     const seedIdx: number[] = [];
     if (o.fillExisting !== false) baseSheets.forEach((x, i) => {
-      if ((x.th || 0) === th && (x.material || "") === material && x.W === undefined && x.H === undefined) seedIdx.push(i);
+      if ((x.th || 0) === th && (x.material || "") === material && x.W === undefined && x.H === undefined && !x.solo) seedIdx.push(i);
     });
     const seeds = seedIdx.map((i) => seedOf(S, baseSheets[i]));
     const t0 = performance.now();
@@ -1115,7 +1159,8 @@ function gridBad(S: Settings, sh: Sheet, it: Item, x: number, y: number, oth: Ot
   const H = sh.H ?? S.H;
   const GW = Math.floor((W - 2 * S.mg + S.gp) / S.cell);
   const GH = Math.floor((H - 2 * S.mg + S.gp) / S.cell);
-  if (ax + cs.minC < 0 || ay + cs.minR < 0 || ax + cs.maxC > GW - 1 || ay + cs.maxR > GH - 1) return true;
+  // a solo sheet has no margin / spacing grid: its bounds are checked on the bounding box (isBad / groupBad)
+  if (!sh.solo && (ax + cs.minC < 0 || ay + cs.minR < 0 || ax + cs.maxC > GW - 1 || ay + cs.maxR > GH - 1)) return true;
   const reach = S.gp + 2 * S.cell;
   const b0 = bbox(sides(it).o);
   const b: BBox = [b0[0] + x - it.x, b0[1] + y - it.y, b0[2] + x - it.x, b0[3] + y - it.y];
@@ -1226,7 +1271,8 @@ export function isBad(sel: Sel, S: Settings) {
   const b = bbox(A.o);
   const W = sel.sh.W ?? S.W;
   const H = sel.sh.H ?? S.H;
-  if (b[0] < S.mg - 0.01 || b[1] < S.mg - 0.01 || b[2] > W - S.mg + 0.01 || b[3] > H - S.mg + 0.01) return true;
+  const mg = mgOf(sel.sh, S);
+  if (b[0] < mg - 0.01 || b[1] < mg - 0.01 || b[2] > W - mg + 0.01 || b[3] > H - mg + 0.01) return true;
   // same spacing rule as the optimiser: never share a grid cell with another part's spacing zone
   return gridBad(S, sel.sh, sel.it, sel.it.x, sel.it.y, sel.oth);
 }
@@ -1269,6 +1315,7 @@ export function transfer(sel: Sel, S: Settings, sh: Sheet, idx: number, m: Pt): 
   const it = sel.it;
   if ((sh.th || 0) !== (sel.sh.th || 0)) return false;
   if ((sh.material || "") !== (sel.sh.material || "")) return false;
+  if (sh.solo && sh !== sel.sh) return false; // a part-sized sheet takes nothing else
   if (inGhost(sel)) {
     // first contact with a sheet: hold the part by the centre of its bounding box
     const b = bbox(sides(it).o);
@@ -1417,9 +1464,10 @@ function groupBad(ms: MultiSel, S: Settings, dx: number, dy: number): boolean {
   const d = ms.drag as NonNullable<MultiSel["drag"]>;
   const W = ms.sh.W ?? S.W;
   const H = ms.sh.H ?? S.H;
+  const mg = mgOf(ms.sh, S);
   for (let i = 0; i < ms.items.length; i++) {
     const b = d.obb[i];
-    if (b[0] + dx < S.mg - 0.01 || b[1] + dy < S.mg - 0.01 || b[2] + dx > W - S.mg + 0.01 || b[3] + dy > H - S.mg + 0.01) return true;
+    if (b[0] + dx < mg - 0.01 || b[1] + dy < mg - 0.01 || b[2] + dx > W - mg + 0.01 || b[3] + dy > H - mg + 0.01) return true;
     if (gridBad(S, ms.sh, ms.items[i], d.base[i][0] + dx, d.base[i][1] + dy, d.oth)) return true;
   }
   return false;
@@ -1507,6 +1555,7 @@ export function cancelGroupDrag(ms: MultiSel) {
 export function transferGroup(ms: MultiSel, S: Settings, sh: Sheet, idx: number, m: Pt): boolean {
   if (sh === ms.sh) return true;
   if ((sh.th || 0) !== (ms.sh.th || 0) || (sh.material || "") !== (ms.sh.material || "")) return false;
+  if (sh.solo) return false; // a part-sized sheet takes nothing else
   const bs = ms.items.map((it) => bbox(sides(it).o));
   const x0 = Math.min(...bs.map((q) => q[0]));
   const y0 = Math.min(...bs.map((q) => q[1]));
@@ -1671,7 +1720,8 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
   c.lineWidth = u / k;
   c.strokeStyle = "#94a3b8";
   c.setLineDash([6 * u / k, 4 * u / k]);
-  c.strokeRect(S.mg, S.mg, W - 2 * S.mg, H - 2 * S.mg);
+  const dmg = mgOf(sh, S);
+  c.strokeRect(dmg, dmg, W - 2 * dmg, H - 2 * dmg);
   c.setLineDash([]);
   for (const it of sh.items) {
     c.fillStyle = selBad && selItem === it ? "#ef4444" : partColor(it.g);
@@ -1782,7 +1832,7 @@ export function sheetStats(sh: Sheet, S: Settings) {
   const H = sh.H ?? S.H;
   return {
     parts: sh.items.reduce((s, x) => s + (x.g.n || 1), 0),
-    usedLength: Math.round(mx + S.mg),
+    usedLength: Math.round(mx + mgOf(sh, S)),
     utilization: (100 * a) / (W * H),
   };
 }
