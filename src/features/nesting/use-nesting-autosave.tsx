@@ -1,17 +1,19 @@
 "use client";
 import * as React from "react";
 import { CheckCircle2, CloudOff, Loader2 } from "lucide-react";
+import { useTakeoffProject } from "@/features/takeoff/project-context";
 
 export type AutosaveState = "idle" | "loading" | "saving" | "saved" | "error";
 
 interface Options {
   kind: "2D" | "1D";
-  projectId: string;
-  /** True once if this project was just auto-created for the current import (nothing to load yet). */
-  consumeFresh: (projectId: string, kind: string) => boolean;
+  /** What to save into: a project id, or `h:<id>` for an entry of the user's nesting history ("" = nothing open). */
+  workspaceId: string;
+  /** True once if this workspace was just created for the current import (nothing to load yet). */
+  consumeFresh: (workspaceId: string, kind: string) => boolean;
   /** Reads the latest state to store. */
   capture: () => unknown;
-  /** Puts a stored snapshot back; `null` = this project has none yet (start empty). */
+  /** Puts a stored snapshot back; `null` = this workspace has none yet (start empty). */
   restore: (data: unknown | null) => void;
   /** Returns true while the user is mid-gesture (holding a part...) — the save waits. */
   busy?: () => boolean;
@@ -21,12 +23,20 @@ interface Options {
 
 const DEBOUNCE_MS = 1500;
 
+/** `h:<id>` addresses a history entry, anything else is a project id. */
+const scopeParam = (id: string) => (id.startsWith("h:") ? { historyId: id.slice(2) } : { projectId: id });
+const scopeQuery = (id: string) => {
+  const [k, v] = Object.entries(scopeParam(id))[0];
+  return `${k}=${encodeURIComponent(v)}`;
+};
+
 /**
- * Loads the workspace of the selected project and then auto-saves every change (debounced) to
- * /api/nesting/workspace, so work started with no project survives a refresh and can be reopened later.
+ * Loads the workspace of the open project / history entry and then auto-saves every change
+ * (debounced) to /api/nesting/workspace, so work survives a refresh and can be reopened later.
  */
 export function useNestingAutosave(opts: Options) {
-  const { kind, projectId, deps } = opts;
+  const { kind, workspaceId: projectId, deps } = opts; // `projectId` below = the workspace id (project or history)
+  const { registerFlusher } = useTakeoffProject();
   const latest = React.useRef(opts);
   React.useEffect(() => {
     latest.current = opts; // always the newest capture/restore closures, without re-running the effects below
@@ -44,7 +54,8 @@ export function useNestingAutosave(opts: Options) {
     if (!pid || loadedFor.current !== pid) return;
     const data = JSON.stringify(latest.current.capture());
     if (data === lastBody.current) { dirty.current = false; return; }
-    const body = `{"projectId":${JSON.stringify(pid)},"kind":"${kind}","data":${data}}`;
+    const scope = JSON.stringify(scopeParam(pid)).slice(1, -1); // "projectId":"…"  or  "historyId":"…"
+    const body = `{${scope},"kind":"${kind}","data":${data}}`;
     setState("saving");
     try {
       const res = await fetch("/api/nesting/workspace", {
@@ -56,12 +67,20 @@ export function useNestingAutosave(opts: Options) {
       if (!res.ok) throw new Error(String(res.status));
       lastBody.current = data;
       dirty.current = false;
+      if (loadedFor.current !== pid) return; // the user already moved on to another workspace
       setSavedAt(Date.now());
       setState("saved");
     } catch {
-      setState("error");
+      if (loadedFor.current === pid) setState("error");
     }
   }, [kind]);
+
+  // "Save as project" asks every open tool to write its pending changes first.
+  const flushNow = React.useCallback(async () => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    if (loadedFor.current) await save(loadedFor.current);
+  }, [save]);
+  React.useEffect(() => registerFlusher(flushNow), [registerFlusher, flushNow]);
 
   // Load when the project changes (flush the previous project's pending changes first).
   React.useEffect(() => {
@@ -69,12 +88,16 @@ export function useNestingAutosave(opts: Options) {
     prevProject.current = projectId;
     loadedFor.current = "";
     lastBody.current = "";
-    if (!projectId) return;
+    if (!projectId) {
+      // the open project / history entry was closed or deleted: empty the tool, ready for a new import
+      if (prev) { latest.current.restore(null); setState("idle"); setSavedAt(null); }
+      return;
+    }
     if (latest.current.consumeFresh(projectId, kind)) { loadedFor.current = projectId; return; }
 
     let cancelled = false;
     setState("loading");
-    fetch(`/api/nesting/workspace?projectId=${encodeURIComponent(projectId)}&kind=${kind}`)
+    fetch(`/api/nesting/workspace?${scopeQuery(projectId)}&kind=${kind}`)
       .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
       .then((json: { data: unknown | null }) => {
         if (cancelled) return;
@@ -82,11 +105,11 @@ export function useNestingAutosave(opts: Options) {
           latest.current.restore(json.data);
           lastBody.current = JSON.stringify(json.data);
         } else if (prev) {
-          latest.current.restore(null); // switching to a project without a nest yet: start clean
+          latest.current.restore(null); // switching to a workspace without a nest yet: start clean
         }
         loadedFor.current = projectId;
         setState("idle");
-        if (!json.data && !prev) { dirty.current = true; void save(projectId); } // adopt work done before choosing a project
+        if (!json.data && !prev) { dirty.current = true; void save(projectId); } // adopt work done before choosing a project / entry
       })
       .catch(() => { if (!cancelled) setState("error"); });
 

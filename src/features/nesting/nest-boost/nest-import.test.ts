@@ -41,14 +41,20 @@ describe("nest DXF import", () => {
     expect(splitNestLoops(r.loops, 1).sheets).toHaveLength(0);
   });
 
-  it("reports shapes that cannot be closed (duplicate / overlapping lines)", () => {
+  it("closes shapes with duplicate / overlapping lines, and still reports a shape with a real gap", () => {
     const line = (x1: number, y1: number, x2: number, y2: number) => `0\nLINE\n8\n0\n10\n${x1}\n20\n${y1}\n11\n${x2}\n21\n${y2}\n`;
     const box = (x: number, extra = "") => line(x, 0, x + 100, 0) + line(x + 100, 0, x + 100, 50) + line(x + 100, 50, x, 50) + line(x, 50, x, 0) + extra;
     const dxf = (b: string) => `0\nSECTION\n2\nENTITIES\n${b}0\nENDSEC\n0\nEOF\n`;
     expect(parseDXF(dxf(box(0) + box(300))).unclosed).toHaveLength(0);
-    const r = parseDXF(dxf(box(0, line(0, 50, 100, 50)) + box(300) + box(600, line(600, 0, 650, 0))));
+    // a doubled line and a line lying on top of another no longer stop the contour from closing
+    const dup = parseDXF(dxf(box(0, line(0, 50, 100, 50)) + box(300) + box(600, line(600, 0, 650, 0))));
+    expect(dup.loops).toHaveLength(3);
+    expect(dup.unclosed).toHaveLength(0);
+    // a side that is missing in the middle (a 20 mm gap) is still reported, not silently dropped
+    const gap = (x: number) => line(x, 0, x + 40, 0) + line(x + 60, 0, x + 100, 0) + line(x + 100, 0, x + 100, 50) + line(x + 100, 50, x, 50) + line(x, 50, x, 0);
+    const r = parseDXF(dxf(gap(0) + box(300)));
     expect(r.loops).toHaveLength(1);
-    expect(r.unclosed).toHaveLength(2);
+    expect(r.unclosed).toHaveLength(1);
   });
 
   it("imports parts as big as the sheet and parts whose boxes overlap (interlocking)", () => {

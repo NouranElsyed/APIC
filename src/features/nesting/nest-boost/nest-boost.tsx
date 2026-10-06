@@ -810,7 +810,7 @@ function CutSizeInput({ value, max, onCommit }: { value: number; max: number; on
 }
 
 export function NestBoost() {
-  const { projectId, projects, nestingQueue, clearNestingQueue, ensureProject, consumeFresh } = useTakeoffProject();
+  const { projectId, nestingQueue, clearNestingQueue, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   // Takeoff part ids already imported into this session, so pressing
@@ -1018,20 +1018,21 @@ export function NestBoost() {
   };
 
   const unclosedWarning = (name: string, n: number) =>
-    `\n⚠ ${name}: ${n} part(s) could NOT be imported — their lines don't close into a contour (usually duplicate / overlapping lines).` +
-    `\n   Fix in AutoCAD: EXPLODE → ALL, then OVERKILL → ALL (keep the default options), save the DXF and import it again.\n`;
+    `\n⚠ ${name}: ${n} part(s) could NOT be imported — their lines don't close into a contour. Duplicate / overlapping lines and small tails past a corner are cleaned up automatically, so this is a real gap or a missing line.` +
+    `\n   Fix in AutoCAD: close the gap (JOIN / PEDIT), save the DXF and import it again.\n`;
 
   async function handleFiles(files: File[]) {
     if (!files.length) return;
-    // Read every file first, so no project gets created for files that contain nothing usable.
+    // Read every file first, so no history entry gets created for files that contain nothing usable.
     const parsedFiles: { f: File; r: ReturnType<typeof parseDXF> }[] = [];
     for (const f of files) parsedFiles.push({ f, r: parseDXF(await f.text()) });
-    // No project open: the import becomes a new project "<user> — <date>" that is auto-saved from now on.
-    if (!projectId && parsedFiles.some((x) => x.r.loops.length)) {
+    // Nothing open: the import starts a new entry in the user's history (name + date), auto-saved from now on.
+    if (!workspaceId && parsedFiles.some((x) => x.r.loops.length)) {
       try {
-        await ensureProject();
+        const first = parsedFiles.find((x) => x.r.loops.length)!.f.name.replace(/\.dxf$/i, "");
+        await ensureWorkspace(parsedFiles.length > 1 ? `${first} +${parsedFiles.length - 1}` : first);
       } catch (err) {
-        toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+        toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
       }
     }
     let gs = groupsRef.current;
@@ -1049,7 +1050,7 @@ export function NestBoost() {
     const bad = parsedFiles.filter((x) => x.r.unclosed.length);
     for (const { f, r } of bad) text += unclosedWarning(f.name, r.unclosed.length);
     setMsg(text);
-    if (bad.length) toast.warning(`${bad.reduce((n, x) => n + x.r.unclosed.length, 0)} part(s) were NOT imported — run OVERKILL in AutoCAD (see the message on the left)`, { duration: 12000 });
+    if (bad.length) toast.warning(`${bad.reduce((n, x) => n + x.r.unclosed.length, 0)} part(s) were NOT imported — their outline has a gap (see the message on the left)`, { duration: 12000 });
   }
 
   /**
@@ -1083,11 +1084,11 @@ export function NestBoost() {
       toast.error("Check the sheet settings (length, width, margin, spacing).");
       return;
     }
-    if (!projectId) {
+    if (!workspaceId) {
       try {
-        await ensureProject();
+        await ensureWorkspace(f.name.replace(/\.dxf$/i, ""));
       } catch (err) {
-        toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+        toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
       }
     }
     const added = addNestParts(groupsRef.current, nest.sheets, f.name, counters.current, { th, material: "" });
@@ -1105,7 +1106,7 @@ export function NestBoost() {
         (r.unclosed.length ? unclosedWarning(f.name, r.unclosed.length) : "") +
         "\nThe nest was rebuilt exactly as drawn; parts can still be moved by hand.",
     );
-    if (r.unclosed.length) toast.warning(`${r.unclosed.length} part(s) were NOT imported — run OVERKILL in AutoCAD (see the message on the left)`, { duration: 12000 });
+    if (r.unclosed.length) toast.warning(`${r.unclosed.length} part(s) were NOT imported — their outline has a gap (see the message on the left)`, { duration: 12000 });
     else toast.success(`Imported nest: ${added.sheets.length} sheet(s), ${added.count} part(s)`);
   }
 
@@ -1475,7 +1476,7 @@ export function NestBoost() {
   // ---- Auto-save of the whole 2D workspace (parts, settings, result, saved nests) to the selected project.
   const autosave = useNestingAutosave({
     kind: "2D",
-    projectId,
+    workspaceId,
     consumeFresh,
     capture: () =>
       encodeSnapshot({
@@ -1534,7 +1535,7 @@ export function NestBoost() {
     if (!result || !resS) return null;
     const S = resS;
     return {
-      projectName: projects.find((p) => p.id === projectId)?.name,
+      projectName: workspaceLabel || undefined,
       result,
       S,
       groups: groupsRef.current,
@@ -1560,7 +1561,7 @@ export function NestBoost() {
         return { dataUrl: out.toDataURL("image/png"), width: out.width, height: out.height };
       },
     };
-  }, [result, resS, projects, projectId]);
+  }, [result, resS, workspaceLabel]);
 
   // Lets the combined 1D+2D report button reach this tool's latest result.
   React.useEffect(() => {
@@ -1813,10 +1814,10 @@ export function NestBoost() {
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import</h3>
           <div className="mb-2">
-            {projectId ? (
-              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={projects.find((p) => p.id === projectId)?.name} />
+            {workspaceId ? (
+              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
             ) : (
-              <p className="text-xs text-muted-foreground">No project selected — importing a DXF creates a new project (your name + date) and auto-saves into it.</p>
+              <p className="text-xs text-muted-foreground">No project selected — importing a DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
             )}
           </div>
           <label

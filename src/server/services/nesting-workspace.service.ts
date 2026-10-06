@@ -15,16 +15,17 @@ async function getOrCreateUnassignedCustomer() {
 }
 
 /**
- * Creates the project used when somebody imports a DXF / CSV in the Nesting tabs
- * without having opened a project first. Named "<user> — <date time>" so everyone
- * can find their own work; the user can later rename it and set the real client.
+ * Creates an (empty) project for the nesting tabs. The client is the placeholder "Unassigned"
+ * customer — Project.customerId is mandatory — and the user can change it later.
  *
- * `stamp` is the date/time as the USER sees it (their local clock), sent by the browser.
+ * `name` is what the user typed; without one the project is called "<user> — <date time>"
+ * (`stamp` = the date/time as the USER sees it, sent by the browser).
  */
-export async function createAutoNestingProject(userId: string, userName: string, stamp?: string) {
+export async function createAutoNestingProject(userId: string, userName: string, stamp?: string, name?: string) {
   const customer = await getOrCreateUnassignedCustomer();
   const now = new Date();
   const label = (stamp && stamp.trim().slice(0, 40)) || `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`;
+  const projectName = name?.trim() ? name.trim().slice(0, 120) : `${userName} — ${label}`;
   const base = `NEST-${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
 
   // Project.number is unique: retry with a random suffix on the (very unlikely) clash.
@@ -34,8 +35,8 @@ export async function createAutoNestingProject(userId: string, userName: string,
       const project = await prisma.project.create({
         data: {
           number,
-          name: `${userName} — ${label}`,
-          description: "Auto-created from a DXF / CSV import in the Nesting tab. Rename it and set the client when ready.",
+          name: projectName,
+          description: "Created from the Nesting tabs. Set the client when ready.",
           customerId: customer.id,
           stage: "TENDERING",
           status: "UNDER_STUDY",
@@ -43,7 +44,7 @@ export async function createAutoNestingProject(userId: string, userName: string,
         },
         select: { id: true, number: true, name: true },
       });
-      await logActivity({ userId, action: "CREATE", entity: "PROJECT", entityId: project.id, detail: `${project.number} (auto, nesting import)` });
+      await logActivity({ userId, action: "CREATE", entity: "PROJECT", entityId: project.id, detail: `${project.number} (nesting)` });
       return project;
     } catch (err) {
       const code = (err as { code?: string }).code;

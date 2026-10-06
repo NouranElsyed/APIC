@@ -2,9 +2,8 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FolderKanban } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { TakeoffProjectProvider, useTakeoffProject } from "./project-context";
+import { TakeoffProjectProvider } from "./project-context";
+import { WorkspaceBar } from "./workspace-bar";
 
 function activeTabClass(isActive: boolean) {
   return isActive
@@ -18,7 +17,6 @@ function TakeoffTopBar() {
   const isScrap = pathname?.startsWith("/takeoff/scrap-material") ?? false;
   const isSteelPricing = pathname?.startsWith("/takeoff/steel-pricing") ?? false;
   const isStandard = !isNesting && !isScrap && !isSteelPricing;
-  const { projects, projectId, setProjectId } = useTakeoffProject();
 
   return (
     <div className="space-y-6">
@@ -37,24 +35,7 @@ function TakeoffTopBar() {
         </Link>
       </div>
 
-      <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <FolderKanban className="h-5 w-5" />
-          </div>
-          <div className="min-w-72">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Project</label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </div>
+      <WorkspaceBar />
     </div>
   );
 }

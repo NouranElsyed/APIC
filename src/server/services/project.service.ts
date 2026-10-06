@@ -63,6 +63,14 @@ export async function updateProject(id: string, data: ProjectInput, userId: stri
   return project;
 }
 
+export async function renameProject(id: string, name: string, userId: string) {
+  const exists = await prisma.project.findUnique({ where: { id }, select: { id: true } });
+  if (!exists) return null;
+  const project = await prisma.project.update({ where: { id }, data: { name }, select: { id: true, name: true, number: true } });
+  await logActivity({ userId, action: "UPDATE", entity: "PROJECT", entityId: id, detail: `${project.number} (renamed)` });
+  return project;
+}
+
 export async function deleteProject(id: string, userId: string) {
   const project = await prisma.project.delete({ where: { id } });
   await logActivity({ userId, action: "DELETE", entity: "PROJECT", entityId: id, detail: project.number });

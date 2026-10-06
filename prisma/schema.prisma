@@ -89,6 +89,7 @@ model User {
   uploadedDxfFiles PartDxf[]       @relation("PartDxfUploadedBy")
   createdNestingJobs NestingJob[]  @relation("NestingJobCreatedBy")
   createdNestingRuns NestingRun[]  @relation("NestingRunCreatedBy")
+  nestingHistory   NestingHistory[]
 
   @@map("users")
 }
@@ -785,4 +786,30 @@ model NestingWorkspace {
 
   @@unique([projectId, kind])
   @@map("nesting_workspaces")
+}
+
+
+// ----------------------------------------------------------------------------
+// Nesting history (per user)
+//
+// Every DXF / CSV import made in the Nesting tabs while no project is open is auto-saved here
+// instead of creating a new project each time. The user opens an entry later, renames or deletes it,
+// and — when the work is done — saves it as a real project (savedProjectId remembers which one;
+// there is deliberately no foreign key so deleting that project never touches the history).
+//   data2D / data1D = the same JSON snapshots NestingWorkspace stores per project.
+// ----------------------------------------------------------------------------
+model NestingHistory {
+  id             String   @id @default(cuid())
+  name           String
+  data2D         Json?
+  data1D         Json?
+  savedProjectId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@map("nesting_history")
 }

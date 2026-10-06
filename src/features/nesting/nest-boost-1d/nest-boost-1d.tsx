@@ -185,7 +185,7 @@ export function NestBoost1D() {
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
 
-  const { projectId, projects, nestingQueue1D, clearNestingQueue1D, ensureProject, consumeFresh } = useTakeoffProject();
+  const { projectId, nestingQueue1D, clearNestingQueue1D, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState("");
@@ -269,7 +269,7 @@ export function NestBoost1D() {
       const scale = dxfUnits === "auto" ? null : Number(dxfUnits);
       const parsedDxf: { f: File; r: ReturnType<typeof dxfToPiece> }[] = [];
       for (const f of files) parsedDxf.push({ f, r: dxfToPiece(await f.text(), f.name, scale) });
-      await ensureProjectFor(parsedDxf.some((x) => !("error" in x.r)));
+      await ensureWorkspaceFor(parsedDxf.some((x) => !("error" in x.r)), parsedDxf.find((x) => !("error" in x.r))?.f.name);
       let next = piecesRef.current;
       const lines: string[] = [];
       let added = 0;
@@ -295,20 +295,20 @@ export function NestBoost1D() {
     }
   }
 
-  /** No project open: an import with usable parts becomes a new project "<user> — <date>", auto-saved from now on. */
-  async function ensureProjectFor(hasParts: boolean) {
-    if (projectId || !hasParts) return;
+  /** Nothing open: an import with usable parts starts a new entry in the user's history (name + date), auto-saved from now on. */
+  async function ensureWorkspaceFor(hasParts: boolean, fileName?: string) {
+    if (workspaceId || !hasParts) return;
     try {
-      await ensureProject();
+      await ensureWorkspace(fileName?.replace(/\.(dxf|csv)$/i, ""));
     } catch (err) {
-      toast.error(`${err instanceof Error ? err.message : "Could not create a project"} — this import will not be auto-saved`);
+      toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
     }
   }
 
   // ---- Auto-save of the whole 1D workspace (parts, sources, settings, result) to the selected project.
   const autosave = useNestingAutosave({
     kind: "1D",
-    projectId,
+    workspaceId,
     consumeFresh,
     capture: () => ({
       v: 1, pieces: piecesRef.current, sources: sourcesRef.current, cfg, result, resS,
@@ -333,7 +333,7 @@ export function NestBoost1D() {
       setResult(ok ? d!.result ?? null : null);
       setResS(ok ? d!.resS ?? null : null);
       setStatus("");
-      setImportMsg(ok ? `Restored the saved nest of this project (${pcs.length} part row(s)).` : "");
+      setImportMsg(ok ? `Restored the saved nest (${pcs.length} part row(s)).` : "");
     },
     deps: [pieces, sources, cfg, result, resS],
   });
@@ -343,7 +343,7 @@ export function NestBoost1D() {
     const lines: string[] = [];
     const parsedCsv: { f: File; r: ReturnType<typeof parsePartsCsv> }[] = [];
     for (const f of files) parsedCsv.push({ f, r: parsePartsCsv(await f.text()) });
-    await ensureProjectFor(parsedCsv.some((x) => x.r.pieces.length > 0));
+    await ensureWorkspaceFor(parsedCsv.some((x) => x.r.pieces.length > 0), parsedCsv.find((x) => x.r.pieces.length > 0)?.f.name);
     let next: Piece1D[] = piecesRef.current;
     for (const { f, r } of parsedCsv) {
       for (const p of r.pieces) next = addPiece(next, p, pieceCounters.current);
@@ -503,14 +503,14 @@ export function NestBoost1D() {
     if (!result || !resS) return null;
     const S = resS;
     return {
-      projectName: projects.find((p) => p.id === projectId)?.name,
+      projectName: workspaceLabel || undefined,
       result,
       S,
       pieces,
       sources,
       renderBar: (i) => renderBarPng(result.layouts[i].bars[0], S),
     };
-  }, [result, resS, pieces, sources, projects, projectId]);
+  }, [result, resS, pieces, sources, workspaceLabel]);
 
   // Lets the combined 1D+2D report button reach this tool's latest result.
   React.useEffect(() => {
@@ -542,10 +542,10 @@ export function NestBoost1D() {
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import parts</h3>
           <div className="mb-2">
-            {projectId ? (
-              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={projects.find((p) => p.id === projectId)?.name} />
+            {workspaceId ? (
+              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
             ) : (
-              <p className="text-xs text-muted-foreground">No project selected — importing a CSV / DXF creates a new project (your name + date) and auto-saves into it.</p>
+              <p className="text-xs text-muted-foreground">No project selected — importing a CSV / DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
             )}
           </div>
           <label

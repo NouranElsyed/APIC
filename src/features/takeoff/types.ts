@@ -51,3 +51,13 @@ export interface ProjectOption {
   name: string;
   number: string;
 }
+
+/** One entry of the signed-in user's nesting history (an import saved automatically, not yet a project). */
+export interface HistoryEntry {
+  id: string;
+  name: string;
+  /** Set once the entry was saved as a project. */
+  savedProjectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}

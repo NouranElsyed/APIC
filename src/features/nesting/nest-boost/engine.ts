@@ -191,6 +191,171 @@ function chain(paths: Pt[][], dropped?: Pt[][]): Pt[][] {
   return loops;
 }
 
+/**
+ * Clean-up of the loose LINE / ARC / open-polyline pieces BEFORE they are chained into contours
+ * (what people otherwise do by hand with OVERKILL / TRIM in AutoCAD):
+ *   1. every piece is cut where another one ends on it or crosses it (T-junctions, lines that run
+ *      past a corner = "tails"),
+ *   2. pieces that now coincide (duplicate / partly overlapping lines) collapse into one,
+ *   3. dangling pieces (a whisker hanging off a corner) are removed, again and again.
+ * What is left goes to `chain`. A group of pieces that disappears completely (an open shape such as
+ * a "U") is returned in `lost`, so it is still reported as "could not be closed".
+ */
+function tidyOpenPaths(paths: Pt[][]): { paths: Pt[][]; lost: Pt[][] } {
+  let segs: [Pt, Pt][] = [];
+  for (const p of paths) for (let i = 0; i + 1 < p.length; i++) if (dist(p[i], p[i + 1]) > 1e-9) segs.push([p[i], p[i + 1]]);
+  if (!segs.length || segs.length > 200000) return { paths, lost: [] };
+
+  // ---- uniform grids (segments, and their end points) so the cutting test is not O(n²)
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [a, b] of segs) {
+    x0 = Math.min(x0, a[0], b[0]); y0 = Math.min(y0, a[1], b[1]);
+    x1 = Math.max(x1, a[0], b[0]); y1 = Math.max(y1, a[1], b[1]);
+  }
+  // TOL is in drawing units; for a drawing in metres 0.05 would swallow a whole 5 cm part, so the
+  // clean-up tolerance never exceeds 0.1 % of the drawing size.
+  const tol = Math.min(TOL, 1e-3 * Math.hypot(x1 - x0, y1 - y0));
+  segs = segs.filter(([a, b]) => dist(a, b) > tol);
+  if (!segs.length) return { paths, lost: [] };
+  const cell = Math.max(tol * 4, Math.hypot(x1 - x0, y1 - y0) / 200);
+  const ci = (v: number, o: number) => Math.floor((v - o) / cell);
+  const key = (ix: number, iy: number) => (ix + 2) * 1024 + (iy + 2);
+  const segGrid = new Map<number, number[]>();
+  const ptGrid = new Map<number, Pt[]>();
+  const push = <T,>(m: Map<number, T[]>, k: number, v: T) => { const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); };
+  segs.forEach(([a, b], i) => {
+    for (let ix = ci(Math.min(a[0], b[0]) - tol, x0); ix <= ci(Math.max(a[0], b[0]) + tol, x0); ix++)
+      for (let iy = ci(Math.min(a[1], b[1]) - tol, y0); iy <= ci(Math.max(a[1], b[1]) + tol, y0); iy++) push(segGrid, key(ix, iy), i);
+    push(ptGrid, key(ci(a[0], x0), ci(a[1], y0)), a);
+    push(ptGrid, key(ci(b[0], x0), ci(b[1], y0)), b);
+  });
+
+  // ---- 1. cut every segment at junctions / crossings
+  const pieces: [Pt, Pt][] = [];
+  const seen = new Int32Array(segs.length);
+  segs.forEach(([a, b], i) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy), len2 = len * len;
+    const cuts: { t: number; p: Pt }[] = [];
+    const add = (t: number, p: Pt) => { if (t * len > tol && (1 - t) * len > tol) cuts.push({ t, p }); };
+    const gx0 = ci(Math.min(a[0], b[0]) - tol, x0), gx1 = ci(Math.max(a[0], b[0]) + tol, x0);
+    const gy0 = ci(Math.min(a[1], b[1]) - tol, y0), gy1 = ci(Math.max(a[1], b[1]) + tol, y0);
+    for (let ix = gx0; ix <= gx1; ix++)
+      for (let iy = gy0; iy <= gy1; iy++) {
+        for (const q of ptGrid.get(key(ix, iy)) ?? []) {
+          const t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2;
+          if (t <= 0 || t >= 1) continue;
+          if (Math.hypot(q[0] - (a[0] + t * dx), q[1] - (a[1] + t * dy)) <= tol) add(t, q);
+        }
+        for (const j of segGrid.get(key(ix, iy)) ?? []) {
+          if (j === i || seen[j] === i + 1) continue;
+          seen[j] = i + 1;
+          const [c, d] = segs[j];
+          const ex = d[0] - c[0], ey = d[1] - c[1];
+          const lj = Math.hypot(ex, ey);
+          const den = dx * ey - dy * ex;
+          if (Math.abs(den) < 1e-12 * len * lj) continue; // parallel / collinear: handled by the end-point test
+          const t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / den;
+          const u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / den;
+          if (u >= -tol / lj && u <= 1 + tol / lj) add(t, [a[0] + t * dx, a[1] + t * dy]);
+        }
+      }
+    if (!cuts.length) { pieces.push([a, b]); return; }
+    cuts.sort((m, n) => m.t - n.t);
+    let prev = a, prevT = 0;
+    for (const c of cuts) {
+      if ((c.t - prevT) * len <= tol) continue; // the same cut found twice
+      pieces.push([prev, c.p]);
+      prev = c.p;
+      prevT = c.t;
+    }
+    pieces.push([prev, b]);
+  });
+
+  // ---- 2. merge nearby end points into nodes, collapse duplicate pieces
+  const nodes: Pt[] = [];
+  const byCell = new Map<number, number[]>();
+  const nodeOf = (p: Pt): number => {
+    const ix = ci(p[0], x0), iy = ci(p[1], y0);
+    for (let u = ix - 1; u <= ix + 1; u++)
+      for (let v = iy - 1; v <= iy + 1; v++)
+        for (const id of byCell.get(key(u, v)) ?? []) if (dist(nodes[id], p) <= tol) return id;
+    nodes.push(p);
+    push(byCell, key(ix, iy), nodes.length - 1);
+    return nodes.length - 1;
+  };
+  const edgeKeys = new Set<string>();
+  const edges: { a: number; b: number }[] = [];
+  for (const [p, q] of pieces) {
+    const a = nodeOf(p), b = nodeOf(q);
+    if (a === b) continue;
+    const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (edgeKeys.has(k)) continue;
+    edgeKeys.add(k);
+    edges.push({ a, b });
+  }
+
+  // ---- 3. prune dangling pieces
+  const alive = edges.map(() => true);
+  const inc: number[][] = nodes.map(() => []);
+  edges.forEach((e, id) => { inc[e.a].push(id); inc[e.b].push(id); });
+  const deg = inc.map((l) => l.length);
+  const stack: number[] = [];
+  deg.forEach((d, n) => { if (d === 1) stack.push(n); });
+  while (stack.length) {
+    const n = stack.pop() as number;
+    if (deg[n] !== 1) continue;
+    const id = inc[n].find((e) => alive[e]);
+    if (id === undefined) continue;
+    alive[id] = false;
+    deg[n] = 0;
+    const o = edges[id].a === n ? edges[id].b : edges[id].a;
+    if (--deg[o] === 1) stack.push(o);
+  }
+
+  // pruned pieces that took a WHOLE shape with them (nothing of it survives) are reported as unclosed
+  const lost: Pt[][] = [];
+  const parent = nodes.map((_, i) => i);
+  const find = (n: number): number => (parent[n] === n ? n : (parent[n] = find(parent[n])));
+  edges.forEach((e, id) => { if (!alive[id]) parent[find(e.a)] = find(e.b); });
+  const comps = new Map<number, { pts: Pt[]; attached: boolean }>();
+  edges.forEach((e, id) => {
+    if (alive[id]) return;
+    const r = find(e.a);
+    const c = comps.get(r) ?? { pts: [], attached: false };
+    c.pts.push(nodes[e.a], nodes[e.b]);
+    if (deg[e.a] > 0 || deg[e.b] > 0) c.attached = true; // hangs off a surviving shape: just a tail
+    comps.set(r, c);
+  });
+  for (const c of comps.values()) if (!c.attached && c.pts.length > 2) lost.push(c.pts);
+
+  // ---- rebuild polylines (a run of degree-2 nodes = one path; a pure cycle comes out closed)
+  const adj: number[][] = nodes.map(() => []);
+  edges.forEach((e, id) => { if (alive[id]) { adj[e.a].push(id); adj[e.b].push(id); } });
+  const used = edges.map(() => false);
+  const out: Pt[][] = [];
+  const walk = (start: number, first: number): Pt[] => {
+    const pts: Pt[] = [nodes[start]];
+    let cur = start, eid = first;
+    for (;;) {
+      used[eid] = true;
+      cur = edges[eid].a === cur ? edges[eid].b : edges[eid].a;
+      pts.push(nodes[cur]);
+      if (cur === start || adj[cur].length !== 2) break;
+      const next = adj[cur].find((id) => !used[id]);
+      if (next === undefined) break;
+      eid = next;
+    }
+    return pts;
+  };
+  nodes.forEach((_, n) => {
+    if (adj[n].length === 2 || !adj[n].length) return;
+    for (const id of adj[n]) if (!used[id]) out.push(walk(n, id));
+  });
+  edges.forEach((e, id) => { if (alive[id] && !used[id]) out.push(walk(e.a, id)); });
+  return { paths: out, lost };
+}
+
 /** Groups the pieces that could not be closed into loops by where they lie (overlapping boxes = one shape). */
 function groupUnclosed(chains: Pt[][]): { x: number; y: number }[] {
   const boxes = chains.map((c) => {
@@ -370,7 +535,9 @@ export function parseDXF(text: string): {
     if (p && p.length > 1) (cl ? loops : open).push(p);
   }
   const dropped: Pt[][] = [];
-  const chained = chain(open, dropped);
+  const tidy = tidyOpenPaths(open);
+  dropped.push(...tidy.lost);
+  const chained = chain(tidy.paths, dropped);
   return { loops: loops.concat(chained), skip: Object.keys(skip), labels: readLabels(texts), unclosed: groupUnclosed(dropped) };
 }
 
