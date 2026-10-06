@@ -22,6 +22,7 @@ export default auth((req) => {
     if (req.auth?.user?.role !== "ADMIN") {
       return NextResponse.redirect(new URL("/dashboard?denied=1", req.nextUrl.origin));
     }
+    
   }
 
   return NextResponse.next();
