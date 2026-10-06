@@ -18,8 +18,13 @@ import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
+import { decodeSnapshot, encodeSnapshot } from "./persist";
+import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import {
   addFileParts,
+  addNestParts,
+  splitNestLoops,
+  thicknessFromName,
   buildDxf,
   cancelGroupDrag,
   cancelPick,
@@ -771,10 +776,61 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 // mm-per-unit for the unit label the server-side DXF parser detected.
 const UNIT_SCALE: Record<string, number> = { in: 25.4, ft: 304.8, mm: 1, cm: 10, m: 1000, "µm": 0.001, dm: 100 };
 
+/**
+ * Sheet cut-size field: you can type a whole number freely; it is applied (and clamped to what the parts need /
+ * the stock sheet size) only on Enter or when the field loses focus. Esc cancels.
+ */
+function CutSizeInput({ value, max, onCommit }: { value: number; max: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = React.useState<string | null>(null);
+  const commit = () => {
+    const v = Number(draft);
+    setDraft(null);
+    if (draft !== null && Number.isFinite(v) && v > 0 && Math.round(v) !== value) onCommit(v);
+  };
+  return (
+    <Input
+      type="number"
+      min={1}
+      max={max}
+      className="h-7 w-20"
+      title={`Smaller than the stock sheet (max ${max}) and not smaller than the parts need. Press Enter to apply.`}
+      value={draft ?? value}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setDraft(null);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+/** One line of the "what will be added" popup that opens after choosing DXF files. */
+type ImportPreviewRow = { g: Group; file: string; status: "new" | "merged"; add: number };
+type ImportPreview = {
+  scale: number;
+  files: { f: File; r: ReturnType<typeof parseDXF> }[];
+  rows: ImportPreviewRow[];
+};
+
 export function NestBoost() {
-  const { projectId, projects, nestingQueue, clearNestingQueue } = useTakeoffProject();
+  const { projectId, nestingQueue, clearNestingQueue, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
+  // Files chosen but not added yet: the popup lists every part they contain; "Add" puts them in the list.
+  const [pendingImport, setPendingImport] = React.useState<ImportPreview | null>(null);
+  // Rows added / increased by the last import, highlighted in the parts table for a few seconds.
+  const [newIds, setNewIds] = React.useState<Set<number>>(new Set());
+  // Filters of the "Parts & quantities" list ("" = no filter on that column)
+  const [fFile, setFFile] = React.useState("");
+  const [fTh, setFTh] = React.useState("");
+  const [fMat, setFMat] = React.useState("");
+  const [fLeft, setFLeft] = React.useState<"" | "left" | "done">("");
+  const newIdsTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Takeoff part ids already imported into this session, so pressing
   // "Import" twice never doubles the quantities.
   const importedIds = React.useRef<Set<string>>(new Set());
@@ -795,11 +851,6 @@ export function NestBoost() {
   // Multi-select in "Parts & quantities" + the "Are you sure?" for removals.
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
-  // Filters of the "Parts & quantities" list ("" = no filter on that column)
-  const [fFile, setFFile] = React.useState("");
-  const [fTh, setFTh] = React.useState("");
-  const [fMat, setFMat] = React.useState("");
-  const [fLeft, setFLeft] = React.useState<"" | "left" | "done">("");
   const [confirmOptimize, setConfirmOptimize] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   // What "Optimize nest" does when a nest already exists: rebuild everything, or only nest the pieces not placed yet
@@ -987,14 +1038,61 @@ export function NestBoost() {
     bump();
   };
 
+  const unclosedWarning = (name: string, n: number) =>
+    `\n⚠ ${name}: ${n} part(s) could NOT be imported — their lines don't close into a contour. Duplicate / overlapping lines and small tails past a corner are cleaned up automatically, so this is a real gap or a missing line.` +
+    `\n   Fix in AutoCAD: close the gap (JOIN / PEDIT), save the DXF and import it again.\n`;
+
+  /** What adding these files would do to the parts list (nothing is changed yet, counters are copied). */
+  function buildPreview(files: { f: File; r: ReturnType<typeof parseDXF> }[], scale: number): ImportPreview {
+    let gs = groupsRef.current;
+    const c = { ...counters.current };
+    const rows: ImportPreviewRow[] = [];
+    for (const { f, r } of files) {
+      const before = new Map(gs.map((g) => [g.id, g.qty]));
+      const added = addFileParts(gs, r.loops, f.name, scale, c, { labels: r.labels });
+      for (const g of added.groups) {
+        const q = before.get(g.id);
+        if (q === undefined) rows.push({ g, file: f.name, status: "new", add: g.qty });
+        else if (q !== g.qty) rows.push({ g, file: f.name, status: "merged", add: g.qty - q });
+      }
+      gs = added.groups;
+    }
+    return { scale, files, rows };
+  }
+
+  /** Step 1: read the chosen files and show the popup. Nothing is added (and no history entry is created) until "Add". */
   async function handleFiles(files: File[]) {
     if (!files.length) return;
+    const parsedFiles: { f: File; r: ReturnType<typeof parseDXF> }[] = [];
+    for (const f of files) parsedFiles.push({ f, r: parseDXF(await f.text()) });
+    setPendingImport(buildPreview(parsedFiles, +units));
+  }
+
+  /** Step 2: the "Add" button of the popup. */
+  async function confirmImport() {
+    const pi = pendingImport;
+    if (!pi) return;
+    setPendingImport(null);
+    const parsedFiles = pi.files;
+    // Nothing open: the import starts a new entry in the user's history (name + date), auto-saved from now on.
+    if (!workspaceId && parsedFiles.some((x) => x.r.loops.length)) {
+      try {
+        const first = parsedFiles.find((x) => x.r.loops.length)!.f.name.replace(/\.dxf$/i, "");
+        await ensureWorkspace(parsedFiles.length > 1 ? `${first} +${parsedFiles.length - 1}` : first);
+      } catch (err) {
+        toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
+      }
+    }
     let gs = groupsRef.current;
     let text = "";
-    for (const f of files) {
-      const r = parseDXF(await f.text());
-      const added = addFileParts(gs, r.loops, f.name, +units, counters.current, { labels: r.labels });
+    let total = 0;
+    const touched: number[] = [];
+    for (const { f, r } of parsedFiles) {
+      const before = new Map(gs.map((g) => [g.id, g.qty]));
+      const added = addFileParts(gs, r.loops, f.name, pi.scale, counters.current, { labels: r.labels });
+      for (const g of added.groups) if (before.get(g.id) !== g.qty) touched.push(g.id);
       gs = added.groups;
+      total += added.count;
       text +=
         `${f.name}: ${r.loops.length} contours → ${added.count} part(s)` +
         (r.labels.length ? ` (quantity / thickness read from the drawing's QTY / thk notes for ${added.labelled} part(s))` : "") +
@@ -1002,7 +1100,83 @@ export function NestBoost() {
         "\n";
     }
     setG(gs);
+    const bad = parsedFiles.filter((x) => x.r.unclosed.length);
+    for (const { f, r } of bad) text += unclosedWarning(f.name, r.unclosed.length);
     setMsg(text);
+    if (touched.length) {
+      toast.success(`Added ${total} part(s) from ${parsedFiles.length} file(s) — highlighted in the list`);
+      // highlight what changed and scroll to the first new row
+      setNewIds(new Set(touched));
+      if (newIdsTimer.current) clearTimeout(newIdsTimer.current);
+      newIdsTimer.current = setTimeout(() => setNewIds(new Set()), 8000);
+      // the new rows may be hidden by a filter: show everything so the person sees what was added
+      setFFile("");
+      setFTh("");
+      setFMat("");
+      setFLeft("");
+      setTimeout(() => {
+        const els = Array.from(document.querySelectorAll<HTMLElement>(`[data-part-row="${touched[0]}"]`));
+        els.find((el) => el.offsetParent !== null)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 200);
+    }
+    if (bad.length) toast.warning(`${bad.reduce((n, x) => n + x.r.unclosed.length, 0)} part(s) were NOT imported — their outline has a gap (see the message on the left)`, { duration: 12000 });
+  }
+
+  /**
+   * Imports a nest DXF (sheet outlines with the parts placed on them, e.g. the file exported from here):
+   * every part goes into the list and the sheets are rebuilt with each part where the DXF has it.
+   */
+  async function handleNestFile(f: File) {
+    const r = parseDXF(await f.text());
+    const nest = splitNestLoops(r.loops, +units);
+    if (!nest.sheets.length) {
+      toast.error("No sheets found — a nest DXF needs a rectangle for each sheet with the parts inside it.");
+      return;
+    }
+    let th = r.labels.find((l) => l.th && l.th > 0)?.th ?? thicknessFromName(f.name);
+    if (!th) {
+      const a = window.prompt("Plate thickness (mm) of this nest? (the file has no 'thk: n' note or '8mm' in its name)", "");
+      if (a === null) return;
+      th = Number(a.replace(",", ".")) || 0;
+    }
+    const maxW = Math.round(Math.max(...nest.sheets.map((x) => x.W)));
+    const maxH = Math.round(Math.max(...nest.sheets.map((x) => x.H)));
+    // with a nest already open the new sheets are added to it (they must fit its sheet size); otherwise the sheet size follows the file
+    const cur = resultRef.current && resS ? resS : null;
+    if (cur && (maxW > cur.W + 0.5 || maxH > cur.H + 0.5)) {
+      toast.error(`The sheets in this file (${maxW}×${maxH}) are bigger than the sheet size of the current nest (${cur.W}×${cur.H}). Reset the nest first.`);
+      return;
+    }
+    const c = cur ? cfg : { ...cfg, W: String(maxW), H: String(maxH) };
+    const S = cur ?? readSettings(c);
+    if (!S) {
+      toast.error("Check the sheet settings (length, width, margin, spacing).");
+      return;
+    }
+    if (!workspaceId) {
+      try {
+        await ensureWorkspace(f.name.replace(/\.dxf$/i, ""));
+      } catch (err) {
+        toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
+      }
+    }
+    const added = addNestParts(groupsRef.current, nest.sheets, f.name, counters.current, { th, material: "" });
+    if (!cur) setCfg(c);
+    const res = manualResult(S);
+    res.sheets.push(...added.sheets);
+    res.manual = true;
+    setG(added.groups);
+    syncUnplaced(res, added.groups);
+    bump();
+    setMsg(
+      `${f.name}: ${added.sheets.length} sheet(s), ${added.count} part(s) in ${added.groups.length} row(s)` +
+        (th ? ` — ${th} mm` : " — thickness unknown, set it in the parts list") +
+        (nest.stray ? `\n${nest.stray} loose contour(s) outside any sheet were ignored` : "") +
+        (r.unclosed.length ? unclosedWarning(f.name, r.unclosed.length) : "") +
+        "\nThe nest was rebuilt exactly as drawn; parts can still be moved by hand.",
+    );
+    if (r.unclosed.length) toast.warning(`${r.unclosed.length} part(s) were NOT imported — their outline has a gap (see the message on the left)`, { duration: 12000 });
+    else toast.success(`Imported nest: ${added.sheets.length} sheet(s), ${added.count} part(s)`);
   }
 
   /**
@@ -1385,6 +1559,54 @@ export function NestBoost() {
     toast.success(`Opened "${n.name}" — its settings and parts were restored`);
   }
 
+  // ---- Auto-save of the whole 2D workspace (parts, settings, result, saved nests) to the selected project.
+  const autosave = useNestingAutosave({
+    kind: "2D",
+    workspaceId,
+    consumeFresh,
+    capture: () =>
+      encodeSnapshot({
+        cfg, units, groups: groupsRef.current, counters: counters.current, savedSeq: savedSeq.current,
+        importedIds: importedIds.current, result: resultRef.current, resS, savedNests, activeNestId,
+      }),
+    restore: (data) => {
+      runRef.current++;
+      stopRef.current = true;
+      selRef.current = null;
+      setRunning(false);
+      setStatus("");
+      const d = data ? decodeSnapshot(data) : null;
+      if (!d) {
+        setG([]);
+        counters.current = { id: 0, sn: 0 };
+        savedSeq.current = 0;
+        importedIds.current = new Set();
+        setSavedNests([]);
+        setActiveNestId(null);
+        setResult(null);
+        setResS(null);
+        setMsg(DEFAULT_MSG);
+        bump();
+        return;
+      }
+      setCfg({ ...d.cfg });
+      setUnits(d.units);
+      setG(d.groups);
+      counters.current = d.counters;
+      savedSeq.current = d.savedSeq;
+      importedIds.current = new Set(d.importedIds);
+      setSavedNests(d.savedNests);
+      setActiveNestId(d.activeNestId);
+      setResS(d.resS);
+      setResult(d.result);
+      setActiveSheet(0);
+      setMsg(`Restored the saved nest of this project (${d.groups.length} part type(s)${d.result ? `, ${d.result.sheets.length} sheet(s)` : ""}).`);
+      bump();
+    },
+    busy: () => !!selRef.current || !!multiRef.current || running,
+    deps: [groups, result, resS, cfg, units, savedNests, activeNestId, version],
+  });
+
   function exportDxf() {
     if (!result || !resS) return;
     const a = document.createElement("a");
@@ -1399,7 +1621,7 @@ export function NestBoost() {
     if (!result || !resS) return null;
     const S = resS;
     return {
-      projectName: projects.find((p) => p.id === projectId)?.name,
+      projectName: workspaceLabel || undefined,
       result,
       S,
       groups: groupsRef.current,
@@ -1425,7 +1647,7 @@ export function NestBoost() {
         return { dataUrl: out.toDataURL("image/png"), width: out.width, height: out.height };
       },
     };
-  }, [result, resS, projects, projectId]);
+  }, [result, resS, workspaceLabel]);
 
   // Lets the combined 1D+2D report button reach this tool's latest result.
   React.useEffect(() => {
@@ -1552,30 +1774,6 @@ export function NestBoost() {
   const problems = result && resS ? problemMessages(result, resS) : [];
   const placed = placedCounts(result); // pieces of each part already on a sheet (recomputed on every render/bump)
   const stillToPlace = groups.map((g) => ({ g, n: leftOf(g, placed) })).filter((x) => x.n > 0);
-  // ---- Parts list: filter options (built from what is in the list) and the rows that pass the filters
-  const fileOpts = [...new Set(groups.map((g) => g.name))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const thOpts = [...new Set(groups.map((g) => g.th))].sort((a, b) => a - b);
-  const matOpts = [...new Set(groups.map((g) => g.material || ""))].sort((a, b) => a.localeCompare(b));
-  // a filter whose value is no longer in the list (part removed ...) simply stops filtering
-  const eFile = fileOpts.includes(fFile) ? fFile : "";
-  const eTh = thOpts.some((t) => String(t) === fTh) ? fTh : "";
-  const eMat = fMat === "__none__" ? (matOpts.includes("") ? fMat : "") : matOpts.includes(fMat) ? fMat : "";
-  const visible = groups.filter(
-    (g) =>
-      (!eFile || g.name === eFile) &&
-      (!eTh || String(g.th) === eTh) &&
-      (!eMat || (eMat === "__none__" ? !g.material : g.material === eMat)) &&
-      (!fLeft || (fLeft === "left" ? leftOf(g, placed) > 0 : leftOf(g, placed) <= 0)),
-  );
-  const filtersOn = !!(eFile || eTh || eMat || fLeft);
-  const clearFilters = () => {
-    setFFile("");
-    setFTh("");
-    setFMat("");
-    setFLeft("");
-  };
-  // only the selected parts that are on screen are acted on, so a hidden row is never removed by accident
-  const checkedVis = visible.filter((g) => checked.has(g.id)).map((g) => g.id);
   const lotMap = new Map<string, { key: string; th: number; material: string; label: string }>();
   for (const g of groups) {
     const th = g.th || 0;
@@ -1714,11 +1912,123 @@ export function NestBoost() {
           </div>
   );
 
+  // ---- Parts list: filter options (built from what is in the list) and the rows that pass the filters
+  const fileOpts = [...new Set(groups.map((g) => g.name))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const thOpts = [...new Set(groups.map((g) => g.th))].sort((a, b) => a - b);
+  const matOpts = [...new Set(groups.map((g) => g.material || ""))].sort((a, b) => a.localeCompare(b));
+  // a filter whose value is no longer in the list (part removed ...) simply stops filtering
+  const eFile = fileOpts.includes(fFile) ? fFile : "";
+  const eTh = thOpts.some((t) => String(t) === fTh) ? fTh : "";
+  const eMat = fMat === "__none__" ? (matOpts.includes("") ? fMat : "") : matOpts.includes(fMat) ? fMat : "";
+  const visible = groups.filter(
+    (g) =>
+      (!eFile || g.name === eFile) &&
+      (!eTh || String(g.th) === eTh) &&
+      (!eMat || (eMat === "__none__" ? !g.material : g.material === eMat)) &&
+      (!fLeft || (fLeft === "left" ? leftOf(g, placed) > 0 : leftOf(g, placed) <= 0)),
+  );
+  const filtersOn = !!(eFile || eTh || eMat || fLeft);
+  const clearFilters = () => {
+    setFFile("");
+    setFTh("");
+    setFMat("");
+    setFLeft("");
+  };
+  // only the selected parts that are on screen are acted on, so a hidden row is never removed by accident
+  const checkedVis = visible.filter((g) => checked.has(g.id)).map((g) => g.id);
+
+  const thInput = (g: Group) => (
+    <Input
+      type="number" min={0} step="any" placeholder="mm" className="h-8 w-full min-w-16 md:w-20"
+      value={g.th || ""}
+      onChange={(e) => updateGroup(g.id, { th: Number(e.target.value) || 0 })}
+    />
+  );
+  const matInput = (g: Group) => (
+    <Input
+      type="text" placeholder="e.g. S235" className="h-8 w-full min-w-20 md:w-24"
+      value={g.material || ""}
+      onChange={(e) => updateGroup(g.id, { material: e.target.value })}
+    />
+  );
+  const qtyInput = (g: Group) => (
+    <Input
+      type="number" min={0} className="h-8 w-full min-w-16 md:w-20" value={g.qty}
+      onChange={(e) => updateGroup(g.id, { qty: Math.max(0, Number(e.target.value) | 0) })}
+    />
+  );
+  const leftBtn = (g: Group) => {
+    const left = leftOf(g, placed);
+    return (
+      <button
+        type="button"
+        disabled={left <= 0 || running}
+        onPointerDown={(e) => holdFromList(g, e)}
+        title={
+          left > 0
+            ? "Press and hold, drag onto a sheet and release — or click, then click on the sheet"
+            : "All pieces of this part are already placed"
+        }
+        className={`flex select-none items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium ${
+          left > 0
+            ? "cursor-grab border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 active:cursor-grabbing"
+            : "cursor-not-allowed border-border text-muted-foreground opacity-60"
+        }`}
+        style={{ touchAction: "none" }}
+      >
+        <Plus className="h-3 w-3" /> {left} left
+      </button>
+    );
+  };
+  const nestBtn = (g: Group) => (
+    <Button
+      variant="outline" size="sm" className="h-7 whitespace-nowrap"
+      disabled={running || !!held || leftOf(g, placed) <= 0}
+      title={
+        leftOf(g, placed) > 0
+          ? "Nest this part with its own settings — it continues in the free space of the current nest"
+          : "All pieces of this part are already placed"
+      }
+      onClick={() => {
+        // start from the current nest's sheet info, so the part simply continues on those sheets
+        const c0 =
+          result && resS && result.sheets.length
+            ? { ...cfg, W: String(resS.W), H: String(resS.H), mg: String(resS.mg), gp: String(resS.gp), cell: String(resS.cell) }
+            : { ...cfg };
+        setSolo({ g, c: c0 });
+        setSoloOpen(true);
+      }}
+    >
+      <Layers /> Nest
+    </Button>
+  );
+  const rowChecked = (g: Group) => (
+    <Checkbox
+      aria-label={`Select part #${g.sn}`}
+      checked={checked.has(g.id)}
+      onCheckedChange={(v) =>
+        setChecked((prev) => {
+          const next = new Set(prev);
+          if (v === true) next.add(g.id); else next.delete(g.id);
+          return next;
+        })
+      }
+    />
+  );
+  const rowTint = (g: Group) => (newIds.has(g.id) ? "bg-emerald-100 dark:bg-emerald-950/40" : checked.has(g.id) ? "bg-primary/5" : "");
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(300px,380px)_1fr]">
       <div className="space-y-4">
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import</h3>
+          <div className="mb-2">
+            {workspaceId ? (
+              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
+            ) : (
+              <p className="text-xs text-muted-foreground">No project selected — importing a DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
+            )}
+          </div>
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-5 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}
@@ -1738,6 +2048,19 @@ export function NestBoost() {
                 const fs = Array.from(e.target.files ?? []);
                 e.target.value = ""; // allow re-importing the same file after a reset
                 handleFiles(fs);
+              }}
+            />
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted" title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
+            <FolderInput className="h-4 w-4" /> Import nest DXF (sheets + parts)
+            <input
+              type="file"
+              accept=".dxf"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void handleNestFile(f);
               }}
             />
           </label>
@@ -1784,8 +2107,8 @@ export function NestBoost() {
       </div>
 
       <div className="min-w-0 space-y-4">
-        <Card className="p-4">
-          <div className="mb-2 flex items-center justify-between">
+        <Card className="p-3 sm:p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Parts &amp; quantities
               {groups.length > 0 && (
@@ -1794,23 +2117,24 @@ export function NestBoost() {
                 </span>
               )}
             </h3>
-            <div className="flex items-center gap-2">
-            {checkedVis.length > 0 && (
-              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove(checkedVis)}>
-                <Trash2 /> Remove selected ({checkedVis.length})
+            <div className="flex flex-wrap items-center gap-2">
+              {checkedVis.length > 0 && (
+                <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove(checkedVis)}>
+                  <Trash2 /> Remove selected ({checkedVis.length})
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive"
+                disabled={!groups.length}
+                onClick={() => setConfirmReset(true)}
+              >
+                <Trash2 /> Reset all
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive"
-              disabled={!groups.length}
-              onClick={() => setConfirmReset(true)}
-            >
-              <Trash2 /> Reset all
-            </Button>
             </div>
           </div>
+
           {groups.length > 0 && (
             <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-border bg-secondary/30 p-2 md:grid-cols-4 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto] xl:items-end">
               <Field label="File">
@@ -1853,6 +2177,7 @@ export function NestBoost() {
               </Button>
             </div>
           )}
+
           {!groups.length ? (
             <p className="text-sm text-muted-foreground">No parts yet.</p>
           ) : !visible.length ? (
@@ -1863,148 +2188,133 @@ export function NestBoost() {
               </div>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="text-left text-muted-foreground">
-                    <th className="p-1">
-                      <Checkbox
-                        aria-label="Select all shown parts"
-                        checked={
-                          visible.every((g) => checked.has(g.id))
-                            ? true
-                            : visible.some((g) => checked.has(g.id)) ? "indeterminate" : false
-                        }
-                        onCheckedChange={(v) =>
-                          setChecked((prev) => {
-                            const next = new Set(prev);
-                            for (const g of visible) {
-                              if (v === true) next.add(g.id); else next.delete(g.id);
-                            }
-                            return next;
-                          })
-                        }
-                      />
-                    </th>
-                    <th className="p-1">#</th>
-                    <th className="p-1" />
-                    <th className="p-1">File</th>
-                    <th className="p-1">Size (mm)</th>
-                    <th className="p-1">Area</th>
-                    <th className="p-1">Holes</th>
-                    <th className="p-1">Thick (mm)</th>
-                    <th className="p-1">Material</th>
-                    <th className="p-1">Qty</th>
-                    <th className="p-1">Placed</th>
-                    <th className="p-1" title="Press a part's picture to take one piece and place it by hand">Left / place by hand</th>
-                    <th className="p-1" title="Nest only this part, with its own spacing / margin / rotation">Nest alone</th>
-                    <th className="p-1" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((g) => (
-                    <tr key={g.id} className={`border-t border-border ${checked.has(g.id) ? "bg-primary/5" : ""}`}>
-                      <td className="p-1">
+            <>
+              {/* ---- tablet / desktop: table (secondary columns appear as the screen gets wider) ---- */}
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="text-left text-muted-foreground">
+                      <th className="p-1">
                         <Checkbox
-                          aria-label={`Select part #${g.sn}`}
-                          checked={checked.has(g.id)}
+                          aria-label="Select all shown parts"
+                          checked={
+                            visible.every((g) => checked.has(g.id))
+                              ? true
+                              : visible.some((g) => checked.has(g.id)) ? "indeterminate" : false
+                          }
                           onCheckedChange={(v) =>
                             setChecked((prev) => {
                               const next = new Set(prev);
-                              if (v === true) next.add(g.id); else next.delete(g.id);
+                              for (const g of visible) {
+                                if (v === true) next.add(g.id); else next.delete(g.id);
+                              }
                               return next;
                             })
                           }
                         />
-                      </td>
-                      <td className="p-1 font-semibold">#{g.sn}</td>
-                      <td className="p-1"><PartThumb g={g} /></td>
-                      <td className="p-1">{g.name}</td>
-                      <td className="p-1 whitespace-nowrap">{g.w.toFixed(1)} × {g.h.toFixed(1)}</td>
-                      <td className="p-1">{Math.round(g.area)}</td>
-                      <td className="p-1">{g.holes.length}</td>
-                      <td className="p-1">
-                        <Input
-                          type="number" min={0} step="any" placeholder="mm" className="h-8 w-20"
-                          value={g.th || ""}
-                          onChange={(e) => updateGroup(g.id, { th: Number(e.target.value) || 0 })}
-                        />
-                      </td>
-                      <td className="p-1">
-                        <Input
-                          type="text" placeholder="e.g. S235" className="h-8 w-24"
-                          value={g.material || ""}
-                          onChange={(e) => updateGroup(g.id, { material: e.target.value })}
-                        />
-                      </td>
-                      <td className="p-1">
-                        <Input
-                          type="number" min={0} className="h-8 w-20" value={g.qty}
-                          onChange={(e) => updateGroup(g.id, { qty: Math.max(0, Number(e.target.value) | 0) })}
-                        />
-                      </td>
-                      <td className="p-1 whitespace-nowrap tabular-nums">{placed.get(g.id) ?? 0}</td>
-                      <td className="p-1">
-                        {(() => {
-                          const left = leftOf(g, placed);
-                          return (
-                            <button
-                              type="button"
-                              disabled={left <= 0 || running}
-                              onPointerDown={(e) => holdFromList(g, e)}
-                              title={
-                                left > 0
-                                  ? "Press and hold, drag onto a sheet and release — or click, then click on the sheet"
-                                  : "All pieces of this part are already placed"
-                              }
-                              className={`flex select-none items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${
-                                left > 0
-                                  ? "cursor-grab border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 active:cursor-grabbing"
-                                  : "cursor-not-allowed border-border text-muted-foreground opacity-60"
-                              }`}
-                              style={{ touchAction: "none" }}
-                            >
-                              <Plus className="h-3 w-3" /> {left} left
-                            </button>
-                          );
-                        })()}
-                      </td>
-                      <td className="p-1">
-                        <Button
-                          variant="outline" size="sm" className="h-7 whitespace-nowrap"
-                          disabled={running || !!held || leftOf(g, placed) <= 0}
-                          title={
-                            leftOf(g, placed) > 0
-                              ? "Nest this part with its own settings — it continues in the free space of the current nest"
-                              : "All pieces of this part are already placed"
-                          }
-                          onClick={() => {
-                            // start from the current nest's sheet info, so the part simply continues on those sheets
-                            const c0 =
-                              result && resS && result.sheets.length
-                                ? { ...cfg, W: String(resS.W), H: String(resS.H), mg: String(resS.mg), gp: String(resS.gp), cell: String(resS.cell) }
-                                : { ...cfg };
-                            setSolo({ g, c: c0 });
-                            setSoloFill(true);
-                            setSoloOpen(true);
-                          }}
-                        >
-                          <Layers /> Nest
-                        </Button>
-                      </td>
-                      <td className="p-1 whitespace-nowrap">
-                        <Button variant="ghost" size="sm" title="Duplicate this part (e.g. to give the copy another thickness)" onClick={() => duplicatePart(g.id)}>
-                          <Copy /> Duplicate
+                      </th>
+                      <th className="p-1">#</th>
+                      <th className="p-1" />
+                      <th className="p-1">File</th>
+                      <th className="p-1">Size (mm)</th>
+                      <th className="hidden p-1 xl:table-cell">Area</th>
+                      <th className="hidden p-1 xl:table-cell">Holes</th>
+                      <th className="p-1">Thick (mm)</th>
+                      <th className="p-1">Material</th>
+                      <th className="p-1">Qty</th>
+                      <th className="p-1">Placed</th>
+                      <th className="p-1" title="Press a part's picture to take one piece and place it by hand">Left / place by hand</th>
+                      <th className="p-1" title="Nest only this part, with its own spacing / margin / rotation">Nest alone</th>
+                      <th className="p-1" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map((g) => (
+                      <tr key={g.id} data-part-row={g.id} className={`border-t border-border transition-colors duration-700 ${rowTint(g)}`}>
+                        <td className="p-1">{rowChecked(g)}</td>
+                        <td className="p-1 font-semibold">#{g.sn}</td>
+                        <td className="p-1"><PartThumb g={g} /></td>
+                        <td className="max-w-40 break-all p-1">{g.name}</td>
+                        <td className="p-1 whitespace-nowrap">{g.w.toFixed(1)} × {g.h.toFixed(1)}</td>
+                        <td className="hidden p-1 xl:table-cell">{Math.round(g.area)}</td>
+                        <td className="hidden p-1 xl:table-cell">{g.holes.length}</td>
+                        <td className="p-1">{thInput(g)}</td>
+                        <td className="p-1">{matInput(g)}</td>
+                        <td className="p-1">{qtyInput(g)}</td>
+                        <td className="p-1 whitespace-nowrap tabular-nums">{placed.get(g.id) ?? 0}</td>
+                        <td className="p-1">{leftBtn(g)}</td>
+                        <td className="p-1">{nestBtn(g)}</td>
+                        <td className="p-1 whitespace-nowrap">
+                          <Button variant="ghost" size="sm" title="Duplicate this part (e.g. to give the copy another thickness)" onClick={() => duplicatePart(g.id)}>
+                            <Copy /> <span className="hidden 2xl:inline">Duplicate</span>
+                          </Button>
+                          <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
+                            <Trash2 /> <span className="hidden 2xl:inline">Remove</span>
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ---- phone: one card per part ---- */}
+              <div className="space-y-2 md:hidden">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    aria-label="Select all shown parts"
+                    checked={
+                      visible.every((g) => checked.has(g.id))
+                        ? true
+                        : visible.some((g) => checked.has(g.id)) ? "indeterminate" : false
+                    }
+                    onCheckedChange={(v) =>
+                      setChecked((prev) => {
+                        const next = new Set(prev);
+                        for (const g of visible) {
+                          if (v === true) next.add(g.id); else next.delete(g.id);
+                        }
+                        return next;
+                      })
+                    }
+                  />
+                  Select all shown
+                </label>
+                {visible.map((g) => (
+                  <div key={g.id} data-part-row={g.id} className={`rounded-lg border border-border p-3 transition-colors duration-700 ${rowTint(g)}`}>
+                    <div className="flex items-center gap-2">
+                      {rowChecked(g)}
+                      <span className="text-sm font-semibold">#{g.sn}</span>
+                      <PartThumb g={g} />
+                      <div className="min-w-0 flex-1 text-xs">
+                        <div className="break-all font-medium">{g.name}</div>
+                        <div className="text-muted-foreground">
+                          {g.w.toFixed(1)} × {g.h.toFixed(1)} mm · area {Math.round(g.area)} · {g.holes.length} hole(s)
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      <Field label="Thick (mm)">{thInput(g)}</Field>
+                      <Field label="Material">{matInput(g)}</Field>
+                      <Field label="Qty">{qtyInput(g)}</Field>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Placed {placed.get(g.id) ?? 0}</span>
+                      {leftBtn(g)}
+                      {nestBtn(g)}
+                      <div className="ml-auto flex">
+                        <Button variant="ghost" size="sm" title="Duplicate this part" onClick={() => duplicatePart(g.id)}>
+                          <Copy />
                         </Button>
                         <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
-                          <Trash2 /> Remove
+                          <Trash2 />
                         </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </Card>
 
@@ -2105,22 +2415,20 @@ export function NestBoost() {
                       </span>
                       <span className="flex items-center gap-1">
                         Cut size
-                        <Input
-                          type="number" min={1} className="h-7 w-20"
+                        <CutSizeInput
                           value={Math.round(sh.W ?? resS.W)}
-                          onChange={(e) => {
-                            const v = Number(e.target.value);
-                            if (v > 0) resizeSheet(sh, resS, v, sh.H ?? resS.H);
+                          max={Math.round(resS.W)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, v, sh.H ?? resS.H);
                             bump();
                           }}
                         />
                         ×
-                        <Input
-                          type="number" min={1} className="h-7 w-20"
+                        <CutSizeInput
                           value={Math.round(sh.H ?? resS.H)}
-                          onChange={(e) => {
-                            const v = Number(e.target.value);
-                            if (v > 0) resizeSheet(sh, resS, sh.W ?? resS.W, v);
+                          max={Math.round(resS.H)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, sh.W ?? resS.W, v);
                             bump();
                           }}
                         />
@@ -2321,6 +2629,107 @@ export function NestBoost() {
           setPendingClear(null);
         }}
       />
+
+      <Dialog open={!!pendingImport} onOpenChange={(o) => !o && setPendingImport(null)}>
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-4xl p-4 sm:p-6">
+          {pendingImport && (() => {
+            const pi = pendingImport;
+            const newRows = pi.rows.filter((x) => x.status === "new").length;
+            const mergedRows = pi.rows.length - newRows;
+            const pieces = pi.rows.reduce((n, x) => n + x.add, 0);
+            const bad = pi.files.filter((x) => x.r.unclosed.length);
+            const badCount = bad.reduce((n, x) => n + x.r.unclosed.length, 0);
+            const empty = pi.files.filter((x) => !x.r.loops.length && !x.r.unclosed.length);
+            const noTh = pi.rows.filter((x) => !x.g.th).length;
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Review before adding</DialogTitle>
+                  <DialogDescription>
+                    {pi.files.length} file(s) · {newRows} new part(s)
+                    {mergedRows > 0 && <> · {mergedRows} added to an existing row</>} · {pieces} piece(s) in total. Nothing is added until you press “Add”.
+                  </DialogDescription>
+                </DialogHeader>
+
+                {(badCount > 0 || empty.length > 0 || noTh > 0) && (
+                  <div className="space-y-1 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+                    {bad.map((x) => (
+                      <p key={x.f.name} className="flex items-start gap-1.5">
+                        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span><b>{x.f.name}</b>: {x.r.unclosed.length} contour(s) will NOT be imported — the outline has a gap (close it in AutoCAD with JOIN / PEDIT and import again).</span>
+                      </p>
+                    ))}
+                    {empty.map((x) => (
+                      <p key={x.f.name} className="flex items-start gap-1.5">
+                        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span><b>{x.f.name}</b>: no usable contour found in this file.</span>
+                      </p>
+                    ))}
+                    {noTh > 0 && (
+                      <p className="flex items-start gap-1.5">
+                        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>{noTh} part(s) have no thickness yet (shown as “?”) — you can type it in the list after adding.</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {pi.rows.length > 0 ? (
+                  <div className="max-h-[50vh] overflow-auto rounded-lg border border-border">
+                    <table className="w-full border-collapse text-xs">
+                      <thead className="sticky top-0 bg-card text-left text-muted-foreground shadow-[0_1px_0_0_var(--border,#e5e7eb)]">
+                        <tr>
+                          <th className="p-2">#</th>
+                          <th className="p-2" />
+                          <th className="p-2">File</th>
+                          <th className="p-2">Size (mm)</th>
+                          <th className="hidden p-2 sm:table-cell">Area</th>
+                          <th className="hidden p-2 sm:table-cell">Holes</th>
+                          <th className="p-2">Thick (mm)</th>
+                          <th className="p-2">Qty</th>
+                          <th className="p-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pi.rows.map((x, i) => (
+                          <tr key={i} className="border-t border-border">
+                            <td className="p-2 text-muted-foreground">{i + 1}</td>
+                            <td className="p-1"><PartThumb g={x.g} /></td>
+                            <td className="max-w-32 break-all p-2 sm:max-w-none">{x.file}</td>
+                            <td className="p-2 whitespace-nowrap">{x.g.w.toFixed(1)} × {x.g.h.toFixed(1)}</td>
+                            <td className="hidden p-2 sm:table-cell">{Math.round(x.g.area)}</td>
+                            <td className="hidden p-2 sm:table-cell">{x.g.holes.length}</td>
+                            <td className={`p-2 ${x.g.th ? "" : "font-semibold text-amber-600"}`}>{x.g.th || "?"}</td>
+                            <td className="p-2 font-semibold tabular-nums">+{x.add}</td>
+                            <td className="p-2 whitespace-nowrap">
+                              {x.status === "new" ? (
+                                <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">New part</span>
+                              ) : (
+                                <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-800" title="Same shape, thickness and material already in the list: its quantity goes up">
+                                  Adds to #{x.g.sn}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">Nothing to add from these files.</p>
+                )}
+
+                <DialogFooter>
+                  <Button variant="secondary" onClick={() => setPendingImport(null)}>Cancel</Button>
+                  <Button disabled={!pi.rows.length} onClick={() => void confirmImport()}>
+                    <Plus /> Add {pieces > 0 ? `${pi.rows.length} part(s)` : ""}
+                  </Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={soloOpen} onOpenChange={setSoloOpen}>
         <DialogContent className="max-w-md">
