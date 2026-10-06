@@ -89,6 +89,14 @@ export interface Bar {
   /** Actual physical bar length used (defaults to sourceLength; can be trimmed down
    *  after nesting to cut less material / less scrap). */
   length?: number;
+  /** One piece that is as long as the whole bar (too long once trims / gripping are taken off, but it fits the raw bar).
+   *  It is alone on the bar, so no trim, no gripping and no kerf apply to it. */
+  full?: boolean;
+}
+
+/** Left trim and right trim (right trim + gripping) that apply to this bar: none for a full-length bar. */
+export function barTrims(b: { full?: boolean }, S: Settings1D): { left: number; right: number } {
+  return b.full ? { left: 0, right: 0 } : { left: S.leftTrim, right: S.rightTrim + S.gripping };
 }
 
 /** A distinct cutting pattern (which bar length + which cuts at which positions) and how
@@ -184,6 +192,7 @@ interface OpenBar {
   usable: number;
   cuts: Cut[];
   used: number; // length already consumed, including internal kerfs
+  full?: boolean; // single piece as long as the raw bar: no trims, nothing else goes on it
 }
 
 function distinctLengths(b: OpenBar): number {
@@ -191,6 +200,7 @@ function distinctLengths(b: OpenBar): number {
 }
 
 function fits(b: OpenBar, p: Piece1D, S: Settings1D): boolean {
+  if (b.full) return false;
   const need = p.length + (b.cuts.length ? S.kerf : 0);
   if (b.used + need > b.usable + 1e-6) return false;
   if (S.maxPartsInLayout > 0 && b.cuts.length + 1 > S.maxPartsInLayout) return false;
@@ -274,6 +284,21 @@ export function runOptimize1D(pieces: Piece1D[], sources: Source1D[], S: Setting
         }
       }
       if (!pick) {
+        // too long for the trimmed bar but as long as (or shorter than) the raw bar: it gets a bar of its own,
+        // cut without trims / gripping (it is the only piece on it, so there is nothing to keep clear of).
+        const rawPick = stock.find((st) => st.remaining !== 0 && st.src.length + 1e-6 >= p.length);
+        if (rawPick) {
+          if (rawPick.remaining !== null) rawPick.remaining = (rawPick.remaining as number) - 1;
+          lotBars.push({
+            sourceId: rawPick.src.id,
+            sourceLength: rawPick.src.length,
+            usable: rawPick.src.length,
+            cuts: [{ piece: p, pos: 0 }],
+            used: p.length,
+            full: true,
+          });
+          continue;
+        }
         const msg =
           `Part #${p.sn} (${p.name}, ${p.profile || "?"} ${p.material || ""}) is ${Math.round(p.length)} mm — no stock source with a matching profile/material is long enough (after kerf/trim/gripping)`;
         // report once per part, not once per piece of its quantity
@@ -311,6 +336,7 @@ export function runOptimize1D(pieces: Piece1D[], sources: Source1D[], S: Setting
       profile: b.cuts[0]?.piece.profile ?? "",
       material: b.cuts[0]?.piece.material ?? "",
       cuts: b.cuts,
+      ...(b.full ? { full: true } : {}),
     };
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(bar);
@@ -340,7 +366,7 @@ export function barUsedLength(b: Bar): number {
 export function barStats(b: Bar, S: Settings1D) {
   const used = barUsedLength(b);
   const L = b.length ?? b.sourceLength;
-  const usable = usableLength(L, S);
+  const usable = b.full ? L : usableLength(L, S);
   const rest = Math.max(0, usable - used);
   return {
     pieces: b.cuts.length,
@@ -353,7 +379,8 @@ export function barStats(b: Bar, S: Settings1D) {
 
 /** Smallest physical bar length this bar can be trimmed to without cutting into its pieces. */
 export function minBarLength(b: Bar, S: Settings1D): number {
-  return Math.round(barUsedLength(b) + S.leftTrim + S.rightTrim + S.gripping);
+  const t = barTrims(b, S);
+  return Math.round(barUsedLength(b) + t.left + t.right);
 }
 
 /**

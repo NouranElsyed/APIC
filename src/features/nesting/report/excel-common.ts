@@ -146,6 +146,9 @@ export interface OverviewRow {
   scrapQty: number;
   scrapUnit: "m²" | "m";
   scrapKg: number | null;
+  /** Weight of the stock used / of the parts cut from it (kg). null = unknown (e.g. no kg/m for a 1D profile). */
+  sourceKg?: number | null;
+  usedKg?: number | null;
 }
 
 /** Sheet name, optionally prefixed ("2D Summary") when several reports share one workbook. */

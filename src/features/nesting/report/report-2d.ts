@@ -205,6 +205,8 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
     scrapQty: Number(x[6]),
     scrapUnit: "m²" as const,
     scrapKg: x[11] == null ? null : Number(x[11]),
+    sourceKg: x[9] == null ? null : Number(x[9]),
+    usedKg: x[10] == null ? null : Number(x[10]),
   }));
 }
 

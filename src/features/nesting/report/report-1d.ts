@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import { barStats, type Piece1D, type Result1D, type Settings1D, type Source1D } from "../nest-boost-1d/engine";
+import { profileWeightPerMeter } from "./profile-weight";
 import { addImageAt, addKeyValues, addTable, addTitle, pct, round, sheetName, stamp, workbookToBlob, type Cell, type OverviewRow } from "./excel-common";
 
 export interface Report1DInput {
@@ -8,6 +9,8 @@ export interface Report1DInput {
   S: Settings1D;
   pieces: Piece1D[];
   sources: Source1D[];
+  /** Optional kg/m per profile name, for profiles the built-in table doesn't know (e.g. { "HEA200": 42.3 }). */
+  weightPerMeter?: Record<string, number>;
   /** PNG of one layout's bar (canvas). Optional — omitted in tests / no-DOM. */
   renderBar?: (layoutIndex: number) => { dataUrl: string; width: number; height: number } | null;
 }
@@ -178,7 +181,9 @@ export function add1DSheets(wb: ExcelJS.Workbook, input: Report1DInput, prefix =
     }
   }
 
-  return profRows.map((x) => ({
+  return profRows.map((x) => {
+    const wpm = profileWeightPerMeter(String(x[0]), input.weightPerMeter);
+    return {
     kind: "1D" as const,
     material: String(x[1]),
     item: String(x[0]),
@@ -189,7 +194,10 @@ export function add1DSheets(wb: ExcelJS.Workbook, input: Report1DInput, prefix =
     scrapQty: Number(x[6]),
     scrapUnit: "m" as const,
     scrapKg: null,
-  }));
+    sourceKg: wpm == null ? null : round(Number(x[3]) * wpm, 2),
+    usedKg: wpm == null ? null : round(Number(x[4]) * wpm, 2),
+  };
+  });
 }
 
 export async function buildReport1D(input: Report1DInput): Promise<Blob> {

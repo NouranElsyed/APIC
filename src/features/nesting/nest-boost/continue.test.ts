@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  bbox, makeSettings, placedCounts, runOptimize, sameSheetSettings, setCellCanvasFactory, sides,
+  bbox, canContinueOn, makeSettings, placedCounts, runOptimize, sameSheetSettings, setCellCanvasFactory, sides,
   type Group, type OptResult, type Pt,
 } from "./engine";
 import { fakeCanvasFactory } from "./fake-canvas";
@@ -130,5 +130,25 @@ describe("continuing a nest with the next part", () => {
     expect(r2.sheets.map((x) => x.th)).toEqual([5, 8]);
     expect(sameSheetSettings(S, makeSettings({ W: 6000, H: 1500, mg: 5, gp: 5, cell: 5, ro: 2 }))).toBe(true);
     expect(sameSheetSettings(S, makeSettings({ W: 6000, H: 1500, mg: 5, gp: 0, cell: 5, ro: 0 }))).toBe(false);
+  });
+
+  it("a different gap or the option 'new sheets only' still works; only sheet size / edge margin must match", async () => {
+    patchDoc();
+    const A = grp(1, 1000, 1000, 2);
+    const B = grp(2, 500, 500, 3);
+    const r1 = (await runOptimize([A], opts(null))) as OptResult;
+    const S2 = makeSettings({ W: 6000, H: 1500, mg: 5, gp: 10, cell: 5, ro: 0 }); // other gap, same sheet + margin
+    expect(canContinueOn(S, S2)).toBe(true);
+    expect(canContinueOn(S, makeSettings({ W: 6000, H: 1500, mg: 20, gp: 5, cell: 5, ro: 0 }))).toBe(false);
+    expect(canContinueOn(S, makeSettings({ W: 3000, H: 1500, mg: 5, gp: 5, cell: 5, ro: 0 }))).toBe(false);
+
+    const r2 = (await runOptimize([B], { ...opts(r1), S: S2 })) as OptResult;
+    expect(r2.sheets).toHaveLength(1); // still the free space of sheet 1
+    expect(r2.sheets[0].items).toHaveLength(5);
+
+    const r3 = (await runOptimize([B], { ...opts(r1), fillExisting: false })) as OptResult;
+    expect(r3.sheets).toHaveLength(2); // old sheet untouched, B on a new sheet
+    expect(r3.sheets[0].items).toHaveLength(2);
+    expect(r3.sheets[1].items).toHaveLength(3);
   });
 });

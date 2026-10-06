@@ -161,7 +161,7 @@ interface Ent {
   v: Ent[];
 }
 
-function chain(paths: Pt[][], dropped?: Pt[][]): Pt[][] {
+function chain(paths: Pt[][]): Pt[][] {
   const loops: Pt[][] = [];
   while (paths.length) {
     let cur = paths.pop() as Pt[];
@@ -186,198 +186,9 @@ function chain(paths: Pt[][], dropped?: Pt[][]): Pt[][] {
     if (cur.length > 3 && dist(cur[0], cur[cur.length - 1]) < TOL) {
       cur.pop();
       loops.push(cur);
-    } else if (cur.length > 2) dropped?.push(cur);
+    }
   }
   return loops;
-}
-
-/**
- * Clean-up of the loose LINE / ARC / open-polyline pieces BEFORE they are chained into contours
- * (what people otherwise do by hand with OVERKILL / TRIM in AutoCAD):
- *   1. every piece is cut where another one ends on it or crosses it (T-junctions, lines that run
- *      past a corner = "tails"),
- *   2. pieces that now coincide (duplicate / partly overlapping lines) collapse into one,
- *   3. dangling pieces (a whisker hanging off a corner) are removed, again and again.
- * What is left goes to `chain`. A group of pieces that disappears completely (an open shape such as
- * a "U") is returned in `lost`, so it is still reported as "could not be closed".
- */
-function tidyOpenPaths(paths: Pt[][]): { paths: Pt[][]; lost: Pt[][] } {
-  let segs: [Pt, Pt][] = [];
-  for (const p of paths) for (let i = 0; i + 1 < p.length; i++) if (dist(p[i], p[i + 1]) > 1e-9) segs.push([p[i], p[i + 1]]);
-  if (!segs.length || segs.length > 200000) return { paths, lost: [] };
-
-  // ---- uniform grids (segments, and their end points) so the cutting test is not O(n²)
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const [a, b] of segs) {
-    x0 = Math.min(x0, a[0], b[0]); y0 = Math.min(y0, a[1], b[1]);
-    x1 = Math.max(x1, a[0], b[0]); y1 = Math.max(y1, a[1], b[1]);
-  }
-  // TOL is in drawing units; for a drawing in metres 0.05 would swallow a whole 5 cm part, so the
-  // clean-up tolerance never exceeds 0.1 % of the drawing size.
-  const tol = Math.min(TOL, 1e-3 * Math.hypot(x1 - x0, y1 - y0));
-  segs = segs.filter(([a, b]) => dist(a, b) > tol);
-  if (!segs.length) return { paths, lost: [] };
-  const cell = Math.max(tol * 4, Math.hypot(x1 - x0, y1 - y0) / 200);
-  const ci = (v: number, o: number) => Math.floor((v - o) / cell);
-  const key = (ix: number, iy: number) => (ix + 2) * 1024 + (iy + 2);
-  const segGrid = new Map<number, number[]>();
-  const ptGrid = new Map<number, Pt[]>();
-  const push = <T,>(m: Map<number, T[]>, k: number, v: T) => { const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); };
-  segs.forEach(([a, b], i) => {
-    for (let ix = ci(Math.min(a[0], b[0]) - tol, x0); ix <= ci(Math.max(a[0], b[0]) + tol, x0); ix++)
-      for (let iy = ci(Math.min(a[1], b[1]) - tol, y0); iy <= ci(Math.max(a[1], b[1]) + tol, y0); iy++) push(segGrid, key(ix, iy), i);
-    push(ptGrid, key(ci(a[0], x0), ci(a[1], y0)), a);
-    push(ptGrid, key(ci(b[0], x0), ci(b[1], y0)), b);
-  });
-
-  // ---- 1. cut every segment at junctions / crossings
-  const pieces: [Pt, Pt][] = [];
-  const seen = new Int32Array(segs.length);
-  segs.forEach(([a, b], i) => {
-    const dx = b[0] - a[0], dy = b[1] - a[1];
-    const len = Math.hypot(dx, dy), len2 = len * len;
-    const cuts: { t: number; p: Pt }[] = [];
-    const add = (t: number, p: Pt) => { if (t * len > tol && (1 - t) * len > tol) cuts.push({ t, p }); };
-    const gx0 = ci(Math.min(a[0], b[0]) - tol, x0), gx1 = ci(Math.max(a[0], b[0]) + tol, x0);
-    const gy0 = ci(Math.min(a[1], b[1]) - tol, y0), gy1 = ci(Math.max(a[1], b[1]) + tol, y0);
-    for (let ix = gx0; ix <= gx1; ix++)
-      for (let iy = gy0; iy <= gy1; iy++) {
-        for (const q of ptGrid.get(key(ix, iy)) ?? []) {
-          const t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2;
-          if (t <= 0 || t >= 1) continue;
-          if (Math.hypot(q[0] - (a[0] + t * dx), q[1] - (a[1] + t * dy)) <= tol) add(t, q);
-        }
-        for (const j of segGrid.get(key(ix, iy)) ?? []) {
-          if (j === i || seen[j] === i + 1) continue;
-          seen[j] = i + 1;
-          const [c, d] = segs[j];
-          const ex = d[0] - c[0], ey = d[1] - c[1];
-          const lj = Math.hypot(ex, ey);
-          const den = dx * ey - dy * ex;
-          if (Math.abs(den) < 1e-12 * len * lj) continue; // parallel / collinear: handled by the end-point test
-          const t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / den;
-          const u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / den;
-          if (u >= -tol / lj && u <= 1 + tol / lj) add(t, [a[0] + t * dx, a[1] + t * dy]);
-        }
-      }
-    if (!cuts.length) { pieces.push([a, b]); return; }
-    cuts.sort((m, n) => m.t - n.t);
-    let prev = a, prevT = 0;
-    for (const c of cuts) {
-      if ((c.t - prevT) * len <= tol) continue; // the same cut found twice
-      pieces.push([prev, c.p]);
-      prev = c.p;
-      prevT = c.t;
-    }
-    pieces.push([prev, b]);
-  });
-
-  // ---- 2. merge nearby end points into nodes, collapse duplicate pieces
-  const nodes: Pt[] = [];
-  const byCell = new Map<number, number[]>();
-  const nodeOf = (p: Pt): number => {
-    const ix = ci(p[0], x0), iy = ci(p[1], y0);
-    for (let u = ix - 1; u <= ix + 1; u++)
-      for (let v = iy - 1; v <= iy + 1; v++)
-        for (const id of byCell.get(key(u, v)) ?? []) if (dist(nodes[id], p) <= tol) return id;
-    nodes.push(p);
-    push(byCell, key(ix, iy), nodes.length - 1);
-    return nodes.length - 1;
-  };
-  const edgeKeys = new Set<string>();
-  const edges: { a: number; b: number }[] = [];
-  for (const [p, q] of pieces) {
-    const a = nodeOf(p), b = nodeOf(q);
-    if (a === b) continue;
-    const k = a < b ? `${a}-${b}` : `${b}-${a}`;
-    if (edgeKeys.has(k)) continue;
-    edgeKeys.add(k);
-    edges.push({ a, b });
-  }
-
-  // ---- 3. prune dangling pieces
-  const alive = edges.map(() => true);
-  const inc: number[][] = nodes.map(() => []);
-  edges.forEach((e, id) => { inc[e.a].push(id); inc[e.b].push(id); });
-  const deg = inc.map((l) => l.length);
-  const stack: number[] = [];
-  deg.forEach((d, n) => { if (d === 1) stack.push(n); });
-  while (stack.length) {
-    const n = stack.pop() as number;
-    if (deg[n] !== 1) continue;
-    const id = inc[n].find((e) => alive[e]);
-    if (id === undefined) continue;
-    alive[id] = false;
-    deg[n] = 0;
-    const o = edges[id].a === n ? edges[id].b : edges[id].a;
-    if (--deg[o] === 1) stack.push(o);
-  }
-
-  // pruned pieces that took a WHOLE shape with them (nothing of it survives) are reported as unclosed
-  const lost: Pt[][] = [];
-  const parent = nodes.map((_, i) => i);
-  const find = (n: number): number => (parent[n] === n ? n : (parent[n] = find(parent[n])));
-  edges.forEach((e, id) => { if (!alive[id]) parent[find(e.a)] = find(e.b); });
-  const comps = new Map<number, { pts: Pt[]; attached: boolean }>();
-  edges.forEach((e, id) => {
-    if (alive[id]) return;
-    const r = find(e.a);
-    const c = comps.get(r) ?? { pts: [], attached: false };
-    c.pts.push(nodes[e.a], nodes[e.b]);
-    if (deg[e.a] > 0 || deg[e.b] > 0) c.attached = true; // hangs off a surviving shape: just a tail
-    comps.set(r, c);
-  });
-  for (const c of comps.values()) if (!c.attached && c.pts.length > 2) lost.push(c.pts);
-
-  // ---- rebuild polylines (a run of degree-2 nodes = one path; a pure cycle comes out closed)
-  const adj: number[][] = nodes.map(() => []);
-  edges.forEach((e, id) => { if (alive[id]) { adj[e.a].push(id); adj[e.b].push(id); } });
-  const used = edges.map(() => false);
-  const out: Pt[][] = [];
-  const walk = (start: number, first: number): Pt[] => {
-    const pts: Pt[] = [nodes[start]];
-    let cur = start, eid = first;
-    for (;;) {
-      used[eid] = true;
-      cur = edges[eid].a === cur ? edges[eid].b : edges[eid].a;
-      pts.push(nodes[cur]);
-      if (cur === start || adj[cur].length !== 2) break;
-      const next = adj[cur].find((id) => !used[id]);
-      if (next === undefined) break;
-      eid = next;
-    }
-    return pts;
-  };
-  nodes.forEach((_, n) => {
-    if (adj[n].length === 2 || !adj[n].length) return;
-    for (const id of adj[n]) if (!used[id]) out.push(walk(n, id));
-  });
-  edges.forEach((e, id) => { if (alive[id] && !used[id]) out.push(walk(e.a, id)); });
-  return { paths: out, lost };
-}
-
-/** Groups the pieces that could not be closed into loops by where they lie (overlapping boxes = one shape). */
-function groupUnclosed(chains: Pt[][]): { x: number; y: number }[] {
-  const boxes = chains.map((c) => {
-    const xs = c.map((p) => p[0]);
-    const ys = c.map((p) => p[1]);
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  });
-  let merged = true;
-  while (merged) {
-    merged = false;
-    for (let i = 0; i < boxes.length && !merged; i++)
-      for (let j = i + 1; j < boxes.length && !merged; j++) {
-        const a = boxes[i];
-        const b = boxes[j];
-        if (a[0] <= b[2] + TOL && b[0] <= a[2] + TOL && a[1] <= b[3] + TOL && b[1] <= a[3] + TOL) {
-          boxes[i] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
-          boxes.splice(j, 1);
-          merged = true;
-        }
-      }
-  }
-  return boxes.map((b) => ({ x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 }));
 }
 
 /** A "QTY: 2 / thk: 10" note drawn in the DXF above a group of parts (x, y in drawing units). */
@@ -441,13 +252,7 @@ function readLabels(texts: { x: number; y: number; h: number; text: string }[]):
   return out;
 }
 
-export function parseDXF(text: string): {
-  loops: Pt[][];
-  skip: string[];
-  labels: DxfLabel[];
-  /** Shapes whose lines could not be closed into a contour (duplicate / overlapping lines, gaps) — they are NOT imported. Positions in drawing units. */
-  unclosed: { x: number; y: number }[];
-} {
+export function parseDXF(text: string): { loops: Pt[][]; skip: string[]; labels: DxfLabel[] } {
   const L = text.split(/\r?\n/);
   const E: Ent[] = [];
   let cur: Ent | null = null;
@@ -534,11 +339,7 @@ export function parseDXF(text: string): {
     } else if (!["POINT", "TEXT", "MTEXT", "DIMENSION", "HATCH", "SOLID"].includes(e.t)) skip[e.t] = 1;
     if (p && p.length > 1) (cl ? loops : open).push(p);
   }
-  const dropped: Pt[][] = [];
-  const tidy = tidyOpenPaths(open);
-  dropped.push(...tidy.lost);
-  const chained = chain(tidy.paths, dropped);
-  return { loops: loops.concat(chained), skip: Object.keys(skip), labels: readLabels(texts), unclosed: groupUnclosed(dropped) };
+  return { loops: loops.concat(chain(open)), skip: Object.keys(skip), labels: readLabels(texts) };
 }
 
 // ------------------------------------------------------------ geometry helpers
@@ -588,7 +389,7 @@ export function thicknessFromName(name: string): number {
   return tm ? +tm[1].replace(",", ".") : 0;
 }
 
-function extractParts(loops: Pt[][], sc: number, contains: (outer: Pt[], inner: Pt[]) => boolean = (o, i) => inside(i[0], o)): RawPart[] {
+function extractParts(loops: Pt[][], sc: number): RawPart[] {
   const L: Loop[] = loops
     .map((l) => {
       const pts = l.map((p) => [p[0] * sc, p[1] * sc] as Pt);
@@ -598,7 +399,7 @@ function extractParts(loops: Pt[][], sc: number, contains: (outer: Pt[], inner: 
     .sort((x, y) => y.a - x.a);
   L.forEach((l, i) => {
     for (let j = 0; j < i; j++)
-      if (contains(L[j].pts, l.pts)) {
+      if (inside(l.pts[0], L[j].pts)) {
         l.d++;
         l.par = j;
       }
@@ -675,158 +476,6 @@ export function addFileParts(
     else out.push({ ...p, id: counters.id++, sn: ++counters.sn, name, qty: add, th, material });
   }
   return { groups: out, count: parts.length, labelled };
-}
-
-// ------------------------------------------------------- nest DXF import
-
-/** One sheet found in a nest DXF (as written by buildDxf): its size and the parts lying on it. */
-export interface NestSheetImport {
-  W: number;
-  H: number;
-  /** Parts on the sheet; `box` is relative to the sheet's lower-left corner. */
-  parts: RawPart[];
-}
-
-const isAxisRect = (pts: Pt[]) => {
-  if (pts.length !== 4) return false;
-  const xs = pts.map((q) => q[0]);
-  const ys = pts.map((q) => q[1]);
-  const bw = Math.max(...xs) - Math.min(...xs);
-  const bh = Math.max(...ys) - Math.min(...ys);
-  return bw > 1 && bh > 1 && Math.abs(Math.abs(area(pts)) - bw * bh) <= bw * bh * 0.001;
-};
-
-const boxOf = (pts: Pt[]) => {
-  const xs = pts.map((q) => q[0]);
-  const ys = pts.map((q) => q[1]);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-};
-const boxWithin = (a: number[], b: number[], tol: number) => a[0] >= b[0] - tol && a[1] >= b[1] - tol && a[2] <= b[2] + tol && a[3] <= b[3] + tol;
-
-function distToPoly(p: Pt, poly: Pt[]): number {
-  let m = Infinity;
-  for (let i = 0; i < poly.length; i++) {
-    const q = poly[i];
-    const r = poly[(i + 1) % poly.length];
-    const dx = r[0] - q[0];
-    const dy = r[1] - q[1];
-    const l2 = dx * dx + dy * dy;
-    const t = l2 ? Math.max(0, Math.min(1, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l2)) : 0;
-    m = Math.min(m, Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy));
-  }
-  return m;
-}
-
-/** `inner` lies entirely inside (or touching the edge of) `outer` — every vertex, not just the first one. */
-function containsLoop(outer: Pt[], inner: Pt[]): boolean {
-  if (!boxWithin(boxOf(inner), boxOf(outer), 0.1)) return false;
-  return inner.every((p) => inside(p, outer) || distToPoly(p, outer) <= 0.1);
-}
-
-/**
- * Reads a nest DXF (sheet outlines + the parts placed on them, e.g. the file exported by this tool): every
- * axis-aligned rectangle that is not inside another sheet's box is a sheet, every other contour inside a
- * sheet's box is a part (holes handled like a normal DXF). Parts may touch the sheet edge or even be as big as
- * the sheet, and parts may interlock (overlapping boxes).
- * `stray` = contours that belong to no sheet (ignored).
- */
-export function splitNestLoops(loops: Pt[][], sc: number): { sheets: NestSheetImport[]; stray: number } {
-  const L = loops.map((l) => l.map((p) => [p[0] * sc, p[1] * sc] as Pt)).filter((l) => Math.abs(area(l)) > 1);
-  const rects = L.filter(isAxisRect).sort((a, b) => Math.abs(area(b)) - Math.abs(area(a)));
-  const sheetLoops: { r: Pt[]; b: number[] }[] = [];
-  for (const r of rects) {
-    const b = boxOf(r);
-    if (!sheetLoops.some((s) => boxWithin(b, s.b, 0.1))) sheetLoops.push({ r, b });
-  }
-  const isSheet = new Set(sheetLoops.map((s) => s.r));
-  const rest = L.filter((l) => !isSheet.has(l));
-  const used = new Set<Pt[]>();
-  const sheets = sheetLoops
-    .sort((a, b) => a.b[0] - b.b[0] || a.b[1] - b.b[1])
-    .map((s) => {
-      const inner = rest.filter((l) => !used.has(l) && boxWithin(boxOf(l), s.b, 0.1));
-      inner.forEach((l) => used.add(l));
-      const parts = extractParts(inner, 1, containsLoop).map((p) => ({ ...p, box: [p.box[0] - s.b[0], p.box[1] - s.b[1], p.box[2] - s.b[0], p.box[3] - s.b[1]] as [number, number, number, number] }));
-      return { W: s.b[2] - s.b[0], H: s.b[3] - s.b[1], parts };
-    });
-  return { sheets, stray: rest.length - used.size };
-}
-
-/** Do the vertices of a and b coincide (same shape, any start vertex), within tol? */
-function sameOutline(a: Pt[], b: Pt[], tol: number): boolean {
-  const near = (p: Pt, poly: Pt[]) => {
-    let m = Infinity;
-    for (let i = 0; i < poly.length; i++) {
-      const q = poly[i];
-      const r = poly[(i + 1) % poly.length];
-      const dx = r[0] - q[0];
-      const dy = r[1] - q[1];
-      const l2 = dx * dx + dy * dy;
-      const t = l2 ? Math.max(0, Math.min(1, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l2)) : 0;
-      m = Math.min(m, Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy));
-    }
-    return m;
-  };
-  return a.every((p) => near(p, b) <= tol) && b.every((p) => near(p, a) <= tol);
-}
-
-const NEST_ROTS = [0, 90, 180, 270, ...Array.from({ length: 24 }, (_, i) => i * 15).filter((r) => r % 90)];
-
-/**
- * Turns the sheets of a nest DXF into part rows (`groups`, identical parts share one row) and ready-made
- * sheets with every part already placed where the DXF has it. Parts that are the same shape turned by a
- * known angle (0/90/180/270, or any 15° step) share a row and keep that rotation.
- */
-export function addNestParts(
-  groups: Group[],
-  nest: NestSheetImport[],
-  name: string,
-  counters: Counters,
-  opts: { th: number; material: string },
-): { groups: Group[]; sheets: Sheet[]; count: number } {
-  const out = groups.slice();
-  const sheets: Sheet[] = [];
-  let count = 0;
-  for (const ns of nest) {
-    const sh: Sheet = { items: [], th: opts.th, material: opts.material, used: 0, W: ns.W, H: ns.H };
-    for (const p of ns.parts) {
-      const tol = Math.max(0.5, Math.max(p.w, p.h) * 0.0005);
-      let found: { gi: number; rot: number } | null = null;
-      for (let gi = 0; gi < out.length && !found; gi++) {
-        const g = out[gi];
-        if (
-          g.th !== opts.th || g.material !== opts.material || g.holes.length !== p.holes.length ||
-          Math.abs(g.area - p.area) > g.area * 0.002 + 0.5 || Math.abs(g.per - p.per) > g.per * 0.005 + 0.5
-        )
-          continue;
-        for (const rot of NEST_ROTS) {
-          const mapped = g.outer.map((pt) => tp(g, rot, pt));
-          const mh = g.holes.map((h) => h.map((pt) => tp(g, rot, pt)));
-          if (sameOutline(mapped, p.outer, tol) && p.holes.every((h) => mh.some((m) => sameOutline(m, h, tol)))) {
-            found = { gi, rot };
-            break;
-          }
-        }
-      }
-      let g: Group;
-      let rot = 0;
-      if (found) {
-        out[found.gi] = { ...out[found.gi], qty: out[found.gi].qty + 1 };
-        g = out[found.gi];
-        rot = found.rot;
-      } else {
-        g = { ...p, id: counters.id++, sn: ++counters.sn, name, qty: 1, th: opts.th, material: opts.material };
-        out.push(g);
-      }
-      sh.items.push({ g, rot, x: p.box[0], y: p.box[1] });
-      count++;
-    }
-    sheets.push(sh);
-  }
-  // items must point at the final (quantity-updated) group objects
-  const byId = new Map(out.map((g) => [g.id, g]));
-  for (const sh of sheets) for (const it of sh.items) it.g = byId.get(it.g.id) ?? it.g;
-  return { groups: out, sheets, count };
 }
 
 /**
@@ -1101,6 +750,12 @@ export function sameSheetSettings(a: Settings, b: Settings): boolean {
   return a.W === b.W && a.H === b.H && a.mg === b.mg && a.gp === b.gp && a.cell === b.cell;
 }
 
+/** Can parts be added to an existing nest? The stock sheet (length, width) and the edge margin must stay the same;
+ *  the gap between parts and the grid cell may differ for the parts being added. */
+export function canContinueOn(a: Settings, b: Settings): boolean {
+  return a.W === b.W && a.H === b.H && a.mg === b.mg;
+}
+
 /** Marks the cells taken by the parts already on `sh` (same cells the manual-nesting checks use). */
 function seedOf(S: Settings, sh: Sheet): Seed {
   const grid = new Uint8Array(S.GW * S.GH);
@@ -1170,6 +825,9 @@ export interface OptimizeOptions {
   /** Continue an existing nest: only the pieces of each part not placed yet are nested, first into the free space of the
    *  sheets already there (same thickness + material, full stock size), then onto new sheets. Needs the same sheet settings. */
   base?: OptResult | null;
+  /** With `base`: true (default) = the new parts first fill the free space of the existing sheets (same thickness +
+   *  material), then new sheets are opened. false = the existing sheets are left alone, the new parts go on new sheets only. */
+  fillExisting?: boolean;
   shouldStop: () => boolean;
   onBest: (res: OptResult) => void;
   onStatus: (text: string) => void;
@@ -1229,7 +887,7 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
     const sub = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
     // existing sheets of this lot that still have their full stock size can take more parts
     const seedIdx: number[] = [];
-    baseSheets.forEach((x, i) => {
+    if (o.fillExisting !== false) baseSheets.forEach((x, i) => {
       if ((x.th || 0) === th && (x.material || "") === material && x.W === undefined && x.H === undefined) seedIdx.push(i);
     });
     const seeds = seedIdx.map((i) => seedOf(S, baseSheets[i]));

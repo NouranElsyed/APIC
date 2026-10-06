@@ -82,3 +82,26 @@ describe("combined report", () => {
     expect(only2.worksheets.map((w) => w.name)).toEqual(["Overview", "2D Summary", "2D Sheets", "2D Parts"]);
   });
 });
+
+describe("combined report — weight summary", () => {
+  it("lists weight + scrap per material and a grand total", async () => {
+    const S2: Settings = { W: 2000, H: 1000, mg: 5, gp: 5, cell: 5, ro: 2, x0: 0, GW: 0, GH: 0 };
+    const g: Group = { id: 1, sn: 1, name: "Plate A", qty: 1, th: 10, material: "S235", outer: [], holes: [], w: 500, h: 400, area: 200000, per: 0 };
+    const d2 = { result: { sheets: [{ items: [{ g, rot: 0, x: 0, y: 0 }], th: 10, material: "S235", used: 0 }], un: [], skip: [] } as OptResult, S: S2, groups: [g] };
+    const S1: Settings1D = { kerf: 3, leftTrim: 10, rightTrim: 10, gripping: 0, minimizeLayoutCount: false, maxPartsInLayout: 0, maxDistinctLengthsInLayout: 0, minLengthDiffInLayout: 0, remnantMinLength: 300, restrictedRestFrom: 0, restrictedRestTo: 0 };
+    const pieces = addPiece([], { name: "A", profile: "FB50x10", material: "S235", length: 1000, qty: 5 }, { id: 0, sn: 0 });
+    const sources = addSource([], { profile: "FB50x10", material: "S235", length: 6000, qty: null, cost: 0, description: "" }, { id: 100, sn: 0 });
+    const d1 = { result: runOptimize1D(pieces, sources, S1), S: S1, pieces, sources };
+    const ov = (await load(await buildReportCombined({ projectName: "P", d2, d1 }))).getWorksheet("Overview")!;
+    const rowOf = (label: string) => { let found: ExcelJS.Row | undefined; ov.eachRow((row) => { if (row.getCell(1).value === label) found = row; }); return found!; };
+    const plate = rowOf("Plate S235");
+    expect(plate.getCell(3).value).toBe(157); // 2 m² × 10 mm × 7.85
+    expect(plate.getCell(4).value).toBe(15.7);
+    expect(plate.getCell(5).value).toBe(141.3);
+    const fb = rowOf("FB50x10"); // 3.925 kg/m, one 6 m bar, 5 × 1 m parts
+    expect(fb.getCell(3).value).toBe(23.55);
+    expect(fb.getCell(4).value).toBe(19.63);
+    const total = rowOf("TOTAL SCRAP");
+    expect((total.getCell(5).value as { result: number }).result).toBeCloseTo(141.3 + (23.55 - 19.63), 2);
+  });
+});

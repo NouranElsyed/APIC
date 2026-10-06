@@ -1,4 +1,4 @@
-import { barStats, type Bar, type Settings1D } from "../nest-boost-1d/engine";
+import { barStats, barTrims, type Bar, type Settings1D } from "../nest-boost-1d/engine";
 
 /** Stable colour per part serial number (shared by the screen and the report image). */
 export function pieceColor(sn: number): string {
@@ -18,14 +18,15 @@ export function renderBarPng(b: Bar, S: Settings1D, width = 1200, height = 44): 
   const k = width / L;
   c.fillStyle = "#fff";
   c.fillRect(0, 0, width, height);
+  const t = barTrims(b, S);
   c.fillStyle = "#e5e7eb";
-  c.fillRect(0, 0, S.leftTrim * k, height);
-  c.fillRect(width - (S.rightTrim + S.gripping) * k, 0, (S.rightTrim + S.gripping) * k, height);
+  c.fillRect(0, 0, t.left * k, height);
+  c.fillRect(width - t.right * k, 0, t.right * k, height);
   c.textAlign = "center";
   c.textBaseline = "middle";
   c.font = "bold 13px system-ui, Arial, sans-serif";
   for (const cut of b.cuts) {
-    const x = (S.leftTrim + cut.pos) * k;
+    const x = (t.left + cut.pos) * k;
     const w = cut.piece.length * k;
     c.fillStyle = pieceColor(cut.piece.sn);
     c.fillRect(x, 0, w, height);
@@ -38,7 +39,7 @@ export function renderBarPng(b: Bar, S: Settings1D, width = 1200, height = 44): 
   }
   const st = barStats(b, S);
   if (st.isRemnant && st.rest > 0) {
-    const x = (S.leftTrim + st.usedLength) * k;
+    const x = (t.left + st.usedLength) * k;
     c.fillStyle = "rgba(16,185,129,.35)";
     c.fillRect(x, 0, st.rest * k, height);
     c.fillStyle = "#065f46";

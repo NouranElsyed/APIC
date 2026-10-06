@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { PARTS_CSV_TEMPLATE, parsePartsCsv } from "../csv-parts";
-import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import { dxfToPiece } from "../dxf-piece";
 import { nestKindOf, partTo1DPiece } from "../part-routing";
 import { pieceColor, renderBarPng } from "../report/draw-1d";
@@ -20,6 +19,7 @@ import {
   addPiece,
   addSource,
   barStats,
+  barTrims,
   buildCutList,
   buildCutListCsv,
   DEFAULT_PART_TYPE_1D,
@@ -71,17 +71,18 @@ function Stat({ label, value }: { label: string; value: string }) {
 function BarStrip({ b, S }: { b: Bar; S: Settings1D }) {
   const L = b.length ?? b.sourceLength;
   const st = barStats(b, S);
+  const t = barTrims(b, S);
   return (
     <div className="relative h-9 w-full overflow-hidden rounded border border-border bg-secondary">
-      <div className="absolute inset-y-0 left-0 bg-muted" style={{ width: `${(100 * S.leftTrim) / L}%` }} />
-      <div className="absolute inset-y-0 right-0 bg-muted" style={{ width: `${(100 * (S.rightTrim + S.gripping)) / L}%` }} />
+      <div className="absolute inset-y-0 left-0 bg-muted" style={{ width: `${(100 * t.left) / L}%` }} />
+      <div className="absolute inset-y-0 right-0 bg-muted" style={{ width: `${(100 * t.right) / L}%` }} />
       {b.cuts.map((c, i) => (
         <div
           key={i}
           title={`#${c.piece.sn} ${c.piece.name} — ${Math.round(c.piece.length)} mm`}
           className="absolute inset-y-0 flex items-center justify-center overflow-hidden text-[10px] font-semibold text-white"
           style={{
-            left: `${(100 * (S.leftTrim + c.pos)) / L}%`,
+            left: `${(100 * (t.left + c.pos)) / L}%`,
             width: `${(100 * c.piece.length) / L}%`,
             background: pieceColor(c.piece.sn),
             borderLeft: "1px solid rgba(255,255,255,.6)",
@@ -93,7 +94,7 @@ function BarStrip({ b, S }: { b: Bar; S: Settings1D }) {
       {st.isRemnant && st.rest > 0 && (
         <div
           className="absolute inset-y-0 flex items-center justify-center bg-emerald-500/30 text-[9px] font-semibold text-emerald-900"
-          style={{ left: `${(100 * (S.leftTrim + st.usedLength)) / L}%`, width: `${(100 * st.rest) / L}%` }}
+          style={{ left: `${(100 * (t.left + st.usedLength)) / L}%`, width: `${(100 * st.rest) / L}%` }}
           title={`Reusable remnant — ${st.rest} mm`}
         >
           rest
@@ -185,7 +186,7 @@ export function NestBoost1D() {
   const pieceCounters = React.useRef<Counters1D>({ id: 0, sn: 0 });
   const sourceCounters = React.useRef<Counters1D>({ id: 100000, sn: 0 });
 
-  const { projectId, nestingQueue1D, clearNestingQueue1D, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
+  const { projectId, projects, nestingQueue1D, clearNestingQueue1D } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState("");
@@ -267,13 +268,11 @@ export function NestBoost1D() {
     setDxfBusy(true);
     try {
       const scale = dxfUnits === "auto" ? null : Number(dxfUnits);
-      const parsedDxf: { f: File; r: ReturnType<typeof dxfToPiece> }[] = [];
-      for (const f of files) parsedDxf.push({ f, r: dxfToPiece(await f.text(), f.name, scale) });
-      await ensureWorkspaceFor(parsedDxf.some((x) => !("error" in x.r)), parsedDxf.find((x) => !("error" in x.r))?.f.name);
       let next = piecesRef.current;
       const lines: string[] = [];
       let added = 0;
-      for (const { f, r } of parsedDxf) {
+      for (const f of files) {
+        const r = dxfToPiece(await f.text(), f.name, scale);
         if ("error" in r) {
           lines.push(`${f.name}: skipped — ${r.error}`);
           continue;
@@ -295,57 +294,12 @@ export function NestBoost1D() {
     }
   }
 
-  /** Nothing open: an import with usable parts starts a new entry in the user's history (name + date), auto-saved from now on. */
-  async function ensureWorkspaceFor(hasParts: boolean, fileName?: string) {
-    if (workspaceId || !hasParts) return;
-    try {
-      await ensureWorkspace(fileName?.replace(/\.(dxf|csv)$/i, ""));
-    } catch (err) {
-      toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
-    }
-  }
-
-  // ---- Auto-save of the whole 1D workspace (parts, sources, settings, result) to the selected project.
-  const autosave = useNestingAutosave({
-    kind: "1D",
-    workspaceId,
-    consumeFresh,
-    capture: () => ({
-      v: 1, pieces: piecesRef.current, sources: sourcesRef.current, cfg, result, resS,
-      pieceCounters: pieceCounters.current, sourceCounters: sourceCounters.current, importedIds: [...importedIds.current],
-    }),
-    restore: (data) => {
-      const d = data as {
-        v?: number; pieces?: Piece1D[]; sources?: Source1D[]; cfg?: typeof cfg; result?: Result1D | null; resS?: Settings1D | null;
-        pieceCounters?: { id: number; sn: number }; sourceCounters?: { id: number; sn: number }; importedIds?: string[];
-      } | null;
-      const ok = !!d && d.v === 1 && Array.isArray(d.pieces) && Array.isArray(d.sources);
-      const pcs = ok ? d!.pieces! : [];
-      const srcs = ok ? d!.sources! : [];
-      piecesRef.current = pcs;
-      sourcesRef.current = srcs;
-      setPieces(pcs);
-      setSources(srcs);
-      pieceCounters.current = ok && d!.pieceCounters ? d!.pieceCounters : { id: Math.max(0, ...pcs.map((p) => p.id)), sn: Math.max(0, ...pcs.map((p) => p.sn)) };
-      sourceCounters.current = ok && d!.sourceCounters ? d!.sourceCounters : { id: Math.max(100000, ...srcs.map((s) => s.id)), sn: Math.max(0, ...srcs.map((s) => s.sn)) };
-      importedIds.current = new Set(ok ? d!.importedIds ?? [] : []);
-      if (ok && d!.cfg) setCfg((c) => ({ ...c, ...d!.cfg }));
-      setResult(ok ? d!.result ?? null : null);
-      setResS(ok ? d!.resS ?? null : null);
-      setStatus("");
-      setImportMsg(ok ? `Restored the saved nest (${pcs.length} part row(s)).` : "");
-    },
-    deps: [pieces, sources, cfg, result, resS],
-  });
-
   async function handleCsv(files: File[]) {
     let added = 0;
     const lines: string[] = [];
-    const parsedCsv: { f: File; r: ReturnType<typeof parsePartsCsv> }[] = [];
-    for (const f of files) parsedCsv.push({ f, r: parsePartsCsv(await f.text()) });
-    await ensureWorkspaceFor(parsedCsv.some((x) => x.r.pieces.length > 0), parsedCsv.find((x) => x.r.pieces.length > 0)?.f.name);
     let next: Piece1D[] = piecesRef.current;
-    for (const { f, r } of parsedCsv) {
+    for (const f of files) {
+      const r = parsePartsCsv(await f.text());
       for (const p of r.pieces) next = addPiece(next, p, pieceCounters.current);
       added += r.pieces.length;
       lines.push(`${f.name}: ${r.pieces.length} part(s) imported` + (r.errors.length ? `, ${r.errors.length} row(s) skipped:\n  ${r.errors.join("\n  ")}` : ""));
@@ -503,14 +457,14 @@ export function NestBoost1D() {
     if (!result || !resS) return null;
     const S = resS;
     return {
-      projectName: workspaceLabel || undefined,
+      projectName: projects.find((p) => p.id === projectId)?.name,
       result,
       S,
       pieces,
       sources,
       renderBar: (i) => renderBarPng(result.layouts[i].bars[0], S),
     };
-  }, [result, resS, pieces, sources, workspaceLabel]);
+  }, [result, resS, pieces, sources, projects, projectId]);
 
   // Lets the combined 1D+2D report button reach this tool's latest result.
   React.useEffect(() => {
@@ -541,13 +495,6 @@ export function NestBoost1D() {
       <div className="space-y-4">
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import parts</h3>
-          <div className="mb-2">
-            {workspaceId ? (
-              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
-            ) : (
-              <p className="text-xs text-muted-foreground">No project selected — importing a CSV / DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
-            )}
-          </div>
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}
