@@ -1,22 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { deleteHistory, renameHistory } from "@/server/services/nesting-history.service";
+import { createHistory, listHistory } from "@/server/services/nesting-history.service";
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("takeoff.edit");
+// The signed-in user's own nesting history (newest first).
+export async function GET() {
+  const { session, res } = await requirePermission("takeoff.view");
   if (res) return res;
-  const { id } = await params;
-  const body = await req.json().catch(() => null);
-  if (typeof body?.name !== "string" || !body.name.trim()) return NextResponse.json({ error: "A name is required" }, { status: 400 });
-  const updated = await renameHistory(session!.user.id, id, body.name);
-  if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(updated);
+  return NextResponse.json(await listHistory(session!.user.id));
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Starts a new history entry (what the first import made with nothing open does).
+export async function POST(req: NextRequest) {
   const { session, res } = await requirePermission("takeoff.edit");
   if (res) return res;
-  const { id } = await params;
-  if (!(await deleteHistory(session!.user.id, id))) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  const body = await req.json().catch(() => ({}));
+  const entry = await createHistory(
+    session!.user.id,
+    typeof body?.name === "string" ? body.name : undefined,
+    typeof body?.stamp === "string" ? body.stamp : undefined,
+    typeof body?.hint === "string" ? body.hint : undefined,
+  );
+  return NextResponse.json(entry, { status: 201 });
 }
