@@ -1,12 +1,13 @@
 "use client";
 import * as React from "react";
-import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X } from "lucide-react";
+import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X, PackagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DrawingForm } from "./drawing-form";
+import { NestingImportDialog } from "./nesting-import-dialog";
 import { PartsGrid } from "./parts-grid";
 import { useTakeoffProject } from "./project-context";
 import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
@@ -56,6 +57,8 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [filters, setFilters] = React.useState<Filters>(emptyFilters);
 
   const [drawingFormOpen, setDrawingFormOpen] = React.useState(false);
+  // "Take parts from DXF Nesting": `key` changes on every opening so the popup always starts fresh
+  const [nestImport, setNestImport] = React.useState({ open: false, key: 0 });
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
 
@@ -105,7 +108,15 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   return (
     <div className="space-y-6">
       {canCreate && (
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setNestImport((n) => ({ open: true, key: n.key + 1 }))}
+            disabled={!projectId}
+            title="Turn the parts of a nest (this project's, or one from your history) into plates of this project"
+          >
+            <PackagePlus className="h-4 w-4" /> Take parts from DXF Nesting
+          </Button>
           <Button onClick={() => setDrawingFormOpen(true)} disabled={!projectId}>
             <Plus className="h-4 w-4" /> Add Drawing
           </Button>
@@ -232,6 +243,17 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
             );
           })}
         </div>
+      )}
+
+      {projectId && canCreate && (
+        <NestingImportDialog
+          key={nestImport.key}
+          open={nestImport.open}
+          onOpenChange={(v) => setNestImport((n) => ({ ...n, open: v }))}
+          projectId={projectId}
+          drawings={drawings}
+          onImported={() => loadDrawings(projectId)}
+        />
       )}
 
       {projectId && (
