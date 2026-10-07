@@ -814,6 +814,15 @@ function CutSizeInput({ value, max, onCommit }: { value: number; max: number; on
   );
 }
 
+/** lucide has no trapezoid, so this one is drawn the same way (24×24, 2px outline). */
+function TrapezoidIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M7 5h10l4 14H3z" />
+    </svg>
+  );
+}
+
 /**
  * Length / width field of a part: type freely, the new size is applied on Enter or when the field loses focus
  * (so half-typed numbers never rescale the part). Esc cancels.
@@ -834,7 +843,7 @@ function DimInput({ value, onCommit, label, className = "" }: { value: number; o
       step="any"
       aria-label={label}
       title={`${label} (mm) — press Enter to apply`}
-      className={`h-8 w-full min-w-16 md:w-[4.75rem] ${className}`}
+      className={`h-8 w-full min-w-16 md:w-24 ${className}`}
       value={draft ?? shown}
       onFocus={(e) => e.target.select()}
       onChange={(e) => setDraft(e.target.value)}
@@ -855,12 +864,13 @@ type ManualForm = {
   kind: ManualShape["kind"];
   w: string; h: string; // rectangle
   a: string; b: string; angle: string; // triangle
+  tzA: string; tzB: string; tzH: string; tzRight: boolean; // trapezoid: bottom base, top base, height, one side at 90°
   d: string; // circle
   hasHole: boolean; hole: string;
   th: string; material: string; qty: string; name: string;
 };
 const EMPTY_MANUAL: ManualForm = {
-  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", d: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
+  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", tzA: "", tzB: "", tzH: "", tzRight: false, d: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
 };
 
 /** One line of the "what will be added" popup that opens after choosing DXF files. */
@@ -1377,15 +1387,18 @@ export function NestBoost() {
 
   // ---- "Add part by dimensions"
   const mfNum = (v: string) => (v.trim() === "" ? NaN : Number(v));
+  const mfHole = mf.hasHole ? mfNum(mf.hole) : 0;
   const mfShape: ManualShape =
     mf.kind === "rect"
-      ? { kind: "rect", w: mfNum(mf.w), h: mfNum(mf.h), hole: mf.hasHole ? mfNum(mf.hole) : 0 }
+      ? { kind: "rect", w: mfNum(mf.w), h: mfNum(mf.h), hole: mfHole }
       : mf.kind === "circle"
-        ? { kind: "circle", d: mfNum(mf.d), hole: mf.hasHole ? mfNum(mf.hole) : 0 }
-        : { kind: "triangle", a: mfNum(mf.a), b: mfNum(mf.b), angle: mfNum(mf.angle), hole: mf.hasHole ? mfNum(mf.hole) : 0 };
+        ? { kind: "circle", d: mfNum(mf.d), hole: mfHole }
+        : mf.kind === "trapezoid"
+          ? { kind: "trapezoid", a: mfNum(mf.tzA), b: mfNum(mf.tzB), h: mfNum(mf.tzH), right: mf.tzRight, hole: mfHole }
+          : { kind: "triangle", a: mfNum(mf.a), b: mfNum(mf.b), angle: mfNum(mf.angle), hole: mfHole };
   const mfGeo = buildManualShape(mfShape);
   // show the "what is wrong" message only once something was typed
-  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d !== "" || (mf.hasHole && mf.hole !== "");
+  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d + mf.tzA + mf.tzB + mf.tzH !== "" || (mf.hasHole && mf.hole !== "");
 
   async function addManual(keepOpen: boolean) {
     if ("error" in mfGeo) {
@@ -2781,11 +2794,12 @@ export function NestBoost() {
             <DialogDescription>Type the size of the part (mm) and it is added to the list, ready to nest.</DialogDescription>
           </DialogHeader>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {(
               [
                 ["rect", "Rectangle", Square],
                 ["triangle", "Triangle", TriangleIcon],
+                ["trapezoid", "Trapezoid", TrapezoidIcon],
                 ["circle", "Circle", CircleIcon],
               ] as const
             ).map(([k, label, Icon]) => (
@@ -2810,6 +2824,21 @@ export function NestBoost() {
                   <Field label="Angle between (°)"><Input type="number" min={0} max={180} step="any" inputMode="decimal" value={mf.angle} onChange={(e) => setMf({ ...mf, angle: e.target.value })} /></Field>
                 </div>
               )}
+              {mf.kind === "trapezoid" && (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Field label="Bottom base (mm)"><Input type="number" min={0} step="any" inputMode="decimal" autoFocus value={mf.tzA} onChange={(e) => setMf({ ...mf, tzA: e.target.value })} /></Field>
+                    <Field label="Top base (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.tzB} onChange={(e) => setMf({ ...mf, tzB: e.target.value })} /></Field>
+                    <Field label="Height (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.tzH} onChange={(e) => setMf({ ...mf, tzH: e.target.value })} /></Field>
+                  </div>
+                  <Field label="Sides">
+                    <select className={selectCls} value={mf.tzRight ? "right" : "sym"} onChange={(e) => setMf({ ...mf, tzRight: e.target.value === "right" })}>
+                      <option value="sym">Symmetric (both sides lean the same)</option>
+                      <option value="right">Right-angled (left side at 90°)</option>
+                    </select>
+                  </Field>
+                </>
+              )}
               {mf.kind === "circle" && (
                 <Field label="Diameter (mm)"><Input type="number" min={0} step="any" inputMode="decimal" autoFocus value={mf.d} onChange={(e) => setMf({ ...mf, d: e.target.value })} /></Field>
               )}
@@ -2817,7 +2846,7 @@ export function NestBoost() {
               <div className="space-y-2">
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <Checkbox checked={mf.hasHole} onCheckedChange={(v) => setMf({ ...mf, hasHole: v === true })} />
-                  Has a round hole{mf.kind === "triangle" ? " (in the middle of the triangle)" : " (in the middle)"}
+                  Has a round hole{mf.kind === "triangle" || mf.kind === "trapezoid" ? " (in the middle of the shape)" : " (in the middle)"}
                 </label>
                 {mf.hasHole && (
                   <Field label="Hole diameter (mm)">

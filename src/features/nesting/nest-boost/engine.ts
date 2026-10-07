@@ -691,7 +691,9 @@ export type ManualShape =
   | { kind: "rect"; w: number; h: number; hole?: number }
   /** Two sides (a along the bottom, b at `angle` degrees from it) and the angle between them. The hole sits at the incircle centre. */
   | { kind: "triangle"; a: number; b: number; angle: number; hole?: number }
-  | { kind: "circle"; d: number; hole?: number };
+  | { kind: "circle"; d: number; hole?: number }
+  /** Bottom base `a`, top base `b` and the height between them. `right`: one side stands at 90° (right trapezoid); otherwise both sides lean equally (symmetric). */
+  | { kind: "trapezoid"; a: number; b: number; h: number; right?: boolean; hole?: number };
 
 export interface ManualGeometry {
   outer: Pt[];
@@ -738,6 +740,26 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
     outer = circlePts(s.d / 2, s.d / 2, s.d / 2);
     hc = [s.d / 2, s.d / 2];
     maxHole = s.d;
+  } else if (s.kind === "trapezoid") {
+    if (!ok(s.a) || !ok(s.b) || !ok(s.h)) return { error: "Enter the bottom base, the top base and the height (greater than 0)." };
+    const off = s.right ? 0 : (s.a - s.b) / 2; // where the top edge starts, measured from the bottom-left corner
+    const mx = Math.min(0, off);
+    outer = ([[0, 0], [s.a, 0], [off + s.b, s.h], [off, s.h]] as Pt[]).map((q) => [q[0] - mx, q[1]] as Pt);
+    if (Math.abs(area(outer)) < 1) return { error: "This trapezoid is too thin / too small." };
+    // a hole at the centre of gravity; it may be as wide as the nearest edge allows
+    let cx = 0;
+    let cy = 0;
+    let a2 = 0;
+    for (let i = 0; i < outer.length; i++) {
+      const p = outer[i];
+      const q = outer[(i + 1) % outer.length];
+      const c = p[0] * q[1] - q[0] * p[1];
+      a2 += c;
+      cx += (p[0] + q[0]) * c;
+      cy += (p[1] + q[1]) * c;
+    }
+    hc = [cx / (3 * a2), cy / (3 * a2)];
+    maxHole = 2 * distToPoly(hc, outer);
   } else {
     if (!ok(s.a) || !ok(s.b)) return { error: "Enter the length of both sides (greater than 0)." };
     if (!(Number.isFinite(s.angle) && s.angle > 0 && s.angle < 180)) return { error: "The angle between the two sides must be between 0° and 180°." };
@@ -759,7 +781,9 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
   const holes: Pt[][] = [];
   if (hole) {
     if (hole >= maxHole - 1e-6)
-      return { error: `The hole must be smaller than the part — at most ${fmtMm(maxHole)} mm${s.kind === "triangle" ? " for this triangle (it sits in the middle)" : ""}.` };
+      return {
+        error: `The hole must be smaller than ${fmtMm(maxHole)} mm${s.kind === "triangle" || s.kind === "trapezoid" ? ` — that is how much room this ${s.kind} has in the middle` : ""}.`,
+      };
     holes.push(circlePts(hc[0], hc[1], hole / 2));
   }
   const xs = outer.map((q) => q[0]);
@@ -779,6 +803,7 @@ export function manualPartName(s: ManualShape): string {
   const hole = s.hole && s.hole > 0 ? ` Ø${fmtMm(s.hole)}` : "";
   if (s.kind === "rect") return `Rectangle ${fmtMm(s.w)}×${fmtMm(s.h)}${hole}`;
   if (s.kind === "circle") return `Circle Ø${fmtMm(s.d)}${hole ? ` /${hole}` : ""}`;
+  if (s.kind === "trapezoid") return `Trapezoid ${fmtMm(s.a)}/${fmtMm(s.b)}×${fmtMm(s.h)}${s.right ? " right" : ""}${hole}`;
   return `Triangle ${fmtMm(s.a)}-${fmtMm(s.b)} ${fmtMm(s.angle)}°${hole}`;
 }
 

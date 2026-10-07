@@ -52,11 +52,49 @@ describe("parts typed in by hand", () => {
     expect((Math.min(...hy) + Math.max(...hy)) / 2).toBeCloseTo(100, 1);
   });
 
+  it("trapezoid: symmetric and right-angled, area and size", () => {
+    const sym = geo({ kind: "trapezoid", a: 400, b: 250, h: 300 });
+    expect(sym.area).toBeCloseTo(((400 + 250) / 2) * 300, 3);
+    expect([sym.w, sym.h]).toEqual([400, 300]);
+    // symmetric: the top edge is centred, 75 mm in from each side
+    const top = sym.outer.filter((p) => p[1] === 300).map((p) => p[0]).sort((x, y) => x - y);
+    expect(top).toEqual([75, 325]);
+    const right = geo({ kind: "trapezoid", a: 400, b: 250, h: 300, right: true });
+    expect(right.area).toBeCloseTo(97500, 3);
+    expect(right.outer.map((p) => p[0]).includes(0)).toBe(true);
+    expect(right.outer).toContainEqual([0, 300]); // the left side is vertical
+    expect(right.outer).toContainEqual([250, 300]);
+    // top wider than the bottom is still a valid part, moved to the origin
+    const wide = geo({ kind: "trapezoid", a: 200, b: 400, h: 100 });
+    expect([wide.w, wide.h]).toEqual([400, 100]);
+    expect(Math.min(...wide.outer.map((p) => p[0]))).toBeCloseTo(0, 6);
+    expect(wide.area).toBeCloseTo(30000, 3);
+  });
+
+  it("trapezoid hole: centred, and never wider than the room in the middle", () => {
+    const t = { kind: "trapezoid" as const, a: 400, b: 400, h: 200 }; // a plain rectangle: room = 200
+    expect(buildManualShape({ ...t, hole: 200 })).toHaveProperty("error");
+    const ok = geo({ ...t, hole: 150 });
+    const hx = ok.holes[0].map((p) => p[0]);
+    const hy = ok.holes[0].map((p) => p[1]);
+    expect((Math.min(...hx) + Math.max(...hx)) / 2).toBeCloseTo(200, 1);
+    expect((Math.min(...hy) + Math.max(...hy)) / 2).toBeCloseTo(100, 1);
+    // the hole stays inside a leaning trapezoid
+    const lean = geo({ kind: "trapezoid", a: 600, b: 200, h: 300, hole: 100 });
+    const ymin = Math.min(...lean.holes[0].map((p) => p[1]));
+    const ymax = Math.max(...lean.holes[0].map((p) => p[1]));
+    expect(ymin).toBeGreaterThan(0);
+    expect(ymax).toBeLessThan(300);
+    expect(buildManualShape({ kind: "trapezoid", a: 600, b: 200, h: 300, hole: 400 })).toHaveProperty("error");
+  });
+
   it("rejects numbers that make no part", () => {
     expect(buildManualShape({ kind: "rect", w: 0, h: 10 })).toHaveProperty("error");
     expect(buildManualShape({ kind: "rect", w: 100, h: 50, hole: 50 })).toHaveProperty("error");
     expect(buildManualShape({ kind: "circle", d: 100, hole: 100 })).toHaveProperty("error");
     expect(buildManualShape({ kind: "circle", d: NaN })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "trapezoid", a: 100, b: 0, h: 50 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "trapezoid", a: 100, b: 50, h: NaN })).toHaveProperty("error");
     expect(buildManualShape({ kind: "triangle", a: 10, b: 10, angle: 0 })).toHaveProperty("error");
     expect(buildManualShape({ kind: "triangle", a: 10, b: 10, angle: 180 })).toHaveProperty("error");
   });
@@ -82,6 +120,8 @@ describe("parts typed in by hand", () => {
   it("names", () => {
     expect(manualPartName({ kind: "circle", d: 400, hole: 50 })).toBe("Circle Ø400 / Ø50");
     expect(manualPartName({ kind: "triangle", a: 300, b: 400, angle: 90 })).toBe("Triangle 300-400 90°");
+    expect(manualPartName({ kind: "trapezoid", a: 400, b: 250, h: 300 })).toBe("Trapezoid 400/250×300");
+    expect(manualPartName({ kind: "trapezoid", a: 400, b: 250, h: 300, right: true, hole: 50 })).toBe("Trapezoid 400/250×300 right Ø50");
   });
 
   it("resizeGroup: new size, area follows, holes are stretched with the part, original untouched", () => {
