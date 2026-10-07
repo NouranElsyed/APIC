@@ -814,6 +814,21 @@ function CutSizeInput({ value, max, onCommit }: { value: number; max: number; on
   );
 }
 
+/** The three "other ways to add parts" under the drop zone share one look: icon, title and a line saying what it does. */
+const importRowCls =
+  "flex w-full items-center gap-3 rounded-lg border border-border bg-card p-2.5 text-left transition-colors hover:border-primary/40 hover:bg-secondary/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-card";
+function ImportRowBody({ icon, title, hint }: { icon: React.ReactNode; title: string; hint: string }) {
+  return (
+    <>
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium leading-tight">{title}</span>
+        <span className="block text-xs text-muted-foreground">{hint}</span>
+      </span>
+    </>
+  );
+}
+
 /** lucide has no trapezoid, so this one is drawn the same way (24×24, 2px outline). */
 function TrapezoidIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
@@ -2221,33 +2236,39 @@ export function NestBoost() {
               }}
             />
           </label>
-          <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted" title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
-            <FolderInput className="h-4 w-4" /> Import nest DXF (sheets + parts)
-            <input
-              type="file"
-              accept=".dxf"
-              hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                e.target.value = "";
-                if (f) void handleNestFile(f);
-              }}
-            />
-          </label>
-          <Button variant="outline" className="mt-2 w-full" onClick={() => setManualOpen(true)} title="Type a part in: rectangle (length × width), triangle (two sides and the angle between them) or circle (diameter), with an optional round hole">
-            <Shapes /> Add part by dimensions
-          </Button>
-          <Button
-            variant="secondary"
-            className="mt-2 w-full"
-            disabled={!projectId || importing}
-            onClick={() => importFromProject()}
-            title="Import every plate of the selected project that has a valid DXF, with its quantity and thickness"
-          >
-            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import plates from Standard Calculations
-          </Button>
-          {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
-          <div className="mt-2">
+          <p className="mb-1.5 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Other ways to add parts</p>
+          <div className="space-y-2">
+            <label className={`${importRowCls} cursor-pointer`} title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
+              <ImportRowBody icon={<Layers className="h-4 w-4" />} title="Import nest DXF" hint="A nest exported from here: sheets + parts" />
+              <input
+                type="file"
+                accept=".dxf"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void handleNestFile(f);
+                }}
+              />
+            </label>
+            <button type="button" className={importRowCls} onClick={() => setManualOpen(true)} title="Type a part in: rectangle, triangle, trapezoid or circle, with an optional round hole">
+              <ImportRowBody icon={<Shapes className="h-4 w-4" />} title="Add part by dimensions" hint="Type a rectangle, triangle, trapezoid or circle" />
+            </button>
+            <button
+              type="button"
+              className={importRowCls}
+              disabled={!projectId || importing}
+              onClick={() => importFromProject()}
+              title="Import every plate of the selected project that has a valid DXF, with its quantity and thickness"
+            >
+              <ImportRowBody
+                icon={importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderInput className="h-4 w-4" />}
+                title="Import plates from Standard Calculations"
+                hint={projectId ? "Every plate of the selected project" : "Select a project above to enable this"}
+              />
+            </button>
+          </div>
+          <div className="mt-4 border-t border-border pt-3">
             <Field label="Drawing units (manual uploads only)">
               <select className={selectCls} value={units} onChange={(e) => setUnits(e.target.value)}>
                 <option value="1">mm</option>
