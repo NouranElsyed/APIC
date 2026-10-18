@@ -18,6 +18,8 @@ import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
+import { classifyAll, type FitResult } from "../segmentation/fit";
+import { SegmentDialog } from "../segmentation/segment-dialog";
 import { decodeSnapshot, encodeSnapshot } from "./persist";
 import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import {
@@ -1959,6 +1961,16 @@ export function NestBoost() {
   const problems = result && resS ? problemMessages(result, resS) : [];
   const placed = placedCounts(result); // pieces of each part already on a sheet (recomputed on every render/bump)
   const stillToPlace = groups.map((g) => ({ g, n: leftOf(g, placed) })).filter((x) => x.n > 0);
+  // Part Segmentation, phase 2: does each part fit the sheet? (read-only status, nothing is changed)
+  const fitMap = React.useMemo(() => {
+    const v = { W: Number(cfg.W), H: Number(cfg.H), mg: Number(cfg.mg), gp: Number(cfg.gp), cell: Number(cfg.cell), ro: Number(cfg.ro) };
+    // same validity rule as readSettings(): while the sheet fields are being typed, show no status
+    if (!(v.W > 0 && v.H > 0 && v.cell > 0 && v.mg >= 0 && v.gp >= 0)) return new Map<number, FitResult>();
+    return classifyAll(groups, makeSettings(v));
+  }, [groups, cfg.W, cfg.H, cfg.mg, cfg.gp, cfg.cell, cfg.ro]);
+  // Part Segmentation, phase 4: settings + read-only preview dialog (does not change the nest)
+  const [segGroupId, setSegGroupId] = React.useState<number | null>(null);
+  const segGroup = segGroupId === null ? null : (groups.find((x) => x.id === segGroupId) ?? null);
   const lotMap = new Map<string, { key: string; th: number; material: string; label: string }>();
   for (const g of groups) {
     const th = g.th || 0;
@@ -2201,6 +2213,37 @@ export function NestBoost() {
     />
   );
   const rowTint = (g: Group) => (newIds.has(g.id) ? "bg-emerald-100 dark:bg-emerald-950/40" : checked.has(g.id) ? "bg-primary/5" : "");
+  /** Status badge for parts that are not plain "fits the sheet": solo sheet, needs segmentation, unplaceable. */
+  const fitBadge = (g: Group) => {
+    const f: FitResult | undefined = fitMap.get(g.id);
+    if (!f || f.status === "READY") return null;
+    const cls =
+      f.status === "READY_SOLO"
+        ? "bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200"
+        : f.status === "NEEDS_SEGMENTATION"
+          ? "bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+          : "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-200";
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1">
+        <span title={f.detail} className={`mt-0.5 inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`}>
+          {f.label}
+        </span>
+        {f.status === "NEEDS_SEGMENTATION" && (
+          <button
+            type="button"
+            className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-amber-300 px-2 py-0.5 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSegGroupId(g.id);
+            }}
+          >
+            <Layers className="h-3 w-3" />
+            Segment…
+          </button>
+        )}
+      </span>
+    );
+  };
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(300px,380px)_1fr]">
@@ -2432,7 +2475,10 @@ export function NestBoost() {
                         <td className="p-1">{rowChecked(g)}</td>
                         <td className="p-1 font-semibold">#{g.sn}</td>
                         <td className="p-1"><PartThumb g={g} /></td>
-                        <td className="max-w-40 break-all p-1">{g.name}</td>
+                        <td className="max-w-40 break-all p-1">
+                          {g.name}
+                          <div>{fitBadge(g)}</div>
+                        </td>
                         <td className="p-1 whitespace-nowrap">
                           <div className="flex items-center gap-1">
                             <DimInput label={`Length of #${g.sn}`} value={g.w} onCommit={(v) => sizeGroup(g, "w", v)} />
@@ -2492,6 +2538,7 @@ export function NestBoost() {
                       <PartThumb g={g} />
                       <div className="min-w-0 flex-1 text-xs">
                         <div className="break-all font-medium">{g.name}</div>
+                        {fitBadge(g)}
                         <div className="text-muted-foreground">
                           area {Math.round(g.area)} · {g.holes.length} hole(s)
                         </div>
@@ -2786,6 +2833,14 @@ export function NestBoost() {
         />
       </div>
 
+      <SegmentDialog
+        open={segGroup !== null}
+        onOpenChange={(o) => {
+          if (!o) setSegGroupId(null);
+        }}
+        group={segGroup}
+        nest={{ W: Number(cfg.W), H: Number(cfg.H), mg: Number(cfg.mg), ro: Number(cfg.ro) }}
+      />
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
