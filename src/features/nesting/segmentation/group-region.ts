@@ -7,7 +7,7 @@
  * specific signature, so the arcs can be rebuilt exactly from the polygon — no change to the
  * importer, no change to stored parts.
  *
- * A run of ≥ 4 consecutive vertices is rebuilt as one arc only if ALL of these hold:
+ * A run of ≥ 3 consecutive vertices is rebuilt as one arc only if ALL of these hold:
  *   - they are co-circular (centre and radius agree within `tol`, default 0.001 mm),
  *   - the angular step between neighbours is equal (relative 0.1 %) and ≤ 5°.
  * Hexagons, rectangles, free polylines, etc. never match (their steps are large or unequal).
@@ -40,60 +40,28 @@ const wrap = (a: number) => {
   return v;
 };
 
-/** Least-squares circle through `pts` (Kahan/Kåsa fit on centred coordinates), or null if degenerate. */
-function fitCircle(pts: Pt[]): { cx: number; cy: number; r: number } | null {
-  const N = pts.length;
-  if (N < 3) return null;
-  let mx = 0;
-  let my = 0;
-  for (const p of pts) {
-    mx += p[0];
-    my += p[1];
-  }
-  mx /= N;
-  my /= N;
-  let suu = 0, suv = 0, svv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
-  for (const p of pts) {
-    const u = p[0] - mx;
-    const v = p[1] - my;
-    suu += u * u;
-    suv += u * v;
-    svv += v * v;
-    suuu += u * u * u;
-    svvv += v * v * v;
-    suvv += u * v * v;
-    svuu += v * u * u;
-  }
-  const det = suu * svv - suv * suv;
-  if (Math.abs(det) < 1e-12 * Math.max(1, suu * svv)) return null;
-  const b1 = (suuu + suvv) / 2;
-  const b2 = (svvv + svuu) / 2;
-  const uc = (b1 * svv - b2 * suv) / det;
-  const vc = (b2 * suu - b1 * suv) / det;
-  const r = Math.sqrt(uc * uc + vc * vc + (suu + svv) / N);
-  if (!Number.isFinite(r)) return null;
-  return { cx: mx + uc, cy: my + vc, r };
+/** Circle through three points, with the angular steps a→b and b→c, or null if unusable. */
+function circleThrough(a: Pt, b: Pt, c: Pt, tol: number): Circ | null {
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-12) return null;
+  const a2 = a[0] * a[0] + a[1] * a[1];
+  const b2 = b[0] * b[0] + b[1] * b[1];
+  const c2 = c[0] * c[0] + c[1] * c[1];
+  const cx = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+  const cy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+  const r = Math.hypot(a[0] - cx, a[1] - cy);
+  if (!(r > 10 * tol) || r > 1e6) return null;
+  const s1 = wrap(Math.atan2(b[1] - cy, b[0] - cx) - Math.atan2(a[1] - cy, a[0] - cx));
+  const s2 = wrap(Math.atan2(c[1] - cy, c[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+  if (Math.abs(s1) > MAX_ARC_STEP || Math.abs(s2) > MAX_ARC_STEP || Math.abs(s1) < 1e-9) return null;
+  if (Math.abs(s1 - s2) > 1e-6 + 1e-3 * Math.abs(s1)) return null;
+  return { cx, cy, r, step: (s1 + s2) / 2 };
 }
 
-/**
- * Checks that `pts` (consecutive vertices) lie on one circle within `tol` and are spaced at equal
- * angular steps (≤ 5°). Returns the circle with its signed step, or null.
- */
-function arcThrough(pts: Pt[], tol: number, cyclic = false): Circ | null {
-  const c = fitCircle(pts);
-  if (!c || !(c.r > 10 * tol) || c.r > 1e6) return null;
-  if (pts.some((p) => Math.abs(Math.hypot(p[0] - c.cx, p[1] - c.cy) - c.r) > tol)) return null;
-  const ang = pts.map((p) => Math.atan2(p[1] - c.cy, p[0] - c.cx));
-  const steps: number[] = [];
-  const m = cyclic ? pts.length : pts.length - 1;
-  for (let i = 0; i < m; i++) steps.push(wrap(ang[(i + 1) % pts.length] - ang[i]));
-  const mean = steps.reduce((s, v) => s + v, 0) / steps.length;
-  if (Math.abs(mean) < 1e-9 || Math.abs(mean) > MAX_ARC_STEP) return null;
-  const slack = 1e-6 + 2e-3 * Math.abs(mean) + (2 * tol) / c.r;
-  if (steps.some((v) => Math.sign(v) !== Math.sign(mean) || Math.abs(v - mean) > slack)) return null;
-  if (cyclic && Math.abs(Math.abs(mean) * steps.length - TAU) > 1e-2) return null;
-  return { ...c, step: mean };
-}
+const same = (p: Circ, q: Circ, tol: number) =>
+  Math.hypot(p.cx - q.cx, p.cy - q.cy) <= tol &&
+  Math.abs(p.r - q.r) <= tol &&
+  Math.abs(p.step - q.step) <= 1e-6 + 1e-3 * Math.abs(p.step);
 
 export interface RecoveredLoop {
   loop: Loop;
@@ -110,50 +78,30 @@ export function recoverArcs(pts: Pt[], opts: { tol?: number } = {}): RecoveredLo
   const polygon = (): RecoveredLoop => ({ loop: polygonLoop(pts), arcs: 0, circle: false });
   if (n < 4) return polygon();
 
-  // Turning angle at every vertex, from chord directions (stable against tiny coordinate noise,
-  // unlike a circle through three noisy points). On a tessellated arc it equals the angular step.
-  const chord = (P: Pt[], i: number): Pt => [P[(i + 1) % n][0] - P[i][0], P[(i + 1) % n][1] - P[i][1]];
-  const turnsOf = (P: Pt[]) =>
-    P.map((_, i) => {
-      const d0 = chord(P, (i - 1 + n) % n);
-      const d1 = chord(P, i);
-      return { t: wrap(Math.atan2(d1[1], d1[0]) - Math.atan2(d0[1], d0[0])), len: Math.min(Math.hypot(d0[0], d0[1]), Math.hypot(d1[0], d1[1])) };
-    });
-  const turnLinks = (P: Pt[]) => {
-    const T = turnsOf(P);
-    const valid = (i: number) => Math.abs(T[i].t) >= 1e-9 && Math.abs(T[i].t) <= MAX_ARC_STEP;
-    // link(i): vertices i and i+1 continue the same arc (same sign, equal turning angle)
-    const link = (i: number) => {
-      const a = T[((i % n) + n) % n];
-      const b = T[(((i + 1) % n) + n) % n];
-      if (!valid(((i % n) + n) % n) || !valid((((i + 1) % n) + n) % n)) return false;
-      if (Math.sign(a.t) !== Math.sign(b.t)) return false;
-      // equal angular steps on one circle also mean equal chords (this rejects an arc's 2.5° end
-      // vertex being "linked" across a long straight edge to the next arc's end vertex)
-      const k = ((i % n) + n) % n;
-      const ch = [(k - 1 + n) % n, k, (k + 1) % n].map((q) => Math.hypot(...chord(P, q)));
-      if (Math.max(...ch) - Math.min(...ch) > 2e-3 * Math.max(...ch) + 4 * tol) return false;
-      const minLen = Math.max(1e-9, Math.min(a.len, b.len));
-      return Math.abs(a.t - b.t) <= 1e-6 + 1e-3 * Math.abs(a.t) + (4 * tol) / minLen;
-    };
-    return { valid, link };
+  const at = (i: number) => pts[((i % n) + n) % n];
+  const circ: (Circ | null)[] = pts.map((_, i) => circleThrough(at(i - 1), at(i), at(i + 1), tol));
+  const compat = (i: number) => {
+    const p = circ[((i % n) + n) % n];
+    const q = circ[(((i + 1) % n) + n) % n];
+    return !!p && !!q && same(p, q, tol);
   };
 
   // whole loop is one circle?
-  {
-    const { link } = turnLinks(pts);
-    if (pts.every((_, i) => link(i))) {
-      const c = arcThrough(pts, tol, true);
-      if (c) return { loop: circleLoop(c.cx, c.cy, c.r, c.step > 0), arcs: 2, circle: true };
-    }
+  if (circ.every((c) => c) && pts.every((_, i) => compat(i))) {
+    const c = circ[0]!;
+    return { loop: circleLoop(c.cx, c.cy, c.r, c.step > 0), arcs: 2, circle: true };
   }
 
   // rotate so vertex 0 starts a run or is not on an arc
-  const L0 = turnLinks(pts);
-  let first = pts.findIndex((_, i) => !L0.valid(i) || !L0.link(i - 1));
+  let first = circ.findIndex((c, i) => !c || !compat(i - 1));
   if (first < 0) first = 0;
   const P = pts.map((_, i) => pts[(i + first) % n]);
-  const { valid, link: cp } = turnLinks(P);
+  const C = circ.map((_, i) => circ[(i + first) % n]);
+  const cp = (i: number) => {
+    const p = C[i];
+    const q = C[(i + 1) % n];
+    return !!p && !!q && same(p, q, tol);
+  };
 
   interface Arc {
     s: number; // start vertex
@@ -163,7 +111,8 @@ export function recoverArcs(pts: Pt[], opts: { tol?: number } = {}): RecoveredLo
   const arcs: Arc[] = [];
   let owned = -1; // last edge index used by an arc
   for (let i = 0; i < n; ) {
-    if (!valid(i)) {
+    const c = C[i];
+    if (!c) {
       i++;
       continue;
     }
@@ -173,13 +122,9 @@ export function recoverArcs(pts: Pt[], opts: { tol?: number } = {}): RecoveredLo
     const startEdge = Math.max(i - 1, owned + 1);
     const endEdge = j; // edge j goes from vertex j to j+1
     const segs = endEdge - startEdge + 1;
-    if (segs >= 3 && startEdge >= 0) { // ≥ 4 vertices: three points always lie on some circle, four must really agree
-      const run = Array.from({ length: segs + 1 }, (_, k) => P[(startEdge + k) % n]);
-      const c = arcThrough(run, tol);
-      if (c) {
-        arcs.push({ s: startEdge, segs, circ: c });
-        owned = endEdge;
-      }
+    if (segs >= 2 && startEdge >= 0) {
+      arcs.push({ s: startEdge, segs, circ: c });
+      owned = endEdge;
     }
     i = j + 1;
   }

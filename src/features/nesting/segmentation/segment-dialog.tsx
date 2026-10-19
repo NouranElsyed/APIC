@@ -1,23 +1,47 @@
 "use client";
 /**
- * Segmentation dialog (Phase 4: settings + read-only preview).
+ * Segmentation dialog (Phase 5: settings + editable preview).
  *
- * Nothing here changes the nest: the part is only read, layouts are generated on a draft, and
- * closing the dialog discards everything. Creating the segments as parts is a later phase.
+ * Nothing here changes the nest: the part is only read, layouts are generated and edited on a
+ * draft, and closing the dialog discards everything. Creating the segments as parts is a later phase.
  */
 import * as React from "react";
-import { Layers, Loader2, Plus, Trash2 } from "lucide-react";
+import { ArrowLeftRight, Layers, Loader2, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { makeSettings, type Group } from "../nest-boost/engine";
 import { classifyFit } from "./fit";
-import { candidateFacts, defaultForm, parseForm, type NestCtx, type SegForm } from "./form";
-import { regionInteriorPoint } from "./geometry";
+import {
+  addSeam,
+  addStripCut,
+  boundsFor,
+  canRedo,
+  canUndo,
+  commit,
+  cutPos,
+  endGesture,
+  handleLines,
+  isEdited,
+  moveCut,
+  newEditor,
+  redo,
+  removeCut,
+  reset,
+  stateFromInput,
+  toPlanInput,
+  undo,
+  type Bounds,
+  type EditResult,
+  type Editor,
+  type EditorState,
+} from "./editor";
+import { candidateFacts, defaultForm, parseForm, planBaseFromForm, type NestCtx, type SegForm } from "./form";
+import { regionBBox, regionInteriorPoint } from "./geometry";
 import { groupToRegion } from "./group-region";
 import { buildPlan, generateCandidates, type Candidate, type Plan } from "./planner";
-import { regionPath, seamLines, segmentFill, segmentStroke, svgViewBox } from "./preview-path";
+import { regionPath, screenToWorld, seamLines, segmentFill, segmentStroke, svgViewBox } from "./preview-path";
 import type { Region } from "./types";
 
 const selectCls =
@@ -38,12 +62,74 @@ const mm = (v: number) => (Math.round(v * 10) / 10).toLocaleString("en-US", { ma
 /* Preview                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones. */
-export function PlanPreview({ region, plan }: { region: Region; plan: Plan }) {
+/** What the preview needs to make cut lines draggable. */
+export interface PreviewEdit {
+  state: EditorState;
+  bounds: Bounds;
+  selected: string | null;
+  /** When set, the next press on the drawing adds a cut of that kind. */
+  mode: "strip" | "seam" | null;
+  onSelect: (id: string | null) => void;
+  /** `value` is the new coordinate of the dragged line along its movable axis (world mm). */
+  onDrag: (id: string, value: number) => void;
+  onDragEnd: () => void;
+  onAdd: (kind: "strip" | "seam", at: { across: number; along: number }) => void;
+}
+
+const STRIP_COLOR = "hsl(215 90% 55%)";
+const SEAM_COLOR = "hsl(280 70% 55%)";
+
+/** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
+export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
   const { box, size } = React.useMemo(() => svgViewBox(region), [region]);
   const labels = React.useMemo(() => plan.segments.map((s) => ({ id: s.id, p: regionInteriorPoint(s.finished) })), [plan]);
+  const handles = React.useMemo(() => (edit ? handleLines(edit.state, edit.bounds) : []), [edit]);
+  const svgRef = React.useRef<SVGSVGElement>(null);
+  const dragging = React.useRef<{ id: string; kind: "strip" | "seam" } | null>(null);
+  const H = edit?.state.direction === "H";
+
+  const world = (e: React.PointerEvent) => {
+    const rect = svgRef.current!.getBoundingClientRect();
+    return screenToWorld(rect, box, e.clientX, e.clientY);
+  };
+  // a strip cut moves across the strips, a seam along them
+  const across = (w: { x: number; y: number }) => (H ? w.y : w.x);
+  const along = (w: { x: number; y: number }) => (H ? w.x : w.y);
+
   return (
-    <svg viewBox={box} className="h-[340px] w-full rounded-lg border border-border bg-card text-foreground" role="img" aria-label="Segmentation preview">
+    <svg
+      ref={svgRef}
+      viewBox={box}
+      className={`h-[340px] w-full rounded-lg border border-border bg-card text-foreground ${edit?.mode ? "cursor-crosshair" : ""}`}
+      style={edit ? { touchAction: "none" } : undefined}
+      role="img"
+      aria-label="Segmentation preview"
+      onPointerDown={(e) => {
+        if (!edit) return;
+        if (edit.mode) {
+          const w = world(e);
+          edit.onAdd(edit.mode, { across: across(w), along: along(w) });
+        } else edit.onSelect(null);
+      }}
+      onPointerMove={(e) => {
+        const d = dragging.current;
+        if (!d || !edit) return;
+        const w = world(e);
+        edit.onDrag(d.id, d.kind === "strip" ? across(w) : along(w));
+      }}
+      onPointerUp={() => {
+        if (dragging.current) {
+          dragging.current = null;
+          edit?.onDragEnd();
+        }
+      }}
+      onPointerCancel={() => {
+        if (dragging.current) {
+          dragging.current = null;
+          edit?.onDragEnd();
+        }
+      }}
+    >
       <g transform="scale(1,-1)" fillRule="evenodd">
         {plan.segments.map((s, i) => (
           <path key={s.id} d={regionPath(s.finished)} fill={segmentFill(i)} stroke={segmentStroke(i)} strokeWidth={size / 600} />
@@ -57,14 +143,46 @@ export function PlanPreview({ region, plan }: { region: Region; plan: Plan }) {
         {plan.seams.flatMap((m) =>
           seamLines(m).map((l, k) => <line key={`${m.id}-${k}`} {...l} stroke="hsl(35 95% 50%)" strokeWidth={size / 260} strokeLinecap="round" />),
         )}
+        {handles.map((h) => {
+          const sel = edit?.selected === h.id;
+          const color = h.kind === "strip" ? STRIP_COLOR : SEAM_COLOR;
+          const cursor = edit?.mode ? "crosshair" : (h.kind === "strip") === !H ? "ew-resize" : "ns-resize";
+          return (
+            <g key={h.id} data-cut={h.id}>
+              <line x1={h.x1} y1={h.y1} x2={h.x2} y2={h.y2} stroke={color} strokeWidth={sel ? size / 150 : size / 330} strokeDasharray={`${size / 90} ${size / 140}`} pointerEvents="none" />
+              <line
+                x1={h.x1}
+                y1={h.y1}
+                x2={h.x2}
+                y2={h.y2}
+                stroke="transparent"
+                strokeWidth={size / 40}
+                style={{ cursor }}
+                data-handle={h.id}
+                onPointerDown={(e) => {
+                  if (!edit || edit.mode) return;
+                  e.stopPropagation();
+                  edit.onSelect(h.id);
+                  dragging.current = { id: h.id, kind: h.kind };
+                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                }}
+              />
+            </g>
+          );
+        })}
       </g>
       {labels.map(({ id, p }) =>
         p ? (
-          <text key={id} x={p[0]} y={-p[1]} fontSize={size / 42} textAnchor="middle" dominantBaseline="middle" fill="currentColor" fontWeight={600}>
+          <text key={id} x={p[0]} y={-p[1]} fontSize={size / 42} textAnchor="middle" dominantBaseline="middle" fill="currentColor" fontWeight={600} pointerEvents="none">
             {id}
           </text>
         ) : null,
       )}
+      {handles.map((h) => (
+        <text key={`${h.id}-label`} x={h.label[0]} y={-h.label[1]} fontSize={size / 50} fill={h.kind === "strip" ? STRIP_COLOR : SEAM_COLOR} fontWeight={edit?.selected === h.id ? 700 : 500} pointerEvents="none">
+          {h.id}
+        </text>
+      ))}
     </svg>
   );
 }
@@ -80,7 +198,9 @@ const statusChip = (s: string) =>
 /* Panel                                                               */
 /* ------------------------------------------------------------------ */
 
-export function SegmentationPanel({ group, nest, onClose }: { group: Group; nest: NestCtx; onClose?: () => void }) {
+export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: Group; nest: NestCtx; onClose?: () => void }) {
+  // the parent passes a fresh object on every render; depend on the numbers only
+  const nest = React.useMemo<NestCtx>(() => ({ W: nestProp.W, H: nestProp.H, mg: nestProp.mg, ro: nestProp.ro }), [nestProp.W, nestProp.H, nestProp.mg, nestProp.ro]);
   const gr = React.useMemo(() => groupToRegion(group), [group]);
   const fit = React.useMemo(() => classifyFit(group, makeSettings({ W: nest.W, H: nest.H, mg: nest.mg, gp: 0, cell: 5, ro: nest.ro })), [group, nest]);
 
@@ -88,49 +208,148 @@ export function SegmentationPanel({ group, nest, onClose }: { group: Group; nest
   const [errors, setErrors] = React.useState<string[]>([]);
   const [cands, setCands] = React.useState<Candidate[] | null>(null);
   const [sel, setSel] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
+  const [busy, setBusy] = React.useState(true); // the first layouts are generated as soon as the dialog opens
   const [confirmed, setConfirmed] = React.useState<string[]>([]);
+  // editing (Phase 5): the draft cut lists with undo/redo, the selected cut, and the active "add" tool
+  const [editor, setEditor] = React.useState<Editor | null>(null);
+  const [selCut, setSelCut] = React.useState<string | null>(null);
+  const [mode, setMode] = React.useState<"strip" | "seam" | null>(null);
+  const [snapOn, setSnapOn] = React.useState(false);
+  const [grid, setGrid] = React.useState("10");
+  const [notice, setNotice] = React.useState<string | null>(null);
   const set = <K extends keyof SegForm>(k: K, v: SegForm[K]) => setForm((f) => ({ ...f, [k]: v }));
 
-  const generate = React.useCallback(
+  /** Computes layouts for a form. Only called from timer callbacks, never synchronously from an effect. */
+  const run = React.useCallback(
     (f: SegForm) => {
       const parsed = parseForm(f, nest);
       if (!parsed.ok) {
         setErrors(parsed.errors);
+        setBusy(false);
         return;
       }
-      setErrors([]);
-      setBusy(true);
-      setTimeout(() => {
-        try {
-          const list = generateCandidates(gr.region, parsed.settings);
-          setCands(list.slice(0, 12));
-          setSel(list[0]?.id ?? null);
-          setConfirmed([]);
-        } catch (e) {
-          setErrors([e instanceof Error ? e.message : "Could not generate layouts."]);
-          setCands(null);
-        } finally {
-          setBusy(false);
-        }
-      }, 30);
+      try {
+        const list = generateCandidates(gr.region, parsed.settings);
+        setErrors([]);
+        setCands(list.slice(0, 12));
+        setSel(list[0]?.id ?? null);
+        setConfirmed([]);
+        setEditor(list[0] ? newEditor(stateFromInput(list[0].plan.input)) : null);
+        setSelCut(null);
+        setMode(null);
+        setNotice(null);
+      } catch (e) {
+        setErrors([e instanceof Error ? e.message : "Could not generate layouts."]);
+        setCands(null);
+      } finally {
+        setBusy(false);
+      }
     },
     [gr, nest],
   );
 
-  React.useEffect(() => {
-    // run once when the dialog opens (deferred so no state is set synchronously inside the effect)
-    const t = setTimeout(() => generate(defaultForm(nest)), 0);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /** Button handler: show the busy state first, then compute (the geometry work blocks the thread briefly). */
+  const generate = (f: SegForm) => {
+    const discard = editor && isEdited(editor);
+    if (discard && typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm("Generating new layouts discards your edits. Continue?")) return;
+    setBusy(true);
+    setTimeout(() => run(f), 30);
+  };
 
-  const cand = cands?.find((c) => c.id === sel) ?? null;
-  // re-validate the selected layout with the user's hole confirmations (cheap, exact)
-  const plan = React.useMemo(
-    () => (cand ? buildPlan(gr.region, { ...cand.plan.input, confirmedHoleCuts: confirmed }) : null),
-    [cand, gr, confirmed],
-  );
+  React.useEffect(() => {
+    const t = setTimeout(() => run(defaultForm(nest)), 30);
+    return () => clearTimeout(t);
+  }, [run, nest]);
+
+  const state = editor?.present ?? null;
+  const dir = state?.direction;
+  const bounds = React.useMemo<Bounds | null>(() => (dir ? boundsFor(regionBBox(gr.region), dir) : null), [gr, dir]);
+  // everything except the cuts comes live from the form, so changing overlap / sheets / constraints re-validates at once
+  const base = React.useMemo(() => planBaseFromForm(form, nest, confirmed), [form, nest, confirmed]);
+  const plan = React.useMemo(() => (state ? buildPlan(gr.region, toPlanInput(state, base)) : null), [gr, state, base]);
+  const gridMm = snapOn && Number(grid) > 0 ? Number(grid) : undefined;
+
+  /** Applies an edit result: shows why it was refused/held, and records the new state in the history. */
+  const apply = (r: EditResult, gesture?: string): boolean => {
+    if (!r.ok) {
+      setNotice(r.reason);
+      return false;
+    }
+    setNotice(r.note ?? null);
+    setEditor((ed) => (ed ? commit(ed, r.state, gesture) : ed));
+    return true;
+  };
+  const onDrag = (id: string, value: number) => {
+    if (state && bounds) apply(moveCut(state, id, value, bounds, gridMm), `drag:${id}`);
+  };
+  const onDragEnd = () => setEditor((ed) => (ed ? endGesture(ed) : ed));
+  const onAdd = (kind: "strip" | "seam", at: { across: number; along: number }) => {
+    setMode(null);
+    if (!state || !bounds) return;
+    const r = kind === "strip" ? addStripCut(state, at.across, bounds, gridMm) : addSeam(state, at.across, at.along, bounds, gridMm);
+    if (!apply(r) || !r.ok) return;
+    const had = new Set([...state.stripCuts.map((c) => c.id), ...state.seams.map((x) => x.id)]);
+    const mine = kind === "strip" ? r.state.stripCuts.find((c) => !had.has(c.id)) : r.state.seams.find((x) => !had.has(x.id));
+    setSelCut(mine?.id ?? null);
+  };
+  const removeSelected = () => {
+    if (state && selCut && apply(removeCut(state, selCut))) setSelCut(null);
+  };
+  const setPos = (text: string) => {
+    if (state && bounds && selCut) apply(moveCut(state, selCut, Number(text.replace(",", ".")), bounds, gridMm));
+  };
+  /** Switches H ↔ V by building the best layout in the other direction (one undoable step). */
+  const switchDirection = () => {
+    if (!state) return;
+    const parsed = parseForm(form, nest);
+    if (!parsed.ok) {
+      setErrors(parsed.errors);
+      return;
+    }
+    const other = state.direction === "H" ? "V" : "H";
+    setBusy(true);
+    setTimeout(() => {
+      try {
+        const list = generateCandidates(gr.region, { ...parsed.settings, directions: [other] });
+        const best = list.find((c) => c.plan.valid) ?? list[0];
+        if (!best) {
+          setNotice("No layout could be generated in that direction.");
+          return;
+        }
+        setEditor((ed) => (ed ? commit(ed, stateFromInput(best.plan.input)) : ed));
+        setSelCut(null);
+        setNotice(null);
+      } catch (e) {
+        setNotice(e instanceof Error ? e.message : "Could not switch direction.");
+      } finally {
+        setBusy(false);
+      }
+    }, 30);
+  };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (!editor) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key.toLowerCase();
+    if (mod && (k === "z" || k === "y")) {
+      e.preventDefault();
+      setEditor((ed) => (ed ? (k === "y" || e.shiftKey ? redo(ed) : undo(ed)) : ed));
+      return;
+    }
+    if (!selCut || !state || !bounds) return;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      removeSelected();
+      return;
+    }
+    // a strip cut moves across the strips, a seam along them; "horizontal" = the line moves left/right
+    const horizontal = state.stripCuts.some((c) => c.id === selCut) === (state.direction === "V");
+    const sign = (horizontal ? { ArrowLeft: -1, ArrowRight: 1 } : { ArrowDown: -1, ArrowUp: 1 } as Record<string, number>)[e.key];
+    const cur = cutPos(state, selCut);
+    if (!sign || cur === undefined) return;
+    e.preventDefault();
+    apply(moveCut(state, selCut, cur + sign * (gridMm ?? 1) * (e.shiftKey ? 10 : 1), bounds));
+  };
+  const selPos = state && selCut ? cutPos(state, selCut) : undefined;
 
   const sources = form.sources;
   return (
@@ -296,12 +515,21 @@ export function SegmentationPanel({ group, nest, onClose }: { group: Group; nest
                     onClick={() => {
                       setSel(c.id);
                       setConfirmed([]);
+                      setEditor(newEditor(stateFromInput(c.plan.input)));
+                      setSelCut(null);
+                      setMode(null);
+                      setNotice(null);
                     }}
                     className={`min-w-[190px] shrink-0 rounded-lg border p-2 text-left text-xs transition-colors ${
                       c.id === sel ? "border-primary bg-primary/5" : "border-border hover:bg-secondary"
                     }`}
                   >
-                    <div className="font-semibold">{c.label}</div>
+                    <div className="font-semibold">
+                      {c.label}
+                      {c.id === sel && editor && isEdited(editor) && (
+                        <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">edited</span>
+                      )}
+                    </div>
                     <div className="mt-1 text-muted-foreground">{candidateFacts(m).join(" · ")}</div>
                     <div className={`mt-1 font-medium ${bad ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
                       {bad ? `${bad} error${bad > 1 ? "s" : ""}` : "valid"}
@@ -318,7 +546,71 @@ export function SegmentationPanel({ group, nest, onClose }: { group: Group; nest
 
         {plan && (
           <>
-            <PlanPreview region={gr.region} plan={plan} />
+            {editor && state && bounds && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Edit cuts">
+                  <Button size="sm" variant="outline" disabled={!canUndo(editor)} onClick={() => setEditor((ed) => (ed ? undo(ed) : ed))}>
+                    <Undo2 /> Undo
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={!canRedo(editor)} onClick={() => setEditor((ed) => (ed ? redo(ed) : ed))}>
+                    <Redo2 /> Redo
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={!isEdited(editor)} title="Back to the generated proposal" onClick={() => { setEditor((ed) => (ed ? reset(ed) : ed)); setSelCut(null); setNotice(null); }}>
+                    <RotateCcw /> Reset
+                  </Button>
+                  <span className="mx-1 h-5 w-px bg-border" />
+                  <Button size="sm" variant={mode === "strip" ? "default" : "outline"} aria-pressed={mode === "strip"} onClick={() => setMode((m) => (m === "strip" ? null : "strip"))}>
+                    <Plus /> Strip cut
+                  </Button>
+                  <Button size="sm" variant={mode === "seam" ? "default" : "outline"} aria-pressed={mode === "seam"} onClick={() => setMode((m) => (m === "seam" ? null : "seam"))}>
+                    <Plus /> Seam
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={!selCut} onClick={removeSelected}>
+                    <Trash2 /> Remove
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={switchDirection}>
+                    <ArrowLeftRight /> {state.direction === "H" ? "Vertical" : "Horizontal"}
+                  </Button>
+                  <label className="ml-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Checkbox checked={snapOn} onCheckedChange={(v) => setSnapOn(v === true)} /> Snap
+                    <Input className="h-8 w-16" inputMode="decimal" aria-label="Grid size (mm)" value={grid} onChange={(e) => setGrid(e.target.value)} />
+                    mm
+                  </label>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {mode ? `Click the drawing to place the ${mode === "strip" ? "strip cut" : "seam"}.` : "Drag a cut line, or select it and use the arrow keys (Shift = ×10). Delete removes it; Ctrl+Z undoes."}
+                </p>
+                {selCut && selPos !== undefined && (
+                  <div className="max-w-[220px]">
+                    <Field label={`Position of ${selCut} (mm)`}>
+                      <Input
+                        key={`${selCut}:${selPos}`}
+                        inputMode="decimal"
+                        defaultValue={String(Math.round(selPos * 100) / 100)}
+                        onKeyDown={(e) => e.key === "Enter" && setPos(e.currentTarget.value)}
+                        onBlur={(e) => setPos(e.currentTarget.value)}
+                      />
+                    </Field>
+                  </div>
+                )}
+                {notice && (
+                  <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                    {notice}
+                  </p>
+                )}
+              </div>
+            )}
+            <div tabIndex={0} onKeyDown={onKey} className="rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Layout editor">
+              <PlanPreview
+                region={gr.region}
+                plan={plan}
+                edit={
+                  state && bounds
+                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd }
+                    : undefined
+                }
+              />
+            </div>
             <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-xs">
                 <thead className="bg-secondary text-left text-muted-foreground">
@@ -392,7 +684,7 @@ export function SegmentationPanel({ group, nest, onClose }: { group: Group; nest
       </div>
 
       <div className="col-span-full flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-        <p className="text-xs text-muted-foreground">Preview only: nothing is changed in your nest. Creating the segments as parts comes in the next phase.</p>
+        <p className="text-xs text-muted-foreground">Edits are a draft: nothing is changed in your nest. Creating the segments as parts comes in the next phase.</p>
         <DialogFooterButtons onClose={onClose} />
       </div>
     </div>

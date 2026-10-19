@@ -477,7 +477,10 @@ export interface GenSettings {
   staggered?: boolean;
   /** Also propose layouts sized to the raw sheet (margin-free "solo" segments). Default true. */
   allowSolo?: boolean;
-  /** "equal": only equal-width strips; "optimized": also try shifted first-cut offsets (default). */
+  /**
+   * "equal": strips of equal thickness only. "optimized" (default): also tries shifted first-cut
+   * offsets so strip ends fall where the part is narrower.
+   */
   pattern?: "equal" | "optimized";
   /** How many first-cut offsets to try inside the available slack (default 5). */
   offsetSamples?: number;
@@ -627,7 +630,7 @@ export function generateCandidates(regionIn: Region, gs: GenSettings): Candidate
           else {
             sets.push({ tag: "equal", pos: Array.from({ length: n - 1 }, (_, i) => lo + ((i + 1) * E) / n) });
             const slack = n * A - E;
-            for (let q = 0; q < ((gs.pattern ?? "optimized") === "equal" ? 0 : samples); q++) {
+            for (let q = 0; q < (gs.pattern === "equal" ? 0 : samples); q++) {
               const f = samples === 1 ? 0 : q / (samples - 1);
               sets.push({ tag: `offset${Math.round(f * 100)}`, pos: Array.from({ length: n - 1 }, (_, i) => lo - slack * f + (i + 1) * A) });
             }

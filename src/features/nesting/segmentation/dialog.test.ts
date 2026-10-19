@@ -81,9 +81,10 @@ describe("recoverArcs", () => {
     }
   });
 
-  it("tolerates the importer's endpoint snapping but not a real deviation", () => {
-    const noisy = circlePoly(0, 0, 1000).map(([x, y], i) => [x + (i % 2 ? 4e-4 : -4e-4), y] as Pt);
-    expect(recoverArcs(noisy).circle).toBe(true);
+  it("tolerates coordinate rounding (6 decimals) but not a real deviation", () => {
+    // the fitted centre amplifies vertex errors ~1/step² (≈130×), so the tolerance is for rounding-level noise
+    const rounded = circlePoly(0, 0, 1000).map(([x, y], i) => [x + (i % 2 ? 5e-7 : -5e-7), y] as Pt);
+    expect(recoverArcs(rounded).circle).toBe(true);
     const rough = circlePoly(0, 0, 1000).map(([x, y], i) => [x + (i % 2 ? 0.5 : -0.5), y] as Pt);
     expect(recoverArcs(rough).arcs).toBe(0);
   });
@@ -226,8 +227,7 @@ describe("generator pattern option", () => {
 /* ---------------- SVG helpers ---------------- */
 
 describe("preview-path", () => {
-  // raw (unshifted) rings: the circle is centred on the origin, so the view box is symmetric
-  const circle = groupToRegion({ outer: circlePoly(0, 0, 100), holes: [] }).region;
+  const circle = groupToRegion(group(circlePoly(0, 0, 100))).region;
 
   it("draws arcs as SVG arcs, not line segments", () => {
     const d = regionPath(circle);
@@ -248,8 +248,9 @@ describe("preview-path", () => {
     const { box, size } = svgViewBox(circle);
     expect(size).toBeCloseTo(200, 6);
     const [x, y, w, h] = box.split(" ").map(Number);
-    expect(x).toBeCloseTo(-100 - 12, 2);
-    expect(y).toBeCloseTo(-(100 + 12), 2);
+    // `group()` moves the part so its bounding box starts at 0,0 → the circle spans 0…200 in both axes
+    expect(x).toBeCloseTo(-12, 2);
+    expect(y).toBeCloseTo(-(200 + 12), 2); // y is flipped: the box starts at −(top + padding)
     expect(w).toBeCloseTo(224, 2);
     expect(h).toBeCloseTo(224, 2);
   });
@@ -292,7 +293,7 @@ describe("render", () => {
     expect(html).toContain("Enable overlap");
     expect(html).not.toContain("Overlap value (mm)"); // the value field only appears once overlap is enabled
     expect(html).toContain("Generate layouts");
-    expect(html).toContain("Preview only");
+    expect(html).toContain("Edits are a draft");
     expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*Approve segmentation/); // approving is not available yet
   });
 

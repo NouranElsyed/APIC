@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { regionToGroupShape } from "./convert";
-import { circleLoop, flattenLoop, regionArea, regionBBox, regionContains, regionFromPolygon, regionRings, ringsContain, ringsDistance } from "./geometry";
+import { circleLoop, flattenLoop, regionBBox, regionContains, regionFromPolygon, regionRings, ringsContain, ringsDistance } from "./geometry";
 import { buildPlan, generateCandidates, type GenSettings, type OverlapSpec, type PlanInput, type Plan } from "./planner";
 import type { Pt, Region } from "./types";
 

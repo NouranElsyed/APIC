@@ -54,3 +54,20 @@ export function seamLines(seam: Pick<PlanSeam, "axis" | "pos" | "intervals">): {
 /** Translucent fill and solid stroke for segment number `i` (distinct hues, works on light and dark). */
 export const segmentFill = (i: number) => `hsl(${(i * 47) % 360} 70% 55% / 0.32)`;
 export const segmentStroke = (i: number) => `hsl(${(i * 47) % 360} 65% 42%)`;
+
+/**
+ * Pointer position → world coordinates for an `<svg>` drawn with `svgViewBox` and the default
+ * preserveAspectRatio ("xMidYMid meet": uniform scale, centred, letter-boxed), with world y up.
+ */
+export function screenToWorld(
+  rect: { left: number; top: number; width: number; height: number },
+  viewBox: string,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } {
+  const [vx, vy, vw, vh] = viewBox.split(" ").map(Number);
+  const scale = Math.min(rect.width / vw, rect.height / vh);
+  const offX = (rect.width - vw * scale) / 2;
+  const offY = (rect.height - vh * scale) / 2;
+  return { x: (clientX - rect.left - offX) / scale + vx, y: -((clientY - rect.top - offY) / scale + vy) };
+}

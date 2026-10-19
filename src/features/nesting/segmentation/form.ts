@@ -6,7 +6,7 @@
  * W (length) and H (width). Nothing is assumed beyond the nest's own sheet size, which is only
  * used to pre-fill the first source.
  */
-import type { GenSettings, HolePolicy, OverlapSide, SeamConstraints } from "./planner";
+import type { GenSettings, HolePolicy, OverlapSide, PlanInput, SeamConstraints } from "./planner";
 
 export interface SourceForm {
   id: number;
@@ -119,4 +119,37 @@ export function candidateFacts(m: { segments: number; cutLength: number; sheetsL
   if (m.sheetsLowerBound !== null) out.push(`≥ ${m.sheetsLowerBound} sheet${m.sheetsLowerBound === 1 ? "" : "s"} (by area)`);
   if (m.soloSegments) out.push(`${m.soloSegments} solo`);
   return out;
+}
+
+/**
+ * Everything in a `PlanInput` except the cuts, read leniently from the form so a layout is
+ * re-validated live while the user edits settings or cuts. Values that are not valid numbers are
+ * passed on as NaN / dropped, and `buildPlan` reports them (e.g. INVALID_OVERLAP) instead of throwing.
+ */
+export function planBaseFromForm(
+  f: SegForm,
+  nest: Pick<NestCtx, "mg" | "ro">,
+  confirmedHoleCuts: string[] = [],
+): Omit<PlanInput, "direction" | "stripCuts" | "seamCuts"> {
+  const cons: SeamConstraints = {};
+  const opt = (s: string, set: (v: number) => void) => {
+    const v = num(s);
+    if (v > 0) set(v);
+  };
+  opt(f.minStagger, (v) => (cons.minSeamStagger = v));
+  opt(f.minBoundary, (v) => (cons.minSeamToBoundary = v));
+  opt(f.maxSeam, (v) => (cons.maxSeamLength = v));
+  opt(f.minSegment, (v) => (cons.minSegmentMm = v));
+  if (f.forbidCross) cons.forbidCrossJunctions = true;
+  return {
+    overlap: { enabled: f.overlapOn, mm: f.overlapOn ? num(f.overlapMm) : 0, side: f.overlapSide },
+    sheet: {
+      sheets: f.sources.map((s) => ({ W: num(s.length), H: num(s.width) })).filter((s) => s.W > 0 && s.H > 0),
+      mg: nest.mg,
+      ro: nest.ro,
+    },
+    holePolicy: f.holePolicy,
+    confirmedHoleCuts,
+    constraints: Object.keys(cons).length ? cons : undefined,
+  };
 }
