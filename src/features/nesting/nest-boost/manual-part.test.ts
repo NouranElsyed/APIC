@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addManualPart, buildManualShape, manualPartName, resizeGroup, type Group } from "./engine";
+import { addManualPart, buildManualShape, coneFlat, manualPartName, resizeGroup, type Group } from "./engine";
 
 const geo = (s: Parameters<typeof buildManualShape>[0]) => {
   const r = buildManualShape(s);
@@ -140,5 +140,45 @@ describe("parts typed in by hand", () => {
     expect(long.w).toBe(800);
     // the hole is stretched by 800/500 along the length: its area grows 1.6x (polygon area, not the ideal circle)
     expect(long.area).toBeCloseTo(800 * 300 - 1.6 * (500 * 300 - g.area), 3);
+  });
+  it("cone: the flat pattern has the right radii, opening angle and area", () => {
+    // Ø400 → Ø200, height 300: side 303.3, pattern radii 606.6 / 303.3, opening 118.6°
+    const f = coneFlat(400, 200, 300);
+    if ("error" in f) throw new Error(f.error);
+    expect(f.slant).toBeCloseTo(Math.hypot(300, 100), 6);
+    expect(f.R).toBeCloseTo(2 * f.slant, 6);
+    expect(f.r).toBeCloseTo(f.slant, 6);
+    expect(f.angle).toBeCloseTo((180 * 400) / f.R, 6);
+    const g = geo({ kind: "cone", d1: 400, d2: 200, h: 300 });
+    const trueArea = (f.angle / 360) * Math.PI * (f.R ** 2 - f.r ** 2);
+    expect(g.area / trueArea).toBeGreaterThan(0.999);
+    expect(g.area / trueArea).toBeLessThanOrEqual(1.0001);
+    expect(g.holes).toHaveLength(0);
+    expect(Math.min(...g.outer.map((q) => q[0]))).toBeCloseTo(0, 6);
+    expect(Math.min(...g.outer.map((q) => q[1]))).toBeCloseTo(0, 6);
+  });
+
+  it("pointed cone (top Ø 0) is a plain sector; a half-height cone opens to 180°", () => {
+    const f = coneFlat(200, 0, Math.sqrt(300 ** 2 - 100 ** 2));
+    if ("error" in f) throw new Error(f.error);
+    expect(f.R).toBeCloseTo(300, 6);
+    expect(f.r).toBeCloseTo(0, 6);
+    expect(f.angle).toBeCloseTo(120, 6);
+    const half = coneFlat(200, 0, Math.sqrt(200 ** 2 - 100 ** 2));
+    if ("error" in half) throw new Error(half.error);
+    expect(half.angle).toBeCloseTo(180, 6); // slant = Ø → half circle
+    const g = geo({ kind: "cone", d1: 200, d2: 0, h: Math.sqrt(200 ** 2 - 100 ** 2) });
+    expect(Math.max(g.w, g.h)).toBeCloseTo(400, 1); // half circle of R200: 400 across, 200 deep
+    expect(Math.min(g.w, g.h)).toBeCloseTo(200, 1);
+  });
+
+  it("cone: bad numbers give a message, name is readable", () => {
+    expect(buildManualShape({ kind: "cone", d1: 200, d2: 200, h: 100 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cone", d1: 200, d2: 300, h: 100 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cone", d1: 200, d2: 0, h: 0 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cone", d1: NaN, d2: 0, h: 100 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cone", d1: 200, d2: 0, h: 100, hole: 20 })).toHaveProperty("error");
+    expect(manualPartName({ kind: "cone", d1: 400, d2: 200, h: 300 })).toBe("Cone flat Ø400/Ø200×300");
+    expect(manualPartName({ kind: "cone", d1: 400, d2: 0, h: 300 })).toBe("Cone flat Ø400×300");
   });
 });

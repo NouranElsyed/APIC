@@ -693,7 +693,12 @@ export type ManualShape =
   | { kind: "triangle"; a: number; b: number; angle: number; hole?: number }
   | { kind: "circle"; d: number; hole?: number }
   /** Bottom base `a`, top base `b` and the height between them. `right`: one side stands at 90° (right trapezoid); otherwise both sides lean equally (symmetric). */
-  | { kind: "trapezoid"; a: number; b: number; h: number; right?: boolean; hole?: number };
+  | { kind: "trapezoid"; a: number; b: number; h: number; right?: boolean; hole?: number }
+  /**
+   * A cone (or truncated cone) given by its bottom diameter `d1`, top diameter `d2` (0 = a pointed cone) and the vertical
+   * height `h`. The part is the FLAT PATTERN (the cone unrolled): a circle sector, or a ring sector when `d2` > 0.
+   */
+  | { kind: "cone"; d1: number; d2: number; h: number; hole?: number };
 
 export interface ManualGeometry {
   outer: Pt[];
@@ -721,6 +726,35 @@ function circlePts(cx: number, cy: number, r: number): Pt[] {
 
 const fmtMm = (n: number) => String(Math.round(n * 100) / 100);
 
+/** Points on an arc of radius `r` around 0,0 from angle `a0` to `a1` (radians, both ends included); the chord stays within 0.05 mm of the true arc. */
+function coneArcPts(r: number, a0: number, a1: number): Pt[] {
+  const step = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - 0.05 / Math.max(r, 0.05))));
+  const n = Math.min(2000, Math.max(8, Math.ceil(Math.abs(a1 - a0) / Math.max(step, 1e-4))));
+  const p: Pt[] = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    p.push([r * Math.cos(a), r * Math.sin(a)]);
+  }
+  return p;
+}
+
+/**
+ * Unrolling a cone: `slant` = length of the cone's side, `R` / `r` = outer / inner radius of the flat pattern
+ * (r = 0 for a pointed cone) and `angle` = the opening of the pattern in degrees (360° would be a full circle).
+ */
+export function coneFlat(d1: number, d2: number, h: number): { slant: number; R: number; r: number; angle: number } | { error: string } {
+  if (!(Number.isFinite(d1) && d1 > 0)) return { error: "Enter the bottom diameter (greater than 0)." };
+  if (!(Number.isFinite(d2) && d2 >= 0)) return { error: "The top diameter cannot be negative (leave it empty or 0 for a pointed cone)." };
+  if (!(Number.isFinite(h) && h > 0)) return { error: "Enter the height (greater than 0)." };
+  if (d2 >= d1) return { error: "The top diameter must be smaller than the bottom diameter." };
+  const dr = (d1 - d2) / 2; // how much the radius shrinks over the height
+  const slant = Math.hypot(h, dr);
+  const R = (slant * d1) / (d1 - d2); // slant length from the apex down to the bottom edge
+  const r = R - slant; // ... down to the top edge
+  const angle = (180 * d1) / R; // = 360 · (d1/2) / R
+  return { slant, R, r, angle };
+}
+
 /** Outline (+ hole) of a typed-in part, moved to 0,0 like every other part; or a message saying what is wrong with the numbers. */
 export function buildManualShape(s: ManualShape): ManualGeometry | { error: string } {
   const ok = (n: number | undefined) => typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -730,7 +764,28 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
   let outer: Pt[];
   let hc: Pt = [0, 0];
   let maxHole: number;
-  if (s.kind === "rect") {
+  if (s.kind === "cone") {
+    if (hole) return { error: "A cone has no hole option — untick the hole." };
+    const f = coneFlat(s.d1, s.d2, s.h);
+    if ("error" in f) return f;
+    const half = (f.angle * Math.PI) / 360;
+    const arc = coneArcPts(f.R, -half, half); // outer edge (the bottom of the cone)
+    const ring = f.r > 1e-6 ? coneArcPts(f.r, half, -half) : [[0, 0] as Pt]; // inner edge back again, or the apex
+    const raw = [...arc, ...ring];
+    const x0 = Math.min(...raw.map((q) => q[0]));
+    const y0 = Math.min(...raw.map((q) => q[1]));
+    const cone = raw.map((q) => [q[0] - x0, q[1] - y0] as Pt);
+    const cxs = cone.map((q) => q[0]);
+    const cys = cone.map((q) => q[1]);
+    return {
+      outer: cone,
+      holes: [],
+      w: Math.max(...cxs) - Math.min(...cxs),
+      h: Math.max(...cys) - Math.min(...cys),
+      area: Math.abs(area(cone)),
+      per: per(cone),
+    };
+  } else if (s.kind === "rect") {
     if (!ok(s.w) || !ok(s.h)) return { error: "Enter the length and the width (greater than 0)." };
     outer = [[0, 0], [s.w, 0], [s.w, s.h], [0, s.h]];
     hc = [s.w / 2, s.h / 2];
@@ -803,6 +858,7 @@ export function manualPartName(s: ManualShape): string {
   const hole = s.hole && s.hole > 0 ? ` Ø${fmtMm(s.hole)}` : "";
   if (s.kind === "rect") return `Rectangle ${fmtMm(s.w)}×${fmtMm(s.h)}${hole}`;
   if (s.kind === "circle") return `Circle Ø${fmtMm(s.d)}${hole ? ` /${hole}` : ""}`;
+  if (s.kind === "cone") return `Cone flat Ø${fmtMm(s.d1)}${s.d2 > 0 ? `/Ø${fmtMm(s.d2)}` : ""}×${fmtMm(s.h)}`;
   if (s.kind === "trapezoid") return `Trapezoid ${fmtMm(s.a)}/${fmtMm(s.b)}×${fmtMm(s.h)}${s.right ? " right" : ""}${hole}`;
   return `Triangle ${fmtMm(s.a)}-${fmtMm(s.b)} ${fmtMm(s.angle)}°${hole}`;
 }
