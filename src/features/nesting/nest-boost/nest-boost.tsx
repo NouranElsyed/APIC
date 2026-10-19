@@ -1,13 +1,14 @@
 "use client";
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, Plus, Redo2, RotateCcw, Save, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, MoreVertical, Plus, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { nestKindOf } from "@/features/nesting/part-routing";
 import { register2D } from "../report/report-store";
@@ -1372,6 +1373,25 @@ export function NestBoost() {
     setMsg(`Part #${gs[i].sn} duplicated as #${copy.sn} — set its own thickness / material / quantity.`);
   };
 
+  /** Duplicates several parts at once (each copy goes right under its original). */
+  const duplicateParts = (ids: number[]) => {
+    const want = new Set(ids);
+    const out: Group[] = [];
+    const made: number[] = [];
+    for (const x of groupsRef.current) {
+      out.push(x);
+      if (want.has(x.id)) {
+        const copy: Group = { ...x, id: counters.current.id++, sn: ++counters.current.sn };
+        out.push(copy);
+        made.push(copy.id);
+      }
+    }
+    if (!made.length) return;
+    setG(out);
+    setMsg(`${made.length} part(s) duplicated — set their own thickness / material / quantity.`);
+    flashRows(made);
+  };
+
   /** Highlights rows in the list (and brings the first one into view): shows the person what was just added / changed. */
   const flashRows = (ids: number[]) => {
     if (!ids.length) return;
@@ -2191,28 +2211,50 @@ export function NestBoost() {
       </button>
     );
   };
-  const nestBtn = (g: Group) => (
-    <Button
-      variant="outline" size="sm" className="h-7 whitespace-nowrap"
-      disabled={running || !!held || leftOf(g, placed) <= 0}
-      title={
-        leftOf(g, placed) > 0
-          ? "Nest this part with its own settings — it continues in the free space of the current nest"
-          : "All pieces of this part are already placed"
-      }
-      onClick={() => {
-        // start from the current nest's sheet info, so the part simply continues on those sheets
-        const c0 =
-          result && resS && result.sheets.length
-            ? { ...cfg, W: String(resS.W), H: String(resS.H), mg: String(resS.mg), gp: String(resS.gp), cell: String(resS.cell) }
-            : { ...cfg };
-        setSolo({ g, c: c0 });
-        setSoloOpen(true);
-      }}
-    >
-      <Layers /> Nest
-    </Button>
-  );
+  const openSolo = (g: Group) => {
+    // start from the current nest's sheet info, so the part simply continues on those sheets
+    const c0 =
+      result && resS && result.sheets.length
+        ? { ...cfg, W: String(resS.W), H: String(resS.H), mg: String(resS.mg), gp: String(resS.gp), cell: String(resS.cell) }
+        : { ...cfg };
+    setSolo({ g, c: c0 });
+    setSoloOpen(true);
+  };
+  /** The "⋮" menu of a row: every action except dragging a piece out by hand (that one needs the visible button). */
+  const rowMenu = (g: Group) => {
+    const canNest = !running && !held && leftOf(g, placed) > 0;
+    const needsSeg = fitMap.get(g.id)?.status === "NEEDS_SEGMENTATION";
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" aria-label={`Actions for part #${g.sn}`} title="More actions">
+            <MoreVertical />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem
+            disabled={!canNest}
+            onSelect={() => openSolo(g)}
+            title="Nest only this part, with its own spacing / margin / rotation"
+          >
+            <Layers /> Nest this part alone
+          </DropdownMenuItem>
+          {needsSeg && (
+            <DropdownMenuItem onSelect={() => setSegGroup(g)}>
+              <Scissors /> Segment part
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={() => duplicatePart(g.id)}>
+            <Copy /> Duplicate
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setPendingRemove([g.id])}>
+            <Trash2 /> Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  };
   const rowChecked = (g: Group) => (
     <Checkbox
       aria-label={`Select part #${g.sn}`}
@@ -2369,11 +2411,6 @@ export function NestBoost() {
                 <Checkbox checked={keepRatio} onCheckedChange={(v) => setKeepRatio(v === true)} />
                 Keep proportions
               </label>
-              {checkedVis.length > 0 && (
-                <Button variant="outline" size="sm" className="text-destructive" onClick={() => setPendingRemove(checkedVis)}>
-                  <Trash2 /> Remove selected ({checkedVis.length})
-                </Button>
-              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -2385,6 +2422,21 @@ export function NestBoost() {
               </Button>
             </div>
           </div>
+
+          {checkedVis.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2 text-xs">
+              <span className="font-semibold">{checkedVis.length} selected</span>
+              <Button variant="outline" size="sm" className="h-8" onClick={() => duplicateParts(checkedVis)}>
+                <Copy /> Duplicate
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-destructive" onClick={() => setPendingRemove(checkedVis)}>
+                <Trash2 /> Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" className="ml-auto h-8" onClick={() => setChecked(new Set())}>
+                Clear selection
+              </Button>
+            </div>
+          )}
 
           {groups.length > 0 && (
             <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-border bg-secondary/30 p-2 md:grid-cols-4 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto] xl:items-end">
@@ -2468,15 +2520,14 @@ export function NestBoost() {
                       <th className="p-1" />
                       <th className="p-1">File</th>
                       <th className="p-1" title="Type a new length / width: the part is scaled to it (Enter to apply)">Size (mm)</th>
-                      <th className="hidden p-1 xl:table-cell">Area</th>
-                      <th className="hidden p-1 xl:table-cell">Holes</th>
+                      <th className="hidden p-1 2xl:table-cell">Area</th>
+                      <th className="hidden p-1 2xl:table-cell">Holes</th>
                       <th className="p-1">Thick (mm)</th>
                       <th className="p-1">Material</th>
                       <th className="p-1">Qty</th>
-                      <th className="p-1">Placed</th>
+                      <th className="hidden p-1 xl:table-cell">Placed</th>
                       <th className="p-1" title="Press a part's picture to take one piece and place it by hand">Left / place by hand</th>
-                      <th className="p-1" title="Nest only this part, with its own spacing / margin / rotation">Nest alone</th>
-                      <th className="p-1" />
+                      <th className="p-1 text-right" title="More actions">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2488,6 +2539,9 @@ export function NestBoost() {
                         <td className="max-w-40 break-all p-1">
                           {g.name}
                           <div>{fitBadge(g)}</div>
+                          <div className="text-[10px] text-muted-foreground 2xl:hidden">
+                            area {Math.round(g.area)} · {g.holes.length} hole(s) · placed {placed.get(g.id) ?? 0}
+                          </div>
                         </td>
                         <td className="p-1 whitespace-nowrap">
                           <div className="flex items-center gap-1">
@@ -2496,22 +2550,14 @@ export function NestBoost() {
                             <DimInput label={`Width of #${g.sn}`} value={g.h} onCommit={(v) => sizeGroup(g, "h", v)} />
                           </div>
                         </td>
-                        <td className="hidden p-1 xl:table-cell">{Math.round(g.area)}</td>
-                        <td className="hidden p-1 xl:table-cell">{g.holes.length}</td>
+                        <td className="hidden p-1 2xl:table-cell">{Math.round(g.area)}</td>
+                        <td className="hidden p-1 2xl:table-cell">{g.holes.length}</td>
                         <td className="p-1">{thInput(g)}</td>
                         <td className="p-1">{matInput(g)}</td>
                         <td className="p-1">{qtyInput(g)}</td>
-                        <td className="p-1 whitespace-nowrap tabular-nums">{placed.get(g.id) ?? 0}</td>
+                        <td className="hidden p-1 whitespace-nowrap tabular-nums xl:table-cell">{placed.get(g.id) ?? 0}</td>
                         <td className="p-1">{leftBtn(g)}</td>
-                        <td className="p-1">{nestBtn(g)}</td>
-                        <td className="p-1 whitespace-nowrap">
-                          <Button variant="ghost" size="sm" title="Duplicate this part (e.g. to give the copy another thickness)" onClick={() => duplicatePart(g.id)}>
-                            <Copy /> <span className="hidden 2xl:inline">Duplicate</span>
-                          </Button>
-                          <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
-                            <Trash2 /> <span className="hidden 2xl:inline">Remove</span>
-                          </Button>
-                        </td>
+                        <td className="p-1 text-right">{rowMenu(g)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2566,15 +2612,7 @@ export function NestBoost() {
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-muted-foreground">Placed {placed.get(g.id) ?? 0}</span>
                       {leftBtn(g)}
-                      {nestBtn(g)}
-                      <div className="ml-auto flex">
-                        <Button variant="ghost" size="sm" title="Duplicate this part" onClick={() => duplicatePart(g.id)}>
-                          <Copy />
-                        </Button>
-                        <Button variant="ghost" size="sm" className="text-destructive" title="Remove this part" onClick={() => setPendingRemove([g.id])}>
-                          <Trash2 />
-                        </Button>
-                      </div>
+                      <div className="ml-auto">{rowMenu(g)}</div>
                     </div>
                   </div>
                 ))}
