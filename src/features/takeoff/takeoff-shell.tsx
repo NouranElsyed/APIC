@@ -11,7 +11,7 @@ function activeTabClass(isActive: boolean) {
     : "px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground";
 }
 
-function TakeoffTopBar() {
+function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; showSteelPricing: boolean }) {
   const pathname = usePathname();
   const isNesting = pathname?.startsWith("/takeoff/nesting") ?? false;
   const isScrap = pathname?.startsWith("/takeoff/scrap-material") ?? false;
@@ -27,12 +27,16 @@ function TakeoffTopBar() {
         <Link href="/takeoff/nesting" className={activeTabClass(isNesting)}>
           DXF Nesting
         </Link>
-        <Link href="/takeoff/scrap-material" className={activeTabClass(isScrap)}>
-          Scrap & Material
-        </Link>
-        <Link href="/takeoff/steel-pricing" className={activeTabClass(isSteelPricing)}>
-          Steel Pricing
-        </Link>
+        {showScrap && (
+          <Link href="/takeoff/scrap-material" className={activeTabClass(isScrap)}>
+            Scrap & Material
+          </Link>
+        )}
+        {showSteelPricing && (
+          <Link href="/takeoff/steel-pricing" className={activeTabClass(isSteelPricing)}>
+            Steel Pricing
+          </Link>
+        )}
       </div>
 
       <WorkspaceBar />
@@ -40,11 +44,19 @@ function TakeoffTopBar() {
   );
 }
 
-export function TakeoffShell({ children }: { children: React.ReactNode }) {
+export function TakeoffShell({
+  children,
+  showScrap = false,
+  showSteelPricing = false,
+}: {
+  children: React.ReactNode;
+  showScrap?: boolean;
+  showSteelPricing?: boolean;
+}) {
   return (
     <TakeoffProjectProvider>
       <div className="space-y-6">
-        <TakeoffTopBar />
+        <TakeoffTopBar showScrap={showScrap} showSteelPricing={showSteelPricing} />
         {children}
       </div>
     </TakeoffProjectProvider>

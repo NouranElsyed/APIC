@@ -12,7 +12,7 @@ async function main() {
 
   // --- Users -----------------------------------------------------------
   const usersData: { name: string; email: string; role: Role; department: string }[] = [
-    { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
+    { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com", role: Role.ADMIN, department: "Engineering" },
     { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
     { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
     { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },

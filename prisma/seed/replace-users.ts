@@ -13,10 +13,10 @@ const prisma = new PrismaClient();
 const PASSWORD = "password123";
 
 const ENGINEERS = [
-  { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com" },
-  { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com" },
-  { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com" },
-  { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com" },
+  { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com", role: Role.ADMIN },
+  { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com", role: Role.ENGINEER },
+  { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com", role: Role.ENGINEER },
+  { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com", role: Role.ENGINEER },
 ];
 
 const OLD_DEMO_EMAILS = [
@@ -31,8 +31,8 @@ async function main() {
     created.push(
       await prisma.user.upsert({
         where: { email: e.email },
-        update: { name: e.name, role: Role.ENGINEER, department: "Engineering", active: true },
-        create: { ...e, role: Role.ENGINEER, department: "Engineering", password, active: true },
+        update: { name: e.name, role: e.role, department: "Engineering", active: true },
+        create: { ...e, department: "Engineering", password, active: true },
       }),
     );
   }

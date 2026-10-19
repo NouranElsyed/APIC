@@ -37,15 +37,14 @@ export const PERMISSIONS = {
   "nesting.edit": ["ADMIN", "MANAGER", "ENGINEER"],
   "nesting.delete": ["ADMIN", "MANAGER"],
 
-  // Scrap & Material pricing — read/export mirror nesting.view; only
-  // engineers-and-up can export a priced workbook.
-  "scrapPricing.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
-  "scrapPricing.export": ["ADMIN", "MANAGER", "ENGINEER"],
+  // Scrap & Material pricing — restricted to ADMIN (Nouran Elsayed).
+  "scrapPricing.view": ["ADMIN"],
+  "scrapPricing.export": ["ADMIN"],
 
   // Steel Structures Pricing Engine — rebuilds the original pricing sheet as
   // one editable page (rate card, single-item calculator, full BOQ).
-  "steelPricing.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
-  "steelPricing.export": ["ADMIN", "MANAGER", "ENGINEER"],
+  "steelPricing.view": ["ADMIN"],
+  "steelPricing.export": ["ADMIN"],
 
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
