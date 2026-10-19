@@ -1,7 +1,7 @@
 // One-off for an EXISTING database: replaces the old demo accounts with the four engineers.
 //   npm run db:replace-users
 //
-// - creates / updates Nouran Elsayed, Reham Elsayed, Mohamed Taher, Nada Mohamed (role ENGINEER)
+// - creates / updates Nouran Elsayed, Reham Elsayed, Salma Mohamed, Nada Mohamed (role ENGINEER)
 // - everything the old demo users created (projects, documents, notices ...) is handed over to
 //   Nouran Elsayed first, because those links block deleting a user — no project or file is lost
 // - then the old demo accounts are deleted (their login-activity rows go with them)
@@ -15,7 +15,7 @@ const PASSWORD = "password123";
 const ENGINEERS = [
   { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com" },
   { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com" },
-  { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com" },
+  { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com" },
   { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com" },
 ];
 

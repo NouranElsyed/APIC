@@ -14,7 +14,7 @@ async function main() {
   const usersData: { name: string; email: string; role: Role; department: string }[] = [
     { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
     { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
-    { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
+    { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
     { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com", role: Role.ENGINEER, department: "Engineering" },
   ];
 

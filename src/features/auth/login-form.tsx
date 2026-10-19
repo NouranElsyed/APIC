@@ -20,7 +20,7 @@ type FormValues = z.infer<typeof schema>;
 const DEMO_USERS = [
   { name: "Nouran Elsayed", email: "nouran.elsayed@steelflow.com" },
   { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com" },
-  { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com" },
+  { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com" },
   { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com" },
 ];
 
