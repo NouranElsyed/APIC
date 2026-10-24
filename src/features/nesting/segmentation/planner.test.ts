@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { regionToGroupShape } from "./convert";
+import { gridCapacity } from "./fit";
 import { circleLoop, flattenLoop, regionBBox, regionContains, regionFromPolygon, regionRings, ringsContain, ringsDistance } from "./geometry";
 import { buildPlan, generateCandidates, type GenSettings, type OverlapSpec, type PlanInput, type Plan } from "./planner";
 import type { Pt, Region } from "./types";
@@ -423,5 +424,144 @@ describe("generateCandidates", () => {
     const circle = circleRegion(0, 0, 3760);
     const run = () => generateCandidates(circle, gen()).map((c) => `${c.id}:${c.plan.metrics.segments}:${c.plan.metrics.cutLength.toFixed(3)}`);
     expect(run()).toEqual(run());
+  });
+});
+
+describe("sizing to the optimiser's grid", () => {
+  const circle = circleRegion(0, 0, 3760);
+  const withGrid = { sheets: [{ W: 6000, H: 1500 }], mg: 5, ro: 2, gp: 5, cell: 5 };
+  it("without gp/cell pieces may use the whole usable area; with them they stay within the placeable size", () => {
+    const loose = generateCandidates(circle, gen({ allowSolo: false })).find((c) => c.plan.valid)!;
+    const looseMax = Math.max(...loose.plan.segments.map((s) => Math.max(s.bbox[2] - s.bbox[0], s.bbox[3] - s.bbox[1])));
+    expect(looseMax).toBeLessThanOrEqual(5990 + 1e-6);
+
+    const tight = generateCandidates(circle, gen({ allowSolo: false, sheet: withGrid })).find((c) => c.plan.valid)!;
+    expect(tight.plan.valid).toBe(true);
+    const capW = gridCapacity(6000, 5, 5, 5); // 5987.5
+    const capH = gridCapacity(1500, 5, 5, 5); // 1487.5
+    expect([capW, capH]).toEqual([5987.5, 1487.5]);
+    for (const s of tight.plan.segments) {
+      const w = s.bbox[2] - s.bbox[0];
+      const h = s.bbox[3] - s.bbox[1];
+      expect(Math.max(w, h)).toBeLessThanOrEqual(capW + 1e-6);
+      expect(Math.min(w, h)).toBeLessThanOrEqual(capH + 1e-6);
+    }
+  });
+
+  it("a hand-made strip at the usable limit is flagged when the grid is known", () => {
+    const strip = rectRegion(0, 0, 4000, 1490);
+    const loose = buildPlan(strip, input());
+    expect(loose.valid).toBe(true);
+    const tight = buildPlan(strip, input({ sheet: withGrid }));
+    expect(tight.valid).toBe(false);
+    expect(tight.issues[0].code).toBe("SEGMENT_TOO_LARGE");
+    expect(tight.issues[0].message).toMatch(/optimiser's grid/);
+  });
+});
+
+describe("negative overlap = a gap between the pieces", () => {
+  const region = rectRegion(0, 0, 100, 50);
+  const big = { sheets: [{ W: 500, H: 500 }], mg: 0, ro: 2 };
+  const gap = (mm: number, side: OverlapSpec["side"]): OverlapSpec => ({ enabled: true, mm, side });
+  const seam = [{ id: "T1.1", strip: 0, pos: 60 }];
+  const bb = (p: Plan, i: number) => regionBBox(p.segments[i].cut);
+
+  it('policy "A": the lower piece is cut back by the whole gap; the finished shape does not change', () => {
+    const p = buildPlan(region, input({ seamCuts: seam, sheet: big, overlap: gap(-10, "A") }));
+    expect(p.valid).toBe(true);
+    expect(p.segments.map((s) => s.finishedArea)).toEqual([3000, 2000]);
+    expect(p.segments.map((s) => s.cutArea)).toEqual([2500, 2000]);
+    expect(bb(p, 0)).toEqual([0, 0, 50, 50]);
+    expect(bb(p, 1)).toEqual([60, 0, 100, 50]);
+    expect(p.metrics.finishedArea).toBeCloseTo(5000, 9); // takeoff area is the part's
+    expect(p.metrics.overlapArea).toBeCloseTo(-500, 9); // negative: material removed
+    expect(p.metrics.cutLength).toBeCloseTo(50, 9); // seam length ignores the gap
+    expect(p.seams[0].carrier).toBe("low");
+  });
+
+  it('policy "symmetric": each piece is cut back by half, the gap is centred on the seam', () => {
+    const p = buildPlan(region, input({ seamCuts: seam, sheet: big, overlap: gap(-10, "symmetric") }));
+    expect(bb(p, 0)).toEqual([0, 0, 55, 50]);
+    expect(bb(p, 1)).toEqual([65, 0, 100, 50]);
+    expect(p.segments.map((s) => s.cutArea)).toEqual([2750, 1750]);
+    expect(p.seams[0].carrier).toBe("both");
+  });
+
+  it('policy "alternate": the carrier side alternates, so each seam has exactly one gap', () => {
+    const p = buildPlan(region, input({
+      seamCuts: [{ id: "T1.1", strip: 0, pos: 30 }, { id: "T1.2", strip: 0, pos: 70 }],
+      sheet: big,
+      overlap: gap(-10, "alternate"),
+    }));
+    expect(p.seams.map((s) => s.carrier)).toEqual(["low", "high"]);
+    expect(bb(p, 0)).toEqual([0, 0, 20, 50]); // seam 1: the lower piece is cut back
+    expect(bb(p, 1)).toEqual([30, 0, 70, 50]); // the middle piece is not touched
+    expect(bb(p, 2)).toEqual([80, 0, 100, 50]); // seam 2: the upper piece is cut back
+    expect(p.metrics.overlapArea).toBeCloseTo(-1000, 9);
+  });
+
+  it("works across strips as well", () => {
+    const r = rectRegion(0, 0, 100, 90);
+    const p = buildPlan(r, input({ stripCuts: [{ id: "C1", pos: 30 }], sheet: big, overlap: gap(-6, "A") }));
+    expect(bb(p, 0)).toEqual([0, 0, 100, 24]);
+    expect(bb(p, 1)).toEqual([0, 30, 100, 90]);
+  });
+
+  it("curved pieces keep their arcs where they are not cut back", () => {
+    const disk = circleRegion(0, 0, 500);
+    const p = buildPlan(disk, input({ stripCuts: [{ id: "C1", pos: 100 }], sheet: { sheets: [{ W: 3000, H: 3000 }], mg: 0, ro: 2 }, overlap: gap(-8, "A") }));
+    expect(p.valid).toBe(true);
+    expect(p.segments[0].cutArea).toBeLessThan(p.segments[0].finishedArea);
+    expect(p.segments[1].cut).toBe(p.segments[1].finished); // the upper piece carries nothing
+    expect(p.segments[0].cut.outer.some((e) => e.arc && e.arc.r === 500)).toBe(true);
+    expect(p.metrics.finishedArea).toBeCloseTo(Math.PI * 500 * 500, 4);
+    expectFinishedPartition(disk, p);
+  });
+
+  it("a gap bigger than a piece is an error that names the piece", () => {
+    const p = buildPlan(region, input({ seamCuts: [{ id: "T1.1", strip: 0, pos: 5 }], sheet: big, overlap: gap(-10, "A") }));
+    expect(p.valid).toBe(false);
+    const e = p.issues.find((i) => i.code === "GAP_TOO_LARGE")!;
+    expect(e.segmentId).toBe("S01");
+    expect(e.message).toMatch(/gap of 10 mm leaves nothing of segment S01/);
+    const sym = buildPlan(region, input({ seamCuts: [{ id: "T1.1", strip: 0, pos: 3 }], sheet: big, overlap: gap(-10, "symmetric") }));
+    expect(sym.issues.map((i) => i.code)).toContain("GAP_TOO_LARGE");
+  });
+
+  it("a gap lets a piece that is a little too long fit the sheet, because the CUT piece is shorter", () => {
+    const sheet = { sheets: [{ W: 6000, H: 1500 }], mg: 5, ro: 2 }; // usable 5990 × 1490, raw 6000 × 1500
+    // finished piece 6005 > the raw sheet: does not fit at all …
+    const long = rectRegion(0, 0, 6010, 1000);
+    const cut = [{ id: "T1.1", strip: 0, pos: 6005 }];
+    expect(buildPlan(long, input({ seamCuts: cut, sheet })).issues.map((i) => i.code)).toContain("SEGMENT_TOO_LARGE");
+    // … but with a 10 mm gap the piece that is CUT is 5995: it fits the raw sheet (as a solo sheet)
+    const g1 = buildPlan(long, input({ seamCuts: cut, sheet, overlap: gap(-10, "A") }));
+    expect(g1.valid).toBe(true);
+    expect(g1.segments[0].finishedArea).toBe(6005 * 1000); // the finished piece is still 6005 mm
+    expect(g1.segments[0].cutArea).toBe(5995 * 1000);
+    expect(g1.segments[0].solo).toBe(true);
+    // a finished piece of 5995 is a solo piece; cut back by the gap to 5985 it fits the margins and shares a sheet
+    const mid = rectRegion(0, 0, 6000, 1000);
+    const c2 = [{ id: "T1.1", strip: 0, pos: 5995 }];
+    expect(buildPlan(mid, input({ seamCuts: c2, sheet })).segments[0].solo).toBe(true);
+    const g2 = buildPlan(mid, input({ seamCuts: c2, sheet, overlap: gap(-10, "A") }));
+    expect(g2.segments[0].solo).toBe(false);
+    expect(g2.segments[0].fit.status).toBe("READY");
+  });
+
+  it("an overlap and a gap are told apart by the sign, and zero is not a value", () => {
+    const over = buildPlan(region, input({ seamCuts: seam, sheet: big, overlap: gap(10, "A") }));
+    expect(over.metrics.overlapArea).toBeCloseTo(500, 9);
+    const zero = buildPlan(region, input({ seamCuts: seam, sheet: big, overlap: gap(0, "A") }));
+    expect(zero.issues.map((i) => i.code)).toContain("INVALID_OVERLAP");
+    expect(zero.issues[0].message).toMatch(/negative value for a gap/);
+    expect(buildPlan(region, input({ seamCuts: seam, sheet: big, overlap: gap(NaN, "A") })).valid).toBe(false);
+  });
+
+  it("generated layouts work with a gap: valid, finished area exact, cut area smaller", () => {
+    const c = generateCandidates(circleRegion(0, 0, 3760), gen({ allowSolo: false, overlap: gap(-5, "alternate") })).find((x) => x.plan.valid)!;
+    expect(c.plan.metrics.overlapArea).toBeLessThan(0);
+    expect(c.plan.metrics.finishedArea).toBeCloseTo(Math.PI * 3760 * 3760, 2);
+    expect(c.plan.metrics.cutArea).toBeLessThan(c.plan.metrics.finishedArea);
   });
 });

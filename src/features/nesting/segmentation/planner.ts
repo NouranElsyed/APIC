@@ -17,16 +17,21 @@
  *   cut      — what is cut from sheet. Equal to `finished` unless overlap is enabled.
  * Kerf, root gap, trim etc. are NOT modelled here (out of scope for this phase).
  *
- * OVERLAP (optional, off by default): at a seam one side extends by `mm` into its neighbour
- * (policy "A": the lower-coordinate side; "alternate": alternating by cut index; "symmetric":
- * both sides extend mm/2). The extension is the original material inside the extended box of
- * the cell, so it can never leave the original outline. At a corner where two extensions meet,
- * the corner square is included. Finished geometry, takeoff area and seam lengths ignore overlap;
- * fit validation and material estimates use the cut geometry.
+ * OVERLAP / GAP (optional, off by default), one signed value `mm`:
+ *   mm > 0  OVERLAP — the pieces are welded on top of each other: at a seam one side extends by `mm`
+ *           into its neighbour. The extension is the original material inside the extended box of the
+ *           cell, so it never leaves the original outline (at a corner where two extensions meet, the
+ *           corner square is included).
+ *   mm < 0  GAP — a gap of |mm| is left between the pieces: at a seam the carrier side is cut back
+ *           by |mm|. The finished pieces still reassemble to the part; the gap is a cutting allowance.
+ * Which side moves: policy "A" = the lower-coordinate side (by the full amount), "alternate" =
+ * alternating by cut index, "symmetric" = both sides by |mm|/2. Finished geometry, takeoff area and
+ * seam lengths ignore it; fit validation, material estimates and the pieces made on approval use
+ * the cut geometry.
  */
 import { makeSettings, rotList, type Group } from "../nest-boost/engine";
 import { regionToGroupShape } from "./convert";
-import { classifyFit, type FitResult, type SheetSize } from "./fit";
+import { classifyFit, gridCapacity, type FitResult, type SheetSize } from "./fit";
 import {
   MIN_CUT_SPACING,
   clipRegionToBox,
@@ -52,7 +57,10 @@ export type OverlapSide = "A" | "alternate" | "symmetric";
 
 export interface OverlapSpec {
   enabled: boolean;
-  /** Total overlap width at a joint, mm. Required (> 0) when enabled — no default. */
+  /**
+   * Signed width at a joint, mm: positive = the pieces overlap (welded on top of each other), negative = a gap
+   * of that size between them. Required (non-zero) when enabled — there is no default.
+   */
   mm: number;
   side: OverlapSide;
 }
@@ -62,6 +70,13 @@ export interface SheetCtx {
   sheets: SheetSize[];
   mg: number;
   ro: number;
+  /**
+   * The nest's part spacing and grid cell (mm). The optimiser can only place parts up to `gridCapacity`
+   * (a little less than the usable area), so segments are sized to that. Leave both out to size to the
+   * plain usable area (sheet minus margins).
+   */
+  gp?: number;
+  cell?: number;
 }
 
 /** All optional: a missing value means "not enforced" (no defaults are assumed). */
@@ -118,7 +133,9 @@ export type IssueCode =
   | "CROSS_JUNCTION"
   | "SEAM_TOO_LONG"
   | "SEAM_NEAR_BOUNDARY"
-  | "OVERLAP_MERGES_PIECES";
+  | "OVERLAP_MERGES_PIECES"
+  | "GAP_TOO_LARGE"
+  | "GAP_SPLITS_PIECE";
 
 export interface Issue {
   code: IssueCode;
@@ -154,7 +171,7 @@ export interface PlanSeam {
   high: string;
   length: number;
   intervals: [number, number][];
-  /** Which side carries the overlap here, or null when overlap is off. */
+  /** Which side carries the overlap / gap here, or null when it is off. */
   carrier: "low" | "high" | "both" | null;
 }
 
@@ -165,6 +182,7 @@ export interface PlanMetrics {
   cutLength: number;
   finishedArea: number;
   cutArea: number;
+  /** Cut area minus finished area: positive with an overlap, negative with a gap. */
   overlapArea: number;
   soloSegments: number;
   unfitSegments: number;
@@ -219,7 +237,9 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     issues.push({ severity, code, message, ...extra });
   const cons = input.constraints ?? {};
   const tol = input.tol ?? TOL_MM;
-  const o = input.overlap.enabled ? input.overlap.mm : 0;
+  const o = input.overlap.enabled ? input.overlap.mm : 0; // signed: > 0 overlap, < 0 gap
+  const w = Math.abs(o);
+  const isGap = o < 0;
 
   const finish = (segments: Segment[], seams: PlanSeam[]): Plan => {
     const solo = segments.filter((s) => s.solo);
@@ -249,8 +269,8 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     };
   };
 
-  if (input.overlap.enabled && !(Number.isFinite(input.overlap.mm) && input.overlap.mm > 0)) {
-    add("error", "INVALID_OVERLAP", "Overlap is enabled but its value is missing or not greater than 0.");
+  if (input.overlap.enabled && !(Number.isFinite(input.overlap.mm) && input.overlap.mm !== 0)) {
+    add("error", "INVALID_OVERLAP", "Overlap is enabled but its value is missing or zero. Enter a positive value to overlap the pieces or a negative value for a gap between them.");
     return finish([], []);
   }
 
@@ -325,9 +345,16 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
   });
 
   /* ---- segments ------------------------------------------------------ */
-  const amt = (c: "low" | "high" | "both") => (c === "both" ? o / 2 : o);
+  const amt = (c: "low" | "high" | "both") => (c === "both" ? w / 2 : w);
   const side = input.overlap.side;
-  const S0 = makeSettings({ W: input.sheet.sheets[0]?.W ?? 0, H: input.sheet.sheets[0]?.H ?? 0, mg: input.sheet.mg, gp: 0, cell: 5, ro: input.sheet.ro });
+  const S0 = makeSettings({
+    W: input.sheet.sheets[0]?.W ?? 0,
+    H: input.sheet.sheets[0]?.H ?? 0,
+    mg: input.sheet.mg,
+    gp: input.sheet.gp ?? 0,
+    cell: input.sheet.cell ?? 1, // without a cell size the check is the plain usable area (1 mm grid ≈ no rounding)
+    ro: input.sheet.ro,
+  });
 
   const segments: Segment[] = [];
   let counter = 0;
@@ -338,19 +365,40 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
       if (!pieces.length) continue;
       counter++;
 
-      // overlap: extended box of this cell (across and along)
+      // overlap / gap: how far each side of this cell moves (out for an overlap, in for a gap)
       let eAL = 0;
       let eAH = 0;
       let eLL = 0;
       let eLH = 0;
-      if (o > 0) {
+      if (o !== 0) {
         if (s > 0 && carrierOf(side, s - 1) !== "low") eAL = amt(carrierOf(side, s - 1));
         if (s < nStrips - 1 && carrierOf(side, s) !== "high") eAH = amt(carrierOf(side, s));
         if (k > 0 && carrierOf(side, k - 1) !== "low") eLL = amt(carrierOf(side, k - 1));
         if (k < m && carrierOf(side, k) !== "high") eLH = amt(carrierOf(side, k));
       }
       let cutRegions: (Region | null)[] = pieces.map(() => null);
-      if (eAL || eAH || eLL || eLH) {
+      if (isGap && (eAL || eAH || eLL || eLH)) {
+        // GAP: cut each piece back from the seam, working on the finished piece itself
+        const aLo = (s > 0 ? usedAcross[s - 1] : -Infinity) + eAL;
+        const aHi = (s < nStrips - 1 ? usedAcross[s] : Infinity) - eAH;
+        const lLo = (k > 0 ? usedAlong[s][k - 1] : -Infinity) + eLL;
+        const lHi = (k < m ? usedAlong[s][k] : Infinity) - eLH;
+        cutRegions = pieces.map((piece, pi) => {
+          const across = clipRegionToBox(piece, boxFor(acrossAxis, aLo, aHi));
+          const comps = across.pieces.flatMap((p) => clipRegionToBox(p, boxFor(alongAxis, lLo, lHi)).pieces);
+          const sid = pieces.length > 1 ? `S${pad(counter)}${letter(pi)}` : `S${pad(counter)}`;
+          if (!comps.length) {
+            add("error", "GAP_TOO_LARGE", `A gap of ${r2(w)} mm leaves nothing of segment ${sid} (it is narrower than the gap).`, { segmentId: sid });
+            return null; // keeps the finished shape so the plan can still be drawn; it is invalid anyway
+          }
+          if (comps.length > 1) {
+            add("warning", "GAP_SPLITS_PIECE", `The gap cuts segment ${sid} into ${comps.length} parts; only the largest is kept.`, { segmentId: sid });
+            return comps.reduce((b, c) => (regionArea(c) > regionArea(b) ? c : b));
+          }
+          return comps[0];
+        });
+      } else if (eAL || eAH || eLL || eLH) {
+        // OVERLAP: original material inside the extended box of the cell
         const aLo = (s > 0 ? usedAcross[s - 1] : -Infinity) - eAL;
         const aHi = (s < nStrips - 1 ? usedAcross[s] : Infinity) + eAH;
         const lLo = (k > 0 ? usedAlong[s][k - 1] : -Infinity) - eLL;
@@ -420,12 +468,12 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     }
   };
   stripCuts.forEach((c, i) =>
-    seamsFor(c.id, "strip", acrossAxis, usedAcross[i], o > 0 ? carrierOf(side, i) : null,
+    seamsFor(c.id, "strip", acrossAxis, usedAcross[i], o !== 0 ? carrierOf(side, i) : null,
       segments.filter((g) => g.cell.strip === i), segments.filter((g) => g.cell.strip === i + 1)),
   );
   seamByStrip.forEach((list, s) =>
     list.forEach((c, j) =>
-      seamsFor(c.id, "transverse", alongAxis, usedAlong[s][j], o > 0 ? carrierOf(side, j) : null,
+      seamsFor(c.id, "transverse", alongAxis, usedAlong[s][j], o !== 0 ? carrierOf(side, j) : null,
         segments.filter((g) => g.cell.strip === s && g.cell.index === j), segments.filter((g) => g.cell.strip === s && g.cell.index === j + 1)),
     ),
   );
@@ -598,7 +646,7 @@ function placeSeamCuts(region: Region, gs: GenSettings, direction: Direction, st
 export function generateCandidates(regionIn: Region, gs: GenSettings): Candidate[] {
   const region = normalizeRegion(regionIn);
   const [bx0, by0, bx1, by1] = regionBBox(region);
-  const o = gs.overlap.enabled && gs.overlap.mm > 0 ? gs.overlap.mm : 0;
+  const o = gs.overlap.enabled && gs.overlap.mm > 0 ? gs.overlap.mm : 0; // only an overlap makes pieces bigger; a gap makes them smaller
   // worst case extension of one cell along one axis: both its sides can carry overlap with "alternate"
   const extra = o <= 0 ? 0 : gs.overlap.side === "alternate" ? 2 * o : o;
   const rot90 = rotList(gs.sheet.ro).some((r) => Math.abs(r % 180) === 90);
@@ -610,8 +658,10 @@ export function generateCandidates(regionIn: Region, gs: GenSettings): Candidate
   gs.sheet.sheets.forEach((sh, sheetIndex) => {
     if (!(sh.W > 0 && sh.H > 0)) return;
     for (const limits of (gs.allowSolo ?? true) ? (["usable", "raw"] as const) : (["usable"] as const)) {
-      const Wl = limits === "usable" ? sh.W - 2 * mg : sh.W;
-      const Hl = limits === "usable" ? sh.H - 2 * mg : sh.H;
+      // "usable": what the optimiser can place on a margined sheet; "raw": a whole sheet, no margin (solo sheet)
+      const cap = (len: number) => (gs.sheet.cell ? gridCapacity(len, mg, gs.sheet.gp ?? 0, gs.sheet.cell) : len - 2 * mg);
+      const Wl = limits === "usable" ? cap(sh.W) : sh.W;
+      const Hl = limits === "usable" ? cap(sh.H) : sh.H;
       if (Wl <= 0 || Hl <= 0) continue;
       for (const swapped of rot90 ? [false, true] : [false]) {
         const limX = swapped ? Hl : Wl;

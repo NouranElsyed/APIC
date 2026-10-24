@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeSettings, rotBox, rotList, soloRot, whyNotNested, type Group, type Pt } from "../nest-boost/engine";
-import { FIT_LABEL, classifyAll, classifyFit } from "./fit";
+import { FIT_LABEL, classifyAll, classifyFit, gridCapacity } from "./fit";
 
 const S = (over: Partial<{ W: number; H: number; mg: number; ro: number }> = {}) =>
   makeSettings({ W: 6000, H: 1500, mg: 5, gp: 5, cell: 5, ro: 2, ...over });
@@ -189,9 +189,10 @@ describe("agreement with the engine", () => {
       const s = S({ W: 1000 + Math.floor(rnd() * 6000), H: 800 + Math.floor(rnd() * 2000), mg: Math.floor(rnd() * 60), ro });
       const g = rect(100 + rnd() * 7000, 20 + rnd() * 2500);
       const R = rotList(ro);
+      // "fits" = what the optimiser can place on a margined sheet (grid capacity), not the plain usable area
       const usable = R.some((r) => {
         const b = rotBox(g, r);
-        return b.w <= s.W - 2 * s.mg + 0.01 && b.h <= s.H - 2 * s.mg + 0.01;
+        return b.w <= gridCapacity(s.W, s.mg, s.gp, s.cell) + 0.01 && b.h <= gridCapacity(s.H, s.mg, s.gp, s.cell) + 0.01;
       });
       const solo = soloRot(g, s, R) !== null;
       const r = classifyFit(g, s);

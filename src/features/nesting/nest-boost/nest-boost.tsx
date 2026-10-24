@@ -21,6 +21,8 @@ import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
 import { classifyAll, type FitResult } from "../segmentation/fit";
 import { SegmentDialog } from "../segmentation/segment-dialog";
+import { childrenOf, commitSegmentation, expandRemoval, patchGroup, removeSegmentation } from "../segmentation/commit";
+import type { Plan } from "../segmentation/planner";
 import { decodeSnapshot, encodeSnapshot } from "./persist";
 import { AutosaveBadge, useNestingAutosave } from "../use-nesting-autosave";
 import {
@@ -962,6 +964,8 @@ export function NestBoost() {
   const [soloOpen, setSoloOpen] = React.useState(false);
   // Part Segmentation: the oversized part whose dialog is open (preview only; nothing is changed)
   const [segGroup, setSegGroup] = React.useState<Group | null>(null);
+  // Part Segmentation: the segmented original whose segmentation the person is about to undo (asks first)
+  const [pendingUnseg, setPendingUnseg] = React.useState<number | null>(null);
   const [confirmSolo, setConfirmSolo] = React.useState(false);
   // ---- box selection (CAD style): parts selected together on one sheet, moved as a group
   const multiRef = React.useRef<MultiSel | null>(null);
@@ -1359,7 +1363,8 @@ export function NestBoost() {
   }, [nestingQueue, projectId, clearNestingQueue, importFromProject]);
 
   const updateGroup = (id: number, patch: Partial<Group>) => {
-    setG(groupsRef.current.map((g) => (g.id === id ? { ...g, ...patch } : g)));
+    // a segmented original passes quantity / thickness / material on to its pieces; a piece follows its original
+    setG(patchGroup(groupsRef.current, id, patch));
     if (resultRef.current?.manual) bump(); // quantity changed: what is left to place changes too
   };
 
@@ -1368,6 +1373,10 @@ export function NestBoost() {
     const gs = groupsRef.current;
     const i = gs.findIndex((x) => x.id === id);
     if (i < 0) return;
+    if (gs[i].seg) {
+      toast.info("A segmented part can't be duplicated — undo its segmentation first.");
+      return;
+    }
     const copy: Group = { ...gs[i], id: counters.current.id++, sn: ++counters.current.sn };
     setG([...gs.slice(0, i + 1), copy, ...gs.slice(i + 1)]);
     setMsg(`Part #${gs[i].sn} duplicated as #${copy.sn} — set its own thickness / material / quantity.`);
@@ -1378,14 +1387,17 @@ export function NestBoost() {
     const want = new Set(ids);
     const out: Group[] = [];
     const made: number[] = [];
+    let skippedSeg = false;
     for (const x of groupsRef.current) {
       out.push(x);
-      if (want.has(x.id)) {
+      if (want.has(x.id) && x.seg) skippedSeg = true;
+      else if (want.has(x.id)) {
         const copy: Group = { ...x, id: counters.current.id++, sn: ++counters.current.sn };
         out.push(copy);
         made.push(copy.id);
       }
     }
+    if (skippedSeg) toast.info("Segmented parts and their pieces were not duplicated — undo the segmentation first.");
     if (!made.length) return;
     setG(out);
     setMsg(`${made.length} part(s) duplicated — set their own thickness / material / quantity.`);
@@ -1410,6 +1422,10 @@ export function NestBoost() {
 
   /** The person typed a new length or width for a part (`which` = the one they changed). */
   const sizeGroup = (g: Group, which: "w" | "h", v: number) => {
+    if (g.seg) {
+      toast.info("This part is segmented — undo the segmentation before changing its size.");
+      return;
+    }
     if (!(v > 0)) return;
     const k = v / (which === "w" ? g.w : g.h);
     const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -1494,7 +1510,10 @@ export function NestBoost() {
     }
   }
 
-  const removeParts = (ids: number[]) => {
+  const removeParts = (requested: number[]) => {
+    const { ids, blocked } = expandRemoval(groupsRef.current, requested);
+    if (blocked.length) toast.info("A piece of a segmented part can't be deleted on its own — undo the segmentation of its original instead.");
+    if (!ids.length) return;
     const drop = new Set(ids);
     const gone = groupsRef.current.filter((x) => drop.has(x.id));
     setG(groupsRef.current.filter((x) => !drop.has(x.id)));
@@ -1505,6 +1524,49 @@ export function NestBoost() {
         ? `Part #${gone[0].sn} (${gone[0].name}) removed. Press Optimize to re-nest.`
         : `${gone.length} parts removed. Press Optimize to re-nest.`,
     );
+  };
+
+  /** "Approve" in the Segment dialog: the pieces become parts of the nest, the original stays as "Segmented". */
+  const approveSegmentation = (parent: Group, plan: Plan) => {
+    const r = commitSegmentation({ groups: groupsRef.current, parentId: parent.id, plan, counters: counters.current });
+    if (!r.ok) {
+      toast.error(r.reason);
+      return;
+    }
+    counters.current = r.counters;
+    const hadPlaced = r.removedIds.some((id) => (placed.get(id) ?? 0) > 0); // pieces of an earlier version were on sheets
+    setG(r.groups);
+    if (hadPlaced) clearResults();
+    setSegGroup(null);
+    setChecked(new Set());
+    setMsg(
+      `Part #${parent.sn} (${parent.name}) split into ${r.children.length} parts × ${r.parent.qty} pc. ` +
+        `The original stays in the list as Segmented; nest its pieces like any other part.`,
+    );
+    flashRows(r.children.map((c) => c.id));
+  };
+
+  /** Downloads a zip for a segmented original: a DXF per piece, the assembly drawing and the report. */
+  const exportSegments = async (parent: Group) => {
+    try {
+      const { exportSavedSegmentation } = await import("../segmentation/export-action");
+      const r = await exportSavedSegmentation(parent);
+      if (r.ok) toast.success(`${r.result.zipName}: ${r.result.pieces} piece files, the assembly drawing and the report.`);
+      else toast.error(r.reason);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Export failed.");
+    }
+  };
+
+  /** Removes the pieces of a segmented original and makes it a normal part again. */
+  const unsegment = (parentId: number) => {
+    const parent = groupsRef.current.find((x) => x.id === parentId);
+    const r = removeSegmentation(groupsRef.current, parentId);
+    if (!parent || !r.removedIds.length) return;
+    const hadPlaced = r.removedIds.some((id) => (placed.get(id) ?? 0) > 0);
+    setG(r.groups);
+    if (hadPlaced) clearResults();
+    setMsg(`Segmentation of part #${parent.sn} (${parent.name}) undone — ${r.removedIds.length} pieces removed.`);
   };
 
   const resetAll = () => {
@@ -2168,21 +2230,27 @@ export function NestBoost() {
   // only the selected parts that are on screen are acted on, so a hidden row is never removed by accident
   const checkedVis = visible.filter((g) => checked.has(g.id)).map((g) => g.id);
 
-  const thInput = (g: Group) => (
+  /** A piece of a segmented part: its quantity / thickness / material come from the original. */
+  const inherited = (v: React.ReactNode) => (
+    <span className="inline-block min-w-12 px-2 text-sm tabular-nums text-muted-foreground" title="Same as the original part — change it there">
+      {v}
+    </span>
+  );
+  const thInput = (g: Group) => g.seg?.role === "child" ? inherited(g.th || "—") : (
     <Input
       type="number" min={0} step="any" placeholder="mm" className="h-8 w-full min-w-16 md:w-20"
       value={g.th || ""}
       onChange={(e) => updateGroup(g.id, { th: Number(e.target.value) || 0 })}
     />
   );
-  const matInput = (g: Group) => (
+  const matInput = (g: Group) => g.seg?.role === "child" ? inherited(g.material || "—") : (
     <Input
       type="text" placeholder="e.g. S235" className="h-8 w-full min-w-20 md:w-24"
       value={g.material || ""}
       onChange={(e) => updateGroup(g.id, { material: e.target.value })}
     />
   );
-  const qtyInput = (g: Group) => (
+  const qtyInput = (g: Group) => g.seg?.role === "child" ? inherited(g.qty) : (
     <Input
       type="number" min={0} className="h-8 w-full min-w-16 md:w-20" value={g.qty}
       onChange={(e) => updateGroup(g.id, { qty: Math.max(0, Number(e.target.value) | 0) })}
@@ -2223,7 +2291,9 @@ export function NestBoost() {
   /** The "⋮" menu of a row: every action except dragging a piece out by hand (that one needs the visible button). */
   const rowMenu = (g: Group) => {
     const canNest = !running && !held && leftOf(g, placed) > 0;
-    const needsSeg = fitMap.get(g.id)?.status === "NEEDS_SEGMENTATION";
+    const isParent = g.seg?.role === "parent";
+    const isChild = g.seg?.role === "child";
+    const needsSeg = !g.seg && fitMap.get(g.id)?.status === "NEEDS_SEGMENTATION";
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -2244,11 +2314,29 @@ export function NestBoost() {
               <Scissors /> Segment part
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onSelect={() => duplicatePart(g.id)}>
+          {isParent && (
+            <>
+              <DropdownMenuItem onSelect={() => setSegGroup(g)}>
+                <Scissors /> Edit segmentation
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => exportSegments(g)}>
+                <Download /> Export segments (DXF + report)
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setPendingUnseg(g.id)}>
+                <Undo2 /> Undo segmentation
+              </DropdownMenuItem>
+            </>
+          )}
+          <DropdownMenuItem disabled={!!g.seg} onSelect={() => duplicatePart(g.id)} title={g.seg ? "Undo the segmentation first" : undefined}>
             <Copy /> Duplicate
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setPendingRemove([g.id])}>
+          <DropdownMenuItem
+            disabled={isChild}
+            title={isChild ? "Undo the segmentation of the original to remove its pieces" : undefined}
+            className="text-destructive focus:text-destructive"
+            onSelect={() => setPendingRemove([g.id])}
+          >
             <Trash2 /> Delete
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -2268,9 +2356,21 @@ export function NestBoost() {
       }
     />
   );
-  const rowTint = (g: Group) => (newIds.has(g.id) ? "bg-emerald-100 dark:bg-emerald-950/40" : checked.has(g.id) ? "bg-primary/5" : "");
+  const rowTint = (g: Group) =>
+    newIds.has(g.id) ? "bg-emerald-100 dark:bg-emerald-950/40" : checked.has(g.id) ? "bg-primary/5" : g.seg?.role === "child" ? "bg-secondary/40" : "";
   /** Status badge for parts that are not plain "fits the sheet": solo sheet, needs segmentation, unplaceable. */
   const fitBadge = (g: Group) => {
+    if (g.seg?.role === "parent") {
+      const n = g.seg.childIds?.length ?? 0;
+      return (
+        <span
+          title={`Split into ${n} pieces (listed below). This original keeps its own quantity for the takeoff; only its pieces are nested.`}
+          className="mt-0.5 inline-block whitespace-nowrap rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950/40 dark:text-violet-200"
+        >
+          SEGMENTED · {n} parts
+        </span>
+      );
+    }
     const f: FitResult | undefined = fitMap.get(g.id);
     if (!f || f.status === "READY") return null;
     const cls =
@@ -2537,6 +2637,7 @@ export function NestBoost() {
                         <td className="p-1 font-semibold">#{g.sn}</td>
                         <td className="p-1"><PartThumb g={g} /></td>
                         <td className="max-w-40 break-all p-1">
+                          {g.seg?.role === "child" && <span className="mr-1 text-muted-foreground">↳</span>}
                           {g.name}
                           <div>{fitBadge(g)}</div>
                           <div className="text-[10px] text-muted-foreground 2xl:hidden">
@@ -2593,7 +2694,10 @@ export function NestBoost() {
                       <span className="text-sm font-semibold">#{g.sn}</span>
                       <PartThumb g={g} />
                       <div className="min-w-0 flex-1 text-xs">
-                        <div className="break-all font-medium">{g.name}</div>
+                        <div className="break-all font-medium">
+                          {g.seg?.role === "child" && <span className="mr-1 text-muted-foreground">↳</span>}
+                          {g.name}
+                        </div>
                         {fitBadge(g)}
                         <div className="text-muted-foreground">
                           area {Math.round(g.area)} · {g.holes.length} hole(s)
@@ -3054,11 +3158,31 @@ export function NestBoost() {
             ? `Are you sure you want to remove ${pendingRemove.length} parts?`
             : "Are you sure you want to remove this part?"
         }
-        description="The nesting result will be cleared and you'll need to press Optimize again."
+        description={
+          pendingRemove?.some((id) => groups.find((x) => x.id === id)?.seg?.role === "parent")
+            ? "A segmented part is removed together with its pieces. The nesting result will be cleared and you'll need to press Optimize again."
+            : "The nesting result will be cleared and you'll need to press Optimize again."
+        }
         confirmLabel="Remove"
         onConfirm={() => {
           if (pendingRemove) removeParts(pendingRemove);
           setPendingRemove(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingUnseg !== null}
+        onOpenChange={(v) => !v && setPendingUnseg(null)}
+        title="Undo the segmentation?"
+        description={
+          pendingUnseg !== null && childrenOf(groups, pendingUnseg).some((c) => (placed.get(c.id) ?? 0) > 0)
+            ? "Some pieces are already on sheets, so the nesting result will be cleared. The pieces are removed and the original becomes a normal part again."
+            : "The pieces are removed and the original becomes a normal part again."
+        }
+        confirmLabel="Undo segmentation"
+        onConfirm={() => {
+          if (pendingUnseg !== null) unsegment(pendingUnseg);
+          setPendingUnseg(null);
         }}
       />
 
@@ -3181,7 +3305,8 @@ export function NestBoost() {
         open={!!segGroup}
         onOpenChange={(o) => !o && setSegGroup(null)}
         group={segGroup}
-        nest={{ W: Number(cfg.W), H: Number(cfg.H), mg: Number(cfg.mg), ro: Number(cfg.ro) }}
+        nest={{ W: Number(cfg.W), H: Number(cfg.H), mg: Number(cfg.mg), ro: Number(cfg.ro), gp: Number(cfg.gp), cell: Number(cfg.cell), pair: cfg.pair, common: cfg.common }}
+        onApprove={approveSegmentation}
       />
 
       <Dialog open={soloOpen} onOpenChange={setSoloOpen}>

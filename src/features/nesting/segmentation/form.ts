@@ -23,7 +23,7 @@ export interface SegForm {
   staggered: boolean;
   allowSolo: boolean;
   overlapOn: boolean;
-  /** Empty until the user types a value — there is no default overlap. */
+  /** Signed, empty until the user types a value — there is no default. Positive = overlap, negative = gap. */
   overlapMm: string;
   overlapSide: OverlapSide;
   holePolicy: HolePolicy;
@@ -40,6 +40,13 @@ export interface NestCtx {
   H: number;
   mg: number;
   ro: number;
+  /** The nest's part spacing and grid cell (mm): pieces are sized to what the optimiser can place with them. */
+  gp?: number;
+  cell?: number;
+  /** The nest's "pair triangles" / "common cut" options and the time budget (seconds) for checking one layout with the engine. */
+  pair?: boolean;
+  common?: boolean;
+  evalSec?: number;
 }
 
 export function defaultForm(nest: Pick<NestCtx, "W" | "H">): SegForm {
@@ -66,7 +73,7 @@ export type ParsedForm = { ok: true; settings: GenSettings } | { ok: false; erro
 const num = (s: string) => (s.trim() === "" ? NaN : Number(s.replace(",", ".")));
 
 /** Validates the form; `confirmedHoleCuts` is carried through unchanged. */
-export function parseForm(f: SegForm, nest: Pick<NestCtx, "mg" | "ro">, confirmedHoleCuts: string[] = []): ParsedForm {
+export function parseForm(f: SegForm, nest: Pick<NestCtx, "mg" | "ro" | "gp" | "cell">, confirmedHoleCuts: string[] = []): ParsedForm {
   const errors: string[] = [];
 
   const sheets = f.sources.map((s, i) => ({ W: num(s.length), H: num(s.width), i }));
@@ -78,7 +85,9 @@ export function parseForm(f: SegForm, nest: Pick<NestCtx, "mg" | "ro">, confirme
   let overlapMm = 0;
   if (f.overlapOn) {
     overlapMm = num(f.overlapMm);
-    if (!(overlapMm > 0)) errors.push("Overlap is enabled: enter an overlap value greater than 0 (or turn it off).");
+    if (!Number.isFinite(overlapMm) || overlapMm === 0) {
+      errors.push("Overlap is enabled: enter a value — positive to overlap the pieces, negative for a gap between them (or turn it off).");
+    }
   }
 
   const cons: SeamConstraints = {};
@@ -99,7 +108,7 @@ export function parseForm(f: SegForm, nest: Pick<NestCtx, "mg" | "ro">, confirme
     ok: true,
     settings: {
       directions: f.direction === "auto" ? ["H", "V"] : [f.direction],
-      sheet: { sheets: sheets.map(({ W, H }) => ({ W, H })), mg: nest.mg, ro: nest.ro },
+      sheet: { sheets: sheets.map(({ W, H }) => ({ W, H })), mg: nest.mg, ro: nest.ro, gp: nest.gp, cell: nest.cell },
       overlap: { enabled: f.overlapOn, mm: f.overlapOn ? overlapMm : 0, side: f.overlapSide },
       holePolicy: f.holePolicy,
       constraints: Object.keys(cons).length ? cons : undefined,
@@ -128,7 +137,7 @@ export function candidateFacts(m: { segments: number; cutLength: number; sheetsL
  */
 export function planBaseFromForm(
   f: SegForm,
-  nest: Pick<NestCtx, "mg" | "ro">,
+  nest: Pick<NestCtx, "mg" | "ro" | "gp" | "cell">,
   confirmedHoleCuts: string[] = [],
 ): Omit<PlanInput, "direction" | "stripCuts" | "seamCuts"> {
   const cons: SeamConstraints = {};
@@ -147,9 +156,32 @@ export function planBaseFromForm(
       sheets: f.sources.map((s) => ({ W: num(s.length), H: num(s.width) })).filter((s) => s.W > 0 && s.H > 0),
       mg: nest.mg,
       ro: nest.ro,
+      gp: nest.gp,
+      cell: nest.cell,
     },
     holePolicy: f.holePolicy,
     confirmedHoleCuts,
     constraints: Object.keys(cons).length ? cons : undefined,
+  };
+}
+
+/** The form state that reproduces a saved plan (used to re-open a segmentation for editing). */
+export function formFromInput(input: PlanInput): SegForm {
+  const first = input.sheet.sheets[0] ?? { W: 0, H: 0 };
+  const c = input.constraints ?? {};
+  const str = (v: number | undefined) => (v === undefined ? "" : String(v));
+  return {
+    ...defaultForm({ W: first.W, H: first.H }),
+    sources: (input.sheet.sheets.length ? input.sheet.sheets : [first]).map((s, i) => ({ id: i + 1, length: String(s.W), width: String(s.H) })),
+    direction: input.direction,
+    overlapOn: input.overlap.enabled,
+    overlapMm: input.overlap.enabled ? String(input.overlap.mm) : "",
+    overlapSide: input.overlap.side,
+    holePolicy: input.holePolicy,
+    minStagger: str(c.minSeamStagger),
+    minBoundary: str(c.minSeamToBoundary),
+    maxSeam: str(c.maxSeamLength),
+    minSegment: str(c.minSegmentMm),
+    forbidCross: !!c.forbidCrossJunctions,
   };
 }

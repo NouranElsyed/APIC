@@ -186,6 +186,18 @@ describe("form", () => {
     expect(ok.ok && ok.settings.overlap).toEqual({ enabled: true, mm: 12.5, side: "symmetric" });
   });
 
+  it("the overlap value is signed: positive overlaps, negative leaves a gap, zero is not a value", () => {
+    const neg = parseForm({ ...base(), overlapOn: true, overlapMm: "-3", overlapSide: "symmetric" }, nest);
+    expect(neg.ok && neg.settings.overlap).toEqual({ enabled: true, mm: -3, side: "symmetric" });
+    const pos = parseForm({ ...base(), overlapOn: true, overlapMm: "+12,5" }, nest);
+    expect(pos.ok && pos.settings.overlap.mm).toBe(12.5);
+    for (const bad of ["0", "", "abc", "-"]) {
+      const r = parseForm({ ...base(), overlapOn: true, overlapMm: bad }, nest);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.errors[0]).toMatch(/negative for a gap/);
+    }
+  });
+
   it("several user-defined sources, validated one by one", () => {
     const f = { ...base(), sources: [...base().sources, { id: 2, length: "8000", width: "2000" }, { id: 3, length: "", width: "1500" }] };
     const p = parseForm(f, nest);
@@ -293,8 +305,8 @@ describe("render", () => {
     expect(html).toContain("Enable overlap");
     expect(html).not.toContain("Overlap value (mm)"); // the value field only appears once overlap is enabled
     expect(html).toContain("Generate layouts");
-    expect(html).toContain("Edits are a draft");
-    expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*Approve segmentation/); // approving is not available yet
+    expect(html).toContain("Nothing is changed in your nest until you approve");
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*Approve segmentation/); // nothing to approve until a layout exists
   });
 
   it("bounding box sanity for the rebuilt circle region", () => {

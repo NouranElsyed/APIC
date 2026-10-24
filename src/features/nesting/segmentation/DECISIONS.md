@@ -1,6 +1,6 @@
 # Part Segmentation — agreed decisions (Phase 0)
 
-Status: Phases 1–5 implemented (geometry kernel, fit detection + badge + "Segment Part" button, planner, settings dialog, interactive editing with live validation). Creating the segments as parts (Approve), engine-based ranking and export are NOT started.
+Status: Phases 1-8 implemented. Not verified: behaviour in a real browser, a real CAM import of the DXF files, and the nest on a real canvas (tests use the canvas stand-in of the existing engine tests).
 
 ## Geometry
 - Contours are kept as **edges (line / arc)**, not polygons. Arcs and circles survive cutting exactly.
@@ -43,7 +43,7 @@ Welding procedures, weld/cost calculations, inventory, rolling/grain direction.
 - "Segment Part" appears next to the NEEDS SEGMENTATION badge. The dialog only reads the part; closing it discards everything; Approve is disabled until the commit phase.
 - Arcs: rebuilt from the importer's own tessellation signature (vertices exactly on one circle at equal steps ≤ 5°, tolerance 0.001 mm). No importer change, old parts untouched. If nothing matches, the polygon outline is used and the dialog says so. Limitation: a polygon drawn with LINEs on a circle at equal ≤ 5° steps is indistinguishable from a tessellated circle. Rounding-level coordinate noise (≈1e-6) is tolerated; 0.5 mm noise is not rebuilt.
 - Source sheets: each source has its own length and width fields (no dropdown); quantity unlimited. The nest itself still uses its single sheet size.
-- Overlap: off by default, value field empty until typed; enabling it without a value blocks generation.
+- Overlap / gap: off by default, value field empty until typed; enabling it without a value (or with 0) blocks generation. The value is signed — see Phase 7 notes.
 - Hole policy "warn": the preview lists each unconfirmed cut with a confirmation checkbox and re-validates the selected layout immediately.
 - Layouts are generated on the main thread (≈0.3 s for the Ø7520 circle). Very detailed outlines may take longer; a worker is a possible later improvement.
 
@@ -55,3 +55,36 @@ Welding procedures, weld/cost calculations, inventory, rolling/grain direction.
 - Prevented (clamped or refused, with a message): a cut past a neighbouring cut or outside the part, or on top of another cut. The minimum distance (1 mm) is a UI rule, not a manufacturing rule.
 - Allowed but reported: anything that makes the layout invalid (segment too large, hole crossed, constraint broken). The user can pass through such states while dragging and is told why.
 - Settings (overlap, sheets, hole policy, constraints) apply live to the edited cuts. Generating new layouts asks before discarding edits.
+
+## Phase 6 behaviour (approve → pieces in the nest)
+- Approve creates one ordinary nestable part per segment, right under the original, named `<original>-<segment id>` (e.g. `PART-001-S01`). Each piece has the SAME quantity as the original (each original needs one of each piece), and its thickness / material. Pieces are never multiplied again.
+- The ORIGINAL stays in the parts list as "SEGMENTED · N parts". It keeps its own quantity, size, thickness and material, so the takeoff still sees one original (100 kg × 3 stays 300 kg). It is excluded from nesting (`leftOf` = 0, `runOptimize` skips it, merges never fold a new part into it).
+- The plan (cuts + settings) is stored on the original in `Group.seg.plan`, so it travels with snapshots, saved nests and history without any change to `persist.ts`. "Edit segmentation" re-opens the saved cuts; "Undo segmentation" removes the pieces and restores a plain part.
+- Editing the original's quantity / thickness / material updates its pieces; a piece's own quantity / thickness / material are read-only. The size of a segmented part cannot be changed (undo first). Segmented parts and pieces cannot be duplicated; deleting an original deletes its pieces; a piece cannot be deleted on its own.
+- Standard Calculations: `parseNestParts` skips pieces (the original is the takeoff item); the 2D report lists the pieces, not the original.
+- If pieces of an earlier version were already on sheets, replacing or undoing a segmentation clears the nesting result (same as deleting a part does).
+
+## What the optimiser can really place (important)
+The engine rasterises each part on a grid (`cell`) after growing it by half the spacing (`gp`). The largest part it can put on a margined sheet is therefore a little SMALLER than the usable area: per dimension `(G − ⌈gp/(2·cell)⌉)·cell − gp/2` with `G = ⌊(L − 2·mg + gp)/cell⌋` (e.g. 6000 × 1500, margin 5, spacing 5, cell 5 → 5987.5 × 1487.5, not 5990 × 1490). Verified against the engine's own placement for several cell / spacing combinations. Consequences:
+- A part between that limit and the usable area cannot be placed ("no free position found"). It is reported as NEEDS SEGMENTATION with an explanation; lowering the grid cell or the spacing is the alternative.
+- The planner sizes every segment to this limit (it needs the nest's `gp` and `cell`, which the dialog passes in). Solo (margin-free) segments may use the whole raw sheet.
+
+## Overlap and gap are one signed value (decided after Phase 6)
+- Positive = OVERLAP: the pieces are welded on top of each other; one side extends into its neighbour by that amount (clipped to the original outline).
+- Negative = GAP: a gap of |value| is left between the pieces; the carrier side is cut back from the seam by that amount (policy "A": the lower-coordinate piece by the whole gap, "alternate": alternating seam by seam, "symmetric": both pieces by half). A gap that leaves nothing of a piece is an error.
+- Either way the FINISHED geometry (takeoff area, reassembly, seam length) does not change; the CUT geometry (fit checks, material estimates, the pieces created on approval, engine checks) does. 0 is not a value.
+- A gap can make a finished piece a little longer than the sheet, because only the cut piece has to fit. The generator does not exploit that; it sizes finished pieces to the limits.
+
+## Phase 7 behaviour (ranking and engine checks)
+- "Check with nesting engine" nests the top 6 layouts (valid ones, in the current order) with the real `runOptimize`, one after the other, using the nest's margin, spacing, grid cell, rotation, pair-triangles and common-cut options, quantity × pieces, on the layout's own sheet size. Budget: 2 s per layout. Stop abandons the run and discards the unfinished layout. "Check this layout" does the same for the layout as currently edited; its result is hidden as soon as the cuts or settings change.
+- Sheets / utilization / scrap use the same formulas as the saved-nests table (`nestMetrics`; verified equal in the tests).
+- Order: layouts checked with the engine (that nest completely) → layouts with area estimates (≥) → layouts the engine could not nest completely → invalid layouts. Inside a group the user-chosen priority comes first: fewest sheets (then seams, then segments), shortest seams, or fewest segments. Sheet counts from the engine and estimates are never compared with each other.
+- "Why this order?" states the order, what #1 is, how it differs from #2, which layout is best on the other factors, and the limits. "Compare" shows up to 3 layouts side by side with the best value of each factor highlighted.
+- Limits stated to the user: no prices (not a cost optimum); each layout is nested alone, not mixed with the rest of the nest; the engine is randomised and short, so close results can differ by a sheet.
+
+## Phase 8: export
+- `dxf-write.ts` - DXF R12 like the app's own exporter (POLYLINE/VERTEX with bulges, CIRCLE, LINE, TEXT; non-ASCII text as \U+XXXX). A piece file holds the CUT geometry at the origin (layer CUT only by default; the same coordinates, names and sizes as the part created in the nest). The assembly drawing has layers ORIGINAL, SEGMENTS (finished pieces), CUT_GEOMETRY (only when an overlap/gap makes it differ), SEAMS, LABELS.
+- `zip.ts` - STORE zip, UTF-8 names, no new dependency. `report.ts` - Excel: Summary (original, quantity, pieces to nest, allowance, source sheets, reassembly check), Segments (DXF file, qty, cut and finished size, areas, fit, assembly X/Y and cut X/Y), Seams, Mating edges (what each piece mates with, along which line, and the overlap/gap applied to it). `bundle.ts` - one zip: a DXF per piece, the assembly drawing and the report. `export-action.ts` - the download, and "export a segmented original" from its saved plan (refuses with a reason when there is none, the part changed since, or the plan has errors).
+- Entry points: the dialog's Export button (the layout on screen, as edited) and "Export segments (DXF + report)" in the menu of a segmented original.
+- Verified: files re-import through the app's own `parseDXF` with the arcs intact and the exact area; the pieces placed at the reported positions tile the original with no gap or overlap (sampled); with an overlap they cover it and overlap only along seams; with a gap they never overlap; exported pieces equal the nest's parts (names, sizes, quantity). Independent check with ezdxf (a separate DXF implementation): all 43 piece files and the assembly drawings audit with no errors, every arc/circle has the expected radius (3760; cone 3354.102 / 1118.034) and the areas match ours to 6e-8 (coordinate rounding).
+- Not verified: a real CAM import; whether a given cutting program reads layer CUT only (piece files contain nothing else unless annotations are enabled).

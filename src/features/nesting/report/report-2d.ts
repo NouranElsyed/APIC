@@ -157,7 +157,8 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
   );
   const wsP = wb.addWorksheet(nm("Parts"), { views: [{ state: "frozen", ySplit: 1 }] });
   const partRows: Cell[][] = groups
-    .filter((g) => g.qty > 0 || placed.has(g.id))
+    // a segmented original is not nested (its pieces are, and they are listed under their own names)
+    .filter((g) => g.seg?.role !== "parent" && (g.qty > 0 || placed.has(g.id)))
     .map((g) => {
       const p = placed.get(g.id) ?? 0;
       const areaEach = g.area / 1e6;

@@ -1,17 +1,20 @@
 "use client";
 /**
- * Segmentation dialog (Phase 5: settings + editable preview).
+ * Segmentation dialog (settings, editable preview, approval).
  *
- * Nothing here changes the nest: the part is only read, layouts are generated and edited on a
- * draft, and closing the dialog discards everything. Creating the segments as parts is a later phase.
+ * The part is only read and layouts are generated and edited on a draft; closing the dialog discards
+ * everything. Only "Approve" hands the finished plan to the caller (`onApprove`), which creates the
+ * pieces. A part that is already segmented opens with its saved cuts for editing.
  */
 import * as React from "react";
-import { ArrowLeftRight, Layers, Loader2, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeftRight, Download, Layers, Loader2, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { makeSettings, type Group } from "../nest-boost/engine";
+import { makeSettings, type Group, type runOptimize } from "../nest-boost/engine";
+import { evaluatePlan, type EngineCtx, type EngineEval } from "./evaluate";
+import { PRIORITY_LABEL, compareRows, explainOrder, rankCandidates, sheetsText, type Priority } from "./rank";
 import { classifyFit } from "./fit";
 import {
   addSeam,
@@ -37,10 +40,12 @@ import {
   type Editor,
   type EditorState,
 } from "./editor";
-import { candidateFacts, defaultForm, parseForm, planBaseFromForm, type NestCtx, type SegForm } from "./form";
+import { candidateFacts, defaultForm, formFromInput, parseForm, planBaseFromForm, type NestCtx, type SegForm } from "./form";
+import { savedPlan } from "./commit";
+import { exportSegmentation, type ExportResult } from "./export-action";
 import { regionBBox, regionInteriorPoint } from "./geometry";
 import { groupToRegion } from "./group-region";
-import { buildPlan, generateCandidates, type Candidate, type Plan } from "./planner";
+import { buildPlan, generateCandidates, type Candidate, type Plan, type PlanInput } from "./planner";
 import { regionPath, screenToWorld, seamLines, segmentFill, segmentStroke, svgViewBox } from "./preview-path";
 import type { Region } from "./types";
 
@@ -198,25 +203,64 @@ const statusChip = (s: string) =>
 /* Panel                                                               */
 /* ------------------------------------------------------------------ */
 
-export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: Group; nest: NestCtx; onClose?: () => void }) {
+export function SegmentationPanel({
+  group,
+  nest: nestProp,
+  onClose,
+  onApprove,
+  existing,
+  runEngine,
+  exportFn,
+}: {
+  group: Group;
+  nest: NestCtx;
+  /** Replaces the nesting engine used by "Check with nesting engine" (tests). */
+  runEngine?: typeof runOptimize;
+  /** Replaces the zip download of "Export" (tests). */
+  exportFn?: typeof exportSegmentation;
+  onClose?: () => void;
+  /** Called with the validated plan when the user approves. */
+  onApprove?: (plan: Plan) => void;
+  /** The saved cuts of an already segmented part: the panel opens on them instead of generating layouts. */
+  existing?: PlanInput | null;
+}) {
   // the parent passes a fresh object on every render; depend on the numbers only
-  const nest = React.useMemo<NestCtx>(() => ({ W: nestProp.W, H: nestProp.H, mg: nestProp.mg, ro: nestProp.ro }), [nestProp.W, nestProp.H, nestProp.mg, nestProp.ro]);
+  const nest = React.useMemo<NestCtx>(
+    () => ({ W: nestProp.W, H: nestProp.H, mg: nestProp.mg, ro: nestProp.ro, gp: nestProp.gp, cell: nestProp.cell, pair: nestProp.pair, common: nestProp.common, evalSec: nestProp.evalSec }),
+    [nestProp.W, nestProp.H, nestProp.mg, nestProp.ro, nestProp.gp, nestProp.cell, nestProp.pair, nestProp.common, nestProp.evalSec],
+  );
   const gr = React.useMemo(() => groupToRegion(group), [group]);
-  const fit = React.useMemo(() => classifyFit(group, makeSettings({ W: nest.W, H: nest.H, mg: nest.mg, gp: 0, cell: 5, ro: nest.ro })), [group, nest]);
+  const fit = React.useMemo(() => classifyFit(group, makeSettings({ W: nest.W, H: nest.H, mg: nest.mg, gp: nest.gp ?? 0, cell: nest.cell ?? 1, ro: nest.ro })), [group, nest]);
 
-  const [form, setForm] = React.useState<SegForm>(() => defaultForm(nest));
+  const [form, setForm] = React.useState<SegForm>(() => (existing ? formFromInput(existing) : defaultForm(nest)));
   const [errors, setErrors] = React.useState<string[]>([]);
   const [cands, setCands] = React.useState<Candidate[] | null>(null);
   const [sel, setSel] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(true); // the first layouts are generated as soon as the dialog opens
-  const [confirmed, setConfirmed] = React.useState<string[]>([]);
+  const [busy, setBusy] = React.useState(!existing); // the first layouts are generated as soon as the dialog opens
+  const [confirmed, setConfirmed] = React.useState<string[]>(() => existing?.confirmedHoleCuts ?? []);
   // editing (Phase 5): the draft cut lists with undo/redo, the selected cut, and the active "add" tool
-  const [editor, setEditor] = React.useState<Editor | null>(null);
+  const [editor, setEditor] = React.useState<Editor | null>(() => (existing ? newEditor(stateFromInput(existing)) : null));
   const [selCut, setSelCut] = React.useState<string | null>(null);
   const [mode, setMode] = React.useState<"strip" | "seam" | null>(null);
   const [snapOn, setSnapOn] = React.useState(false);
   const [grid, setGrid] = React.useState("10");
   const [notice, setNotice] = React.useState<string | null>(null);
+  // ranking and engine checks (Phase 7)
+  const [priority, setPriority] = React.useState<Priority>("sheets");
+  const [evals, setEvals] = React.useState<Map<string, EngineEval | null>>(() => new Map());
+  const [checking, setChecking] = React.useState<{ done: number; total: number } | null>(null);
+  const [compare, setCompare] = React.useState<string[]>([]);
+  const [current, setCurrent] = React.useState<{ key: string; result: EngineEval | null | "busy" } | null>(null);
+  const [evalSheet, setEvalSheet] = React.useState(0); // which of the source sheets the shown layout targets
+  const [exporting, setExporting] = React.useState(false);
+  const [exported, setExported] = React.useState<string | null>(null);
+  const stopRef = React.useRef(false);
+  React.useEffect(
+    () => () => {
+      stopRef.current = true; // closing the dialog abandons any engine run in progress
+    },
+    [],
+  );
   const set = <K extends keyof SegForm>(k: K, v: SegForm[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   /** Computes layouts for a form. Only called from timer callbacks, never synchronously from an effect. */
@@ -233,6 +277,10 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
         setErrors([]);
         setCands(list.slice(0, 12));
         setSel(list[0]?.id ?? null);
+        setEvalSheet(list[0]?.sheetIndex ?? 0);
+        setEvals(new Map()); // new layouts: earlier engine results no longer apply
+        setCompare([]);
+        setCurrent(null);
         setConfirmed([]);
         setEditor(list[0] ? newEditor(stateFromInput(list[0].plan.input)) : null);
         setSelCut(null);
@@ -257,9 +305,10 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
   };
 
   React.useEffect(() => {
+    if (existing) return; // re-opening a saved segmentation: start from its cuts, not from new proposals
     const t = setTimeout(() => run(defaultForm(nest)), 30);
     return () => clearTimeout(t);
-  }, [run, nest]);
+  }, [run, nest, existing]);
 
   const state = editor?.present ?? null;
   const dir = state?.direction;
@@ -317,6 +366,7 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
           return;
         }
         setEditor((ed) => (ed ? commit(ed, stateFromInput(best.plan.input)) : ed));
+        setEvalSheet(best.sheetIndex);
         setSelCut(null);
         setNotice(null);
       } catch (e) {
@@ -350,6 +400,74 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
     apply(moveCut(state, selCut, cur + sign * (gridMm ?? 1) * (e.shiftKey ? 10 : 1), bounds));
   };
   const selPos = state && selCut ? cutPos(state, selCut) : undefined;
+
+  /* ---- ranking and checking layouts with the real nesting engine ---- */
+  const engineCtx = React.useMemo<EngineCtx>(
+    () => ({ mg: nest.mg, gp: nest.gp ?? 0, cell: nest.cell ?? 5, ro: nest.ro, pair: !!nest.pair, common: !!nest.common, timeSec: nest.evalSec ?? 2 }),
+    [nest],
+  );
+  const ranked = React.useMemo(() => (cands ? rankCandidates(cands, evals, priority) : []), [cands, evals, priority]);
+  const explanation = React.useMemo(() => (ranked.length ? explainOrder(ranked, priority, engineCtx.timeSec) : null), [ranked, priority, engineCtx]);
+  const compared = ranked.filter((r) => compare.includes(r.cand.id));
+  const planKey = React.useMemo(() => (state ? JSON.stringify([state.direction, state.stripCuts, state.seams, base.overlap, base.sheet, base.constraints]) : ""), [state, base]);
+
+  /** Downloads one zip: a DXF per piece (cut geometry), the assembly drawing and the segmentation report. */
+  const doExport = async () => {
+    if (!plan || !plan.valid || exporting) return;
+    setExporting(true);
+    setExported(null);
+    try {
+      const r: ExportResult = await (exportFn ?? exportSegmentation)({ parent: group, original: gr.region, plan });
+      setExported(`${r.zipName}: ${r.pieces} piece files, the assembly drawing and the report.`);
+    } catch (e) {
+      setExported(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  /** Nests the top layouts with the real engine, one after the other, so the list is ordered by real sheet counts. */
+  const checkTop = async () => {
+    if (checking) return;
+    const targets = ranked.filter((r) => r.status !== "invalid").slice(0, 6);
+    if (!targets.length) return;
+    stopRef.current = false;
+    setChecking({ done: 0, total: targets.length });
+    for (let i = 0; i < targets.length; i++) {
+      if (stopRef.current) break;
+      const c = targets[i].cand;
+      let out: EngineEval | null = null;
+      try {
+        out = await evaluatePlan(c.plan, group, c.plan.input.sheet.sheets[c.sheetIndex], engineCtx, { shouldStop: () => stopRef.current, run: runEngine });
+      } catch {
+        out = null;
+      }
+      if (stopRef.current) break;
+      setEvals((m) => new Map(m).set(c.id, out));
+      setChecking({ done: i + 1, total: targets.length });
+    }
+    setChecking(null);
+  };
+  /** Nests the layout as currently edited (including the user's changes). */
+  const checkCurrent = async () => {
+    if (!plan || !plan.valid) return;
+    const sheet = plan.input.sheet.sheets[evalSheet] ?? plan.input.sheet.sheets[0];
+    if (!sheet) return;
+    stopRef.current = false;
+    const key = planKey;
+    setCurrent({ key, result: "busy" });
+    let out: EngineEval | null = null;
+    try {
+      out = await evaluatePlan(plan, group, sheet, engineCtx, { shouldStop: () => stopRef.current, run: runEngine });
+    } catch {
+      out = null;
+    }
+    if (stopRef.current) {
+      setCurrent(null);
+      return;
+    }
+    setCurrent({ key, result: out });
+  };
 
   const sources = form.sources;
   return (
@@ -435,13 +553,16 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
             <Checkbox checked={form.overlapOn} onCheckedChange={(v) => set("overlapOn", v === true)} />
             Enable overlap
           </label>
-          <p className="text-[11px] text-muted-foreground">If enabled, the cut geometry of neighbouring segments overlaps by this value. Off by default; not a kerf or weld gap.</p>
+          <p className="text-[11px] text-muted-foreground">
+            If enabled, neighbouring segments overlap (positive value) or leave a gap between them (negative value). Off by default; the finished shape and the takeoff are not changed, and kerf is not included.
+          </p>
           {form.overlapOn && (
             <>
               <Field label="Overlap value (mm)">
                 <Input inputMode="decimal" placeholder="enter the value for your job" value={form.overlapMm} onChange={(e) => set("overlapMm", e.target.value)} />
               </Field>
-              <Field label="Overlap carried by">
+              <p className="text-[11px] text-muted-foreground">Positive: the pieces are welded on top of each other. Negative: a gap between them, e.g. −3.</p>
+              <Field label={Number(form.overlapMm.replace(",", ".")) < 0 ? "Gap cut back on" : "Overlap carried by"}>
                 <select className={selectCls} value={form.overlapSide} onChange={(e) => set("overlapSide", e.target.value as SegForm["overlapSide"])}>
                   <option value="alternate">Alternating segments</option>
                   <option value="A">Lower-coordinate segment</option>
@@ -502,45 +623,120 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
         )}
         {cands && cands.length > 0 && (
           <>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                Order by
+                <select className={`${selectCls} h-8 w-auto`} value={priority} onChange={(e) => setPriority(e.target.value as Priority)} aria-label="Order layouts by">
+                  {(Object.keys(PRIORITY_LABEL) as Priority[]).map((p) => (
+                    <option key={p} value={p}>
+                      {PRIORITY_LABEL[p]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Button size="sm" variant="outline" disabled={!!checking || busy} onClick={checkTop}>
+                {checking ? <Loader2 className="animate-spin" /> : <Layers />} Check with nesting engine
+              </Button>
+              {checking && (
+                <>
+                  <span className="text-xs text-muted-foreground" role="status">
+                    Checking {Math.min(checking.done + 1, checking.total)} of {checking.total}…
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => (stopRef.current = true)}>
+                    Stop
+                  </Button>
+                </>
+              )}
+            </div>
             <div className="flex gap-2 overflow-x-auto pb-1" role="listbox" aria-label="Candidate layouts">
-              {cands.map((c) => {
+              {ranked.map((r) => {
+                const c = r.cand;
                 const m = c.plan.metrics;
                 const bad = c.plan.issues.filter((i) => i.severity === "error").length;
                 return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    role="option"
-                    aria-selected={c.id === sel}
-                    onClick={() => {
-                      setSel(c.id);
-                      setConfirmed([]);
-                      setEditor(newEditor(stateFromInput(c.plan.input)));
-                      setSelCut(null);
-                      setMode(null);
-                      setNotice(null);
-                    }}
-                    className={`min-w-[190px] shrink-0 rounded-lg border p-2 text-left text-xs transition-colors ${
-                      c.id === sel ? "border-primary bg-primary/5" : "border-border hover:bg-secondary"
-                    }`}
-                  >
-                    <div className="font-semibold">
-                      {c.label}
-                      {c.id === sel && editor && isEdited(editor) && (
-                        <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">edited</span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-muted-foreground">{candidateFacts(m).join(" · ")}</div>
-                    <div className={`mt-1 font-medium ${bad ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
-                      {bad ? `${bad} error${bad > 1 ? "s" : ""}` : "valid"}
-                    </div>
-                  </button>
+                  <div key={c.id} className="min-w-[200px] shrink-0">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={c.id === sel}
+                      onClick={() => {
+                        setSel(c.id);
+                        setEvalSheet(c.sheetIndex);
+                        setConfirmed([]);
+                        setEditor(newEditor(stateFromInput(c.plan.input)));
+                        setSelCut(null);
+                        setMode(null);
+                        setNotice(null);
+                      }}
+                      className={`w-full rounded-lg border p-2 text-left text-xs transition-colors ${c.id === sel ? "border-primary bg-primary/5" : "border-border hover:bg-secondary"}`}
+                    >
+                      <div className="font-semibold">
+                        <span className="mr-1 text-muted-foreground">#{r.rank}</span>
+                        {c.label}
+                        {c.id === sel && editor && isEdited(editor) && (
+                          <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">edited</span>
+                        )}
+                      </div>
+                      <div className={`mt-1 font-medium ${r.status === "unnested" ? "text-red-700 dark:text-red-300" : r.sheetsKind === "engine" ? "text-foreground" : "text-muted-foreground"}`}>{sheetsText(r)}</div>
+                      <div className="mt-0.5 text-muted-foreground">{candidateFacts({ ...m, sheetsLowerBound: null }).join(" · ")}</div>
+                      <div className={`mt-1 font-medium ${bad ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>{bad ? `${bad} error${bad > 1 ? "s" : ""}` : "valid"}</div>
+                    </button>
+                    <label className="mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+                      <Checkbox
+                        checked={compare.includes(c.id)}
+                        onCheckedChange={(v) => setCompare((l) => (v === true ? (l.includes(c.id) ? l : [...l, c.id].slice(-3)) : l.filter((x) => x !== c.id)))}
+                      />
+                      Compare
+                    </label>
+                  </div>
                 );
               })}
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Listed by the area-based sheet lower bound, then segment count and seam length. Sheet counts are estimates from area; the nesting engine gives the real number. This order is not a cost optimum.
-            </p>
+            {explanation && (
+              <details className="rounded-lg border border-border p-2 text-xs">
+                <summary className="cursor-pointer font-medium">Why this order?</summary>
+                <p className="mt-1.5">{explanation.headline}</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                  {explanation.bullets.map((b) => (
+                    <li key={b}>{b}</li>
+                  ))}
+                </ul>
+                <p className="mt-2 font-medium">What this does not mean</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+                  {explanation.limits.map((b) => (
+                    <li key={b}>{b}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {compared.length >= 2 && (
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-xs" aria-label="Layout comparison">
+                  <thead className="bg-secondary text-left text-muted-foreground">
+                    <tr>
+                      <th className="p-1.5" />
+                      {compared.map((r) => (
+                        <th key={r.cand.id} className="p-1.5 font-semibold">
+                          #{r.rank} {r.cand.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {compareRows(compared).map((row) => (
+                      <tr key={row.label} className="border-t border-border">
+                        <td className="p-1.5 text-muted-foreground">{row.label}</td>
+                        {row.cells.map((cell, i) => (
+                          <td key={`${row.label}-${i}`} className={`p-1.5 ${row.best.includes(i) ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}`}>
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
 
@@ -644,13 +840,29 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
                 ["Segments", String(plan.metrics.segments)],
                 ["Seam length", `${(plan.metrics.cutLength / 1000).toFixed(2)} m`],
                 ["Sheets (area lower bound)", plan.metrics.sheetsLowerBound === null ? "—" : `≥ ${plan.metrics.sheetsLowerBound}`],
-                ["Overlap area", `${(plan.metrics.overlapArea / 1e6).toFixed(3)} m²`],
+                [plan.metrics.overlapArea < 0 ? "Gap area" : "Overlap area", `${(Math.abs(plan.metrics.overlapArea) / 1e6).toFixed(3)} m²`],
               ].map(([k, v]) => (
                 <div key={k} className="rounded-lg border border-border p-2">
                   <div className="text-muted-foreground">{k}</div>
                   <div className="text-sm font-semibold">{v}</div>
                 </div>
               ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Button size="sm" variant="outline" disabled={!plan.valid || (current?.key === planKey && current.result === "busy")} onClick={checkCurrent}>
+                <Layers /> Check this layout with the nesting engine
+              </Button>
+              {current && current.key === planKey && (
+                <span role="status" className={current.result !== "busy" && current.result?.unplaced ? "text-red-700 dark:text-red-300" : "text-muted-foreground"}>
+                  {current.result === "busy"
+                    ? "Nesting…"
+                    : current.result === null
+                      ? "Could not be checked."
+                      : current.result.unplaced > 0
+                        ? `${current.result.unplaced} piece(s) could not be nested.`
+                        : `${current.result.sheets} sheet${current.result.sheets === 1 ? "" : "s"} · ${(Math.round(current.result.utilization * 10) / 10).toFixed(1)} % used · ${(Math.round(current.result.scrapPct * 10) / 10).toFixed(1)} % scrap (nested on its own, ${group.qty} original${group.qty === 1 ? "" : "s"})`}
+                </span>
+              )}
             </div>
             {plan.issues.length > 0 && (
               <ul className="space-y-1 text-xs" aria-label="Validation">
@@ -684,21 +896,49 @@ export function SegmentationPanel({ group, nest: nestProp, onClose }: { group: G
       </div>
 
       <div className="col-span-full flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-        <p className="text-xs text-muted-foreground">Edits are a draft: nothing is changed in your nest. Creating the segments as parts comes in the next phase.</p>
-        <DialogFooterButtons onClose={onClose} />
+        <p className="max-w-xl text-xs text-muted-foreground" role="status">
+          {plan && plan.valid
+            ? `Approving creates ${plan.segments.length} part${plan.segments.length === 1 ? "" : "s"} × ${group.qty} pc${group.qty === 1 ? "" : "s"} (${plan.segments.length * group.qty} pieces to nest). The original stays in the list as "Segmented" and keeps its own quantity for the takeoff.`
+            : plan
+              ? "Fix the errors above to enable approval. Nothing is changed in your nest until you approve."
+              : "Nothing is changed in your nest until you approve a layout."}
+          {exported && <span className="mt-1 block font-medium text-foreground">{exported}</span>}
+        </p>
+        <DialogFooterButtons
+          onClose={onClose}
+          onApprove={plan && plan.valid && !busy && onApprove ? () => onApprove(plan) : undefined}
+          onExport={plan && plan.valid && !busy ? doExport : undefined}
+          exporting={exporting}
+          label={existing ? "Apply changes" : "Approve segmentation"}
+        />
       </div>
     </div>
   );
 }
 
-function DialogFooterButtons({ onClose }: { onClose?: () => void }) {
+function DialogFooterButtons({
+  onClose,
+  onApprove,
+  onExport,
+  exporting,
+  label,
+}: {
+  onClose?: () => void;
+  onApprove?: () => void;
+  onExport?: () => void;
+  exporting?: boolean;
+  label: string;
+}) {
   return (
     <div className="flex gap-2">
       <Button variant="secondary" onClick={onClose}>
         Close
       </Button>
-      <Button disabled title="Creating the segments as parts is added in the next phase">
-        Approve segmentation
+      <Button variant="outline" disabled={!onExport || exporting} onClick={onExport} title="Download a zip: a DXF per piece, the assembly drawing and the report">
+        {exporting ? <Loader2 className="animate-spin" /> : <Download />} Export
+      </Button>
+      <Button disabled={!onApprove} onClick={onApprove} title={onApprove ? undefined : "Available when the layout has no errors"}>
+        {label}
       </Button>
     </div>
   );
@@ -713,20 +953,37 @@ export function SegmentDialog({
   onOpenChange,
   group,
   nest,
+  onApprove,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   group: Group | null;
   nest: NestCtx;
+  /** Receives the part being segmented and the approved plan; the caller creates the pieces. */
+  onApprove?: (group: Group, plan: Plan) => void;
 }) {
+  const existing = group ? savedPlan(group) : null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[94vh] w-[calc(100vw-1rem)] max-w-6xl overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle>Segment part</DialogTitle>
-          <DialogDescription>Split an oversized part into pieces that fit the source sheets. Review the proposed layouts before anything is created.</DialogDescription>
+          <DialogTitle>{existing ? "Edit segmentation" : "Segment part"}</DialogTitle>
+          <DialogDescription>
+            {existing
+              ? "The saved cuts are loaded. Change them, then apply — the pieces are re-created and must be nested again."
+              : "Split an oversized part into pieces that fit the source sheets. Review the proposed layouts before anything is created."}
+          </DialogDescription>
         </DialogHeader>
-        {group && <SegmentationPanel key={group.id} group={group} nest={nest} onClose={() => onOpenChange(false)} />}
+        {group && (
+          <SegmentationPanel
+            key={`${group.id}:${group.seg?.planId ?? ""}`}
+            group={group}
+            nest={nest}
+            existing={existing}
+            onClose={() => onOpenChange(false)}
+            onApprove={onApprove ? (plan) => onApprove(group, plan) : undefined}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );

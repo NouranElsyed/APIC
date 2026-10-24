@@ -46,6 +46,8 @@ export function parseNestParts(data: unknown): NestPart[] {
   for (const g of groups as Record<string, unknown>[]) {
     if (!g || typeof g !== "object") continue;
     if (g.cid != null) continue; // a paired-triangle copy, not a part of its own
+    // a piece of a segmented part: the ORIGINAL part is the takeoff item, its pieces are only nesting detail
+    if ((g.seg as { role?: unknown } | null | undefined)?.role === "child") continue;
     if (!isNum(g.id) || !isLoop(g.outer)) continue;
     const qty = isNum(g.qty) ? Math.round(g.qty) : 0;
     if (qty <= 0) continue;

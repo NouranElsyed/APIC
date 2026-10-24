@@ -3,6 +3,27 @@
 
 export type Pt = [number, number];
 
+/**
+ * Part Segmentation (features/nesting/segmentation). An oversized ORIGINAL part that was split stays in the
+ * list as role "parent" — it keeps the takeoff quantity / traceability but is never nested — and the pieces
+ * made from it are ordinary nestable parts with role "child".
+ */
+export interface SegInfo {
+  role: "parent" | "child";
+  /** Same value on a parent and on all of its children. */
+  planId: string;
+  /** child: id of the original part. */
+  parentId?: number;
+  /** child: id of the piece inside the plan, e.g. "S01" or "S02a". */
+  segId?: string;
+  /** parent: ids of the pieces, in segment order. */
+  childIds?: number[];
+  /** parent: the cuts and settings the pieces were made from (JSON), so the layout can be re-opened and edited. */
+  plan?: unknown;
+  /** parent: outline signature when it was segmented, to notice if the part was changed afterwards. */
+  sig?: string;
+}
+
 export interface Group {
   id: number;
   /** Serial number shown next to the part and used in nesting messages. */
@@ -25,6 +46,8 @@ export interface Group {
   per: number;
   /** Number of physical parts this group represents (2 for a triangle pair). */
   n?: number;
+  /** Set on a segmented original part and on the pieces generated from it. */
+  seg?: SegInfo;
 }
 
 export interface Item {
@@ -671,6 +694,7 @@ export function addFileParts(
     const add = lb?.qty && lb.qty > 0 ? Math.round(lb.qty) * (opts.qty ? addAll : 1) : addAll;
     const m = out.find(
       (g) =>
+        !g.seg &&
         g.th === th &&
         g.material === material &&
         g.holes.length === p.holes.length &&
@@ -880,6 +904,7 @@ export function addManualPart(
   const material = (o.material ?? "").trim();
   const m = groups.find(
     (g) =>
+      !g.seg &&
       g.th === th &&
       g.material === material &&
       g.holes.length === geo.holes.length &&
@@ -1034,7 +1059,7 @@ export function addNestParts(
       for (let gi = 0; gi < out.length && !found; gi++) {
         const g = out[gi];
         if (
-          g.th !== opts.th || g.material !== opts.material || g.holes.length !== p.holes.length ||
+          g.seg || g.th !== opts.th || g.material !== opts.material || g.holes.length !== p.holes.length ||
           Math.abs(g.area - p.area) > g.area * 0.002 + 0.5 || Math.abs(g.per - p.per) > g.per * 0.005 + 0.5
         )
           continue;
@@ -1446,9 +1471,10 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
   const base = o.base ?? null;
   const baseSheets = base ? base.sheets : [];
   const placedBefore = placedCounts(base);
-  const skip = groups.filter((g) => !g.qty).map((g) => `Part #${g.sn} (${g.name}) was skipped: quantity is 0`);
+  const skip = groups.filter((g) => !g.qty && g.seg?.role !== "parent").map((g) => `Part #${g.sn} (${g.name}) was skipped: quantity is 0`);
   const items: Group[] = [];
   groups.forEach((g) => {
+    if (g.seg?.role === "parent") return; // segmented original: its pieces are nested instead
     let n = Math.max(0, g.qty - (placedBefore.get(g.id) ?? 0));
     const pg = o.pair ? pairOf(g, o.common, S.gp) : null;
     if (pg) {
@@ -1788,7 +1814,8 @@ export function placedCounts(res: OptResult | null): Map<number, number> {
 }
 
 /** Pieces of `g` still available to place by hand (never negative). */
-export const leftOf = (g: Group, placed: Map<number, number>) => Math.max(0, g.qty - (placed.get(g.id) ?? 0));
+export const leftOf = (g: Group, placed: Map<number, number>) =>
+  g.seg?.role === "parent" ? 0 : Math.max(0, g.qty - (placed.get(g.id) ?? 0)); // a segmented original has nothing to place
 
 /** Re-derives the "not nested" list from quantities after a manual change. */
 export function syncUnplaced(res: OptResult, groups: Group[]) {

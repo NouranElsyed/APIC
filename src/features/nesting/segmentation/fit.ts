@@ -11,6 +11,12 @@
  *
  * The test is on the real part geometry rotated by each permitted angle (not on the unrotated
  * bounding box), so a part that fits after rotation is never rejected. Pure functions, no React.
+ *
+ * "Fits" means what the optimiser can really PLACE, not just the usable area: the engine rasterises
+ * every part on a grid (cell size `cell`) after growing it by half the spacing `gp`, so the largest
+ * piece it can put on a normal sheet is a little smaller than the usable area (`gridCapacity`).
+ * A part between that limit and the usable area cannot be placed ("no free position found"), so it
+ * is reported as NEEDS_SEGMENTATION with an explanation instead of READY.
  */
 import { rotBox, rotList, soloRot, type Group, type Pt, type Settings } from "../nest-boost/engine";
 
@@ -55,6 +61,19 @@ export interface FitOptions {
 
 /** Same slack the engine's `soloRot` allows. */
 const TOL = 0.01;
+
+/**
+ * Largest size along one sheet dimension `len` that the optimiser can place on a normal (margined) sheet.
+ * Derived from `cellsOf` / `makeSettings` in nest-boost/engine.ts: a part of size s covers
+ * ⌈s/cell + g⌉ + ⌈g⌉ grid cells (g = gp / (2·cell)) and the grid has ⌊(len − 2·mg + gp)/cell⌋ cells.
+ * Checked against the engine's own placement for several cell / spacing combinations (see tests).
+ */
+export function gridCapacity(len: number, mg: number, gp: number, cell: number): number {
+  if (!(cell > 0)) return len - 2 * mg;
+  const cells = Math.floor((len - 2 * mg + gp) / cell + 1e-9);
+  const g = gp / (2 * cell);
+  return (cells - Math.ceil(g - 1e-9)) * cell - gp / 2;
+}
 const fitsBox = (b: { w: number; h: number }, w: number, h: number) => b.w <= w + TOL && b.h <= h + TOL;
 const mm = (v: number) => `${Math.round(v * 10) / 10}`;
 
@@ -114,7 +133,8 @@ function rotatedSize(pts: Pt[], deg: number): { w: number; h: number } {
 
 function findHint(g: Group, S: Settings, sheets: SheetSize[]): FitHint | undefined {
   const mg = S.mg;
-  const usableFit = (b: { w: number; h: number }) => sheets.some((s) => fitsBox(b, s.W - 2 * mg, s.H - 2 * mg));
+  const usableFit = (b: { w: number; h: number }) =>
+    sheets.some((s) => fitsBox(b, gridCapacity(s.W, mg, S.gp, S.cell), gridCapacity(s.H, mg, S.gp, S.cell)));
   const rawFit = (b: { w: number; h: number }) => sheets.some((s) => fitsBox(b, s.W, s.H));
   const have = new Set(rotList(S.ro));
 
@@ -163,17 +183,21 @@ export function classifyFit(g: Group, S: Settings, opts: FitOptions = {}): FitRe
 
   const R = rotList(S.ro);
   let solo: FitResult | null = null;
+  let nearLimit: { uw: number; uh: number; cw: number; ch: number } | null = null;
   for (const sh of sheets) {
     const uw = sh.W - 2 * S.mg;
     const uh = sh.H - 2 * S.mg;
-    const rot = R.find((r) => fitsBox(rotBox(g, r), uw, uh));
+    const cw = gridCapacity(sh.W, S.mg, S.gp, S.cell);
+    const ch = gridCapacity(sh.H, S.mg, S.gp, S.cell);
+    const rot = R.find((r) => fitsBox(rotBox(g, r), cw, ch));
+    if (rot === undefined && !nearLimit && R.some((r) => fitsBox(rotBox(g, r), uw, uh))) nearLimit = { uw, uh, cw, ch };
     if (rot !== undefined) {
       return {
         status: "READY",
         label: FIT_LABEL.READY,
         rot,
         sheetIndex: sh.i,
-        detail: `Fits the usable sheet area ${mm(uw)} × ${mm(uh)} mm at ${rot}°.`,
+        detail: `Fits the usable sheet area ${mm(uw)} × ${mm(uh)} mm (placeable up to ${mm(cw)} × ${mm(ch)}) at ${rot}°.`,
       };
     }
     if (!solo) {
@@ -198,6 +222,17 @@ export function classifyFit(g: Group, S: Settings, opts: FitOptions = {}): FitRe
       "PAIRED_TRIANGLES",
       `Pair of triangles ${sz} does not fit ${sheetTxt} mm — untick "Auto-pair triangles" so they are nested (or segmented) one by one.`,
     );
+  }
+  if (nearLimit) {
+    // inside the usable area but too big for the optimiser's grid: not placeable as it is
+    return {
+      status: "NEEDS_SEGMENTATION",
+      label: FIT_LABEL.NEEDS_SEGMENTATION,
+      detail:
+        `${sz} fits the usable area ${mm(nearLimit.uw)} × ${mm(nearLimit.uh)} mm but not the optimiser's grid ` +
+        `(largest placeable part ${mm(nearLimit.cw)} × ${mm(nearLimit.ch)} mm with spacing ${mm(S.gp)} mm and grid cell ${mm(S.cell)} mm). ` +
+        `Lower the grid cell or spacing, or split it into segments.`,
+    };
   }
   const hint = findHint(g, S, sheets.map(({ W, H }) => ({ W, H })));
   return {
