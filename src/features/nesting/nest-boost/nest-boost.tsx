@@ -17,7 +17,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
-import { cloneResult, SavedNestsCard, type SavedNest } from "./saved-nests";
+import { cloneResult, SavedNestsCard, type NestCfg, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
 import { classifyAll, type FitResult } from "../segmentation/fit";
 import { SegmentDialog } from "../segmentation/segment-dialog";
@@ -56,6 +56,7 @@ import {
   sides,
   isDetent,
   parseDXF,
+  parseSheetSizes,
   partColor,
   path,
   placedCounts,
@@ -83,6 +84,7 @@ import {
   type Sel,
   type Settings,
   type Sheet,
+  type SheetSource2D,
 } from "./engine";
 
 const DEFAULT_MSG =
@@ -96,6 +98,119 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {label}
       {children}
     </label>
+  );
+}
+
+/**
+ * The sheet sizes you have: a different size per thickness / material, or leftover sheets (with a quantity).
+ * Leftover sheets are used first, then the sizes with no quantity limit; anything with no source here uses the default sheet.
+ */
+function SheetSourcesPanel({
+  cfg, setCfg, lots,
+}: {
+  cfg: NestCfg;
+  setCfg: (c: NestCfg) => void;
+  lots: { key: string; th: number; material: string }[];
+}) {
+  const sources = cfg.sources ?? [];
+  const [form, setForm] = React.useState({ th: "", material: "", sizes: "", qty: "" });
+  const [msg, setMsg] = React.useState("");
+  const set = (next: SheetSource2D[]) => setCfg({ ...cfg, sources: next });
+  const update = (id: number, patch: Partial<SheetSource2D>) => set(sources.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const add = () => {
+    const { items, invalid } = parseSheetSizes(form.sizes, form.qty.trim() === "" ? null : Number(form.qty));
+    if (invalid.length) {
+      setMsg(`Cannot read: ${invalid.join(", ")}. Use length x width like "3000x1500, 2400x1200x2" (the last number = how many sheets).`);
+      return;
+    }
+    if (!items.length) {
+      setMsg("Enter at least one sheet size (length x width, mm).");
+      return;
+    }
+    const th = Number(form.th) || 0;
+    const material = form.material.trim();
+    let next = sources.slice();
+    let id = Math.max(0, ...next.map((x) => x.id));
+    for (const it of items) {
+      const same = next.findIndex((x) => x.th === th && x.material.trim().toLowerCase() === material.toLowerCase() && x.W === it.W && x.H === it.H);
+      if (same >= 0) next[same] = { ...next[same], qty: next[same].qty === null || it.qty === null ? null : next[same].qty! + it.qty };
+      else next = [...next, { id: ++id, th, material, W: it.W, H: it.H, qty: it.qty }];
+    }
+    set(next);
+    setMsg("");
+    setForm((f) => ({ ...f, sizes: "" }));
+  };
+  const ths = [...new Set(lots.map((l) => l.th).filter((t) => t > 0))];
+  const mats = [...new Set(lots.map((l) => l.material).filter(Boolean))];
+  return (
+    <div className="col-span-2 space-y-2 rounded-md border border-dashed border-border p-3">
+      <div className="text-xs font-medium">Sheets you have (optional)</div>
+      <p className="text-[11px] text-muted-foreground">
+        A different sheet size for each thickness, or leftover sheets. Sheets with a quantity (leftovers) are used first, then sizes with no quantity
+        (as many as needed). A thickness / material with nothing here uses the default sheet above.
+      </p>
+      {sources.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="p-1 font-medium">Thk (mm)</th>
+                <th className="p-1 font-medium">Material</th>
+                <th className="p-1 font-medium">Length</th>
+                <th className="p-1 font-medium">Width</th>
+                <th className="p-1 font-medium">Qty</th>
+                <th className="p-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {sources.map((x) => (
+                <tr key={x.id} className="border-t border-border">
+                  <td className="p-1"><Input type="number" min={0} step="any" className="h-8 w-16" placeholder="any" value={x.th > 0 ? x.th : ""} onChange={(e) => update(x.id, { th: Number(e.target.value) || 0 })} /></td>
+                  <td className="p-1"><Input type="text" className="h-8 w-20" placeholder="any" value={x.material} onChange={(e) => update(x.id, { material: e.target.value })} /></td>
+                  <td className="p-1"><Input type="number" min={0} className="h-8 w-20" value={x.W > 0 ? x.W : ""} onChange={(e) => update(x.id, { W: Number(e.target.value) || 0 })} /></td>
+                  <td className="p-1"><Input type="number" min={0} className="h-8 w-20" value={x.H > 0 ? x.H : ""} onChange={(e) => update(x.id, { H: Number(e.target.value) || 0 })} /></td>
+                  <td className="p-1"><Input type="number" min={0} className="h-8 w-16" placeholder="∞" value={x.qty ?? ""} onChange={(e) => update(x.id, { qty: e.target.value === "" ? null : Number(e.target.value) })} /></td>
+                  <td className="p-1">
+                    <Button variant="ghost" size="sm" className="text-destructive" aria-label="Remove sheet size" onClick={() => set(sources.filter((y) => y.id !== x.id))}>
+                      <Trash2 />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex flex-wrap items-end gap-2 text-xs">
+        <label className="space-y-1">Thickness
+          <Input type="number" min={0} step="any" list="sheet-src-th" className="h-8 w-20" placeholder="any" value={form.th} onChange={(e) => setForm((f) => ({ ...f, th: e.target.value }))} />
+        </label>
+        <label className="space-y-1">Material
+          <Input type="text" list="sheet-src-mat" className="h-8 w-24" placeholder="any" value={form.material} onChange={(e) => setForm((f) => ({ ...f, material: e.target.value }))} />
+        </label>
+        <label className="space-y-1">Sizes (mm)
+          <Input
+            type="text" className="h-8 w-52" placeholder="3000x1500, 2400x1200x2"
+            value={form.sizes}
+            onChange={(e) => setForm((f) => ({ ...f, sizes: e.target.value }))}
+            onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          />
+        </label>
+        <label className="space-y-1">Qty each
+          <Input type="number" min={1} className="h-8 w-16" placeholder="∞" value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} />
+        </label>
+        <Button size="sm" onClick={add}><Plus /> Add</Button>
+      </div>
+      <datalist id="sheet-src-th">{ths.map((t) => <option key={t} value={t} />)}</datalist>
+      <datalist id="sheet-src-mat">{mats.map((m) => <option key={m} value={m} />)}</datalist>
+      {msg && <p className="text-xs text-destructive">{msg}</p>}
+      {sources.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox checked={cfg.fallback !== false} onCheckedChange={(v) => setCfg({ ...cfg, fallback: v === true })} />
+          When these run out (or a part does not fit them), continue on the default sheet
+        </label>
+      )}
+    </div>
   );
 }
 
@@ -326,7 +441,10 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
   const [zoom, setZoomState] = React.useState(1);
   const zoomRef = React.useRef(1);
   const cssW = width * zoom; // size on screen, in CSS px
-  const cssH = Math.ceil(S.H * (width / S.W)) * zoom;
+  // a sheet cut from another size (a leftover, a size for this thickness) is drawn at its own stock size
+  const stockW = sheet.stockW ?? S.W;
+  const stockH = sheet.stockH ?? S.H;
+  const cssH = Math.ceil(stockH * (width / stockW)) * zoom;
   // Render at (at least) 2x the screen pixels so lines and text stay sharp, even on 1x monitors and when
   // zoomed; capped so the back-buffer stays within what browsers can allocate.
   const devDpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
@@ -334,8 +452,8 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
     0.5,
     Math.min(Math.max(devDpr, 2), MAX_SIDE_PX / cssW, MAX_SIDE_PX / cssH, Math.sqrt(MAX_AREA_PX / (cssW * cssH))),
   );
-  const k = (cssW / S.W) * ratio; // back-buffer pixels per mm
-  const h = Math.ceil(S.H * k);
+  const k = (cssW / stockW) * ratio; // back-buffer pixels per mm
+  const h = Math.ceil(stockH * k);
   const bufW = Math.round(cssW * ratio);
   const getScroller = React.useCallback(
     () => (fullscreen ? scrollRef.current?.parentElement?.parentElement : scrollRef.current) ?? null,
@@ -503,7 +621,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
 
   /** Point for the measure tool: snaps to the nearest part-box corner / edge middle within ~10 screen px. */
   const snapPt = (m: Pt): Pt => {
-    const tol = 10 / (cssW / S.W);
+    const tol = 10 / (cssW / stockW);
     let best: Pt = m;
     let bd = tol;
     for (const it of sheet.items) {
@@ -937,8 +1055,8 @@ export function NestBoost() {
   const counters = React.useRef<Counters>({ id: 0, sn: 0 });
   const [msg, setMsg] = React.useState(DEFAULT_MSG);
   const [units, setUnits] = React.useState("1");
-  const [cfg, setCfg] = React.useState({
-    W: "6000", H: "1500", mg: "5", gp: "5", cell: "5", ro: "2", tm: "20", pair: true, common: false,
+  const [cfg, setCfg] = React.useState<NestCfg>({
+    W: "6000", H: "1500", mg: "5", gp: "5", cell: "5", ro: "2", tm: "20", pair: true, common: false, sources: [], fallback: true,
   });
   const [running, setRunning] = React.useState(false);
   const [status, setStatus] = React.useState("");
@@ -1752,6 +1870,8 @@ export function NestBoost() {
       timeSec: Number(c.tm) || 20,
       base: only?.base ?? null,
       fillExisting: only?.fillExisting,
+      sources: c.sources?.filter((x) => x.W > 0 && x.H > 0),
+      fallbackDefault: c.fallback !== false,
       shouldStop: () => stopRef.current || my !== runRef.current,
       onBest: (r) => {
         if (my !== runRef.current) return;
@@ -2140,6 +2260,7 @@ export function NestBoost() {
         <Checkbox checked={cfg.common} onCheckedChange={(v) => setCfg({ ...cfg, common: v === true })} />
         Common cut line (no gap inside pair)
       </label>
+      <SheetSourcesPanel cfg={cfg} setCfg={setCfg} lots={lots} />
     </div>
   );
 
@@ -2825,7 +2946,7 @@ export function NestBoost() {
                         Cut size
                         <CutSizeInput
                           value={Math.round(sh.W ?? resS.W)}
-                          max={Math.round(resS.W)}
+                          max={Math.round(sh.stockW ?? resS.W)}
                           onCommit={(v) => {
                             resizeSheet(sh, resS, v, sh.H ?? resS.H);
                             bump();
@@ -2834,7 +2955,7 @@ export function NestBoost() {
                         ×
                         <CutSizeInput
                           value={Math.round(sh.H ?? resS.H)}
-                          max={Math.round(resS.H)}
+                          max={Math.round(sh.stockH ?? resS.H)}
                           onCommit={(v) => {
                             resizeSheet(sh, resS, sh.W ?? resS.W, v);
                             bump();

@@ -5,12 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import type { Group, OptResult, Settings, Sheet } from "./engine";
+import type { Group, OptResult, Settings, Sheet, SheetSource2D } from "./engine";
 import { SheetStrip } from "./sheet-strip";
 
 /** The sheet/setting inputs of the page (all strings, exactly as typed). */
 export interface NestCfg {
   W: string; H: string; mg: string; gp: string; cell: string; ro: string; tm: string; pair: boolean; common: boolean;
+  /** Sheet sizes you have per thickness / material (leftovers, a different size per thickness). */
+  sources?: SheetSource2D[];
+  /** With sources: continue on the default sheet when they run out (default true). */
+  fallback?: boolean;
 }
 
 export interface SavedNest {
@@ -33,6 +37,7 @@ export function cloneResult(r: OptResult): OptResult {
     un: [...r.un],
     skip: [...r.skip],
     manual: r.manual,
+    ...(r.unWhy ? { unWhy: { ...r.unWhy } } : {}),
   };
 }
 

@@ -76,6 +76,26 @@ export interface Sheet {
   /** One part that is as big as the whole sheet (it does not fit inside the edge margins, but fits the raw sheet).
    *  Nothing else is on this sheet, so neither the edge margin nor the spacing applies: margin = 0. */
   solo?: boolean;
+  /** Stock size of the sheet source this sheet was cut from (undefined = the default sheet S.W / S.H).
+   *  It is the upper limit when the sheet is trimmed; W / H hold the current (trimmed) size. */
+  stockW?: number;
+  stockH?: number;
+  /** Id of the SheetSource2D this sheet comes from (undefined = the default sheet). */
+  srcId?: number;
+}
+
+/** A sheet size you have in stock (or a leftover sheet), for one thickness and material. */
+export interface SheetSource2D {
+  id: number;
+  /** Plate thickness in mm; 0 = any thickness. */
+  th: number;
+  /** Material; "" = any material. */
+  material: string;
+  /** Sheet length (W) and width (H) in mm. */
+  W: number;
+  H: number;
+  /** How many sheets of this size there are; null = as many as needed. */
+  qty: number | null;
 }
 
 /** Edge margin that applies to this sheet: 0 for a part-sized (solo) sheet, the setting otherwise. */
@@ -108,8 +128,8 @@ export function minSheetSize(sh: Sheet, S: Settings): { w: number; h: number } {
  */
 export function resizeSheet(sh: Sheet, S: Settings, w: number, h: number): { w: number; h: number } {
   const min = minSheetSize(sh, S);
-  const W = Math.min(S.W, Math.max(min.w, Math.round(w)));
-  const H = Math.min(S.H, Math.max(min.h, Math.round(h)));
+  const W = Math.min(sh.stockW ?? S.W, Math.max(min.w, Math.round(w)));
+  const H = Math.min(sh.stockH ?? S.H, Math.max(min.h, Math.round(h)));
   sh.W = W;
   sh.H = H;
   return { w: W, h: H };
@@ -148,6 +168,9 @@ export interface OptResult {
   /** True once the user has edited the nest by hand (empty sheets, parts taken from the list / put back).
    *  `un` is then re-derived from the quantities instead of coming from the optimiser. */
   manual?: boolean;
+  /** Why the parts in `un` were not nested, by part number, when the optimiser knows better than the generic reason
+   *  (e.g. "the sheet sources for 10 mm are used up"). */
+  unWhy?: Record<number, string>;
 }
 
 const TOL = 0.05;
@@ -1404,7 +1427,7 @@ interface Seed {
   used: number;
 }
 
-async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[], stop: () => boolean, seeds: Seed[] = []) {
+async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[], stop: () => boolean, seeds: Seed[] = [], maxSheets = Infinity) {
   // seeded sheets come first (they are filled before any new sheet is opened); copies, so every attempt starts from the same state
   const sheets: Sheet[] = seeds.map((x) => ({ ...x.sh, items: x.sh.items.slice(), grid: x.grid.slice(), used: x.used }));
   const un: Group[] = [];
@@ -1420,12 +1443,15 @@ async function attempt(S: Settings, rc: MaskCache, items: Group[], rots: number[
       }
     }
     if (!ok) {
-      const sh: Sheet = { grid: new Uint8Array(S.GW * S.GH), items: [], used: 0, th: 0, material: "" };
-      const b = place(S, rc, sh, g, rots);
-      if (b) {
-        commit(S, sh, g, b);
-        sheets.push(sh);
-      } else un.push(g);
+      if (sheets.length - seeds.length >= maxSheets) un.push(g); // no more sheets of this source: the part waits for the next one
+      else {
+        const sh: Sheet = { grid: new Uint8Array(S.GW * S.GH), items: [], used: 0, th: 0, material: "" };
+        const b = place(S, rc, sh, g, rots);
+        if (b) {
+          commit(S, sh, g, b);
+          sheets.push(sh);
+        } else un.push(g);
+      }
     }
     if (n % 2 === 0) await tick();
     if (stop()) break;
@@ -1448,6 +1474,12 @@ export interface OptimizeOptions {
   /** With `base`: true (default) = the new parts first fill the free space of the existing sheets (same thickness +
    *  material), then new sheets are opened. false = the existing sheets are left alone, the new parts go on new sheets only. */
   fillExisting?: boolean;
+  /** Sheet sizes you have, per thickness / material. Sources with a limited quantity (leftovers) are used first, then the
+   *  unlimited ones. A lot (material + thickness) with no matching source is nested on the default sheet (S.W × S.H).
+   *  With sources, a continued nest keeps its existing sheets as they are and adds new sheets. */
+  sources?: SheetSource2D[];
+  /** With sources: when they run out (or a part does not fit any), continue on the default sheet S.W × S.H. Default true. */
+  fallbackDefault?: boolean;
   shouldStop: () => boolean;
   onBest: (res: OptResult) => void;
   onStatus: (text: string) => void;
@@ -1467,6 +1499,49 @@ export function soloRot(g: Group, S: Settings, rots: number[]): number | null {
   if (rots.some((r) => fits(r, uw, uh))) return null;
   const r = rots.find((q) => fits(q, S.W, S.H));
   return r === undefined ? null : r;
+}
+
+const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** The sheet sources that apply to a lot (thickness + material): limited quantities first (in the order given), then unlimited ones. */
+export function sourcesForLot(sources: SheetSource2D[], th: number, material: string): SheetSource2D[] {
+  const m = sources.filter(
+    (x) =>
+      x.W > 0 && x.H > 0 && (x.qty === null || x.qty > 0) &&
+      (!x.th || Math.abs(x.th - th) < 0.01) &&
+      (!x.material.trim() || sameText(x.material, material)),
+  );
+  return [...m.filter((x) => x.qty !== null), ...m.filter((x) => x.qty === null)];
+}
+
+/**
+ * Reads sheet sizes typed by hand: "3000x1500, 2400x1200x2" (separators: comma, semicolon or new line; the optional
+ * third number is how many sheets of that size you have). Sizes without it get `defaultQty` (null = unlimited).
+ * Anything that is not "length x width" with positive numbers is returned in `invalid`.
+ */
+export function parseSheetSizes(text: string, defaultQty: number | null): { items: { W: number; H: number; qty: number | null }[]; invalid: string[] } {
+  const items: { W: number; H: number; qty: number | null }[] = [];
+  const invalid: string[] = [];
+  for (const raw of text.split(/[,;\n]+/)) {
+    const tok = raw.trim();
+    if (!tok) continue;
+    const m = /^(\d+(?:\.\d+)?)\s*[x*×]\s*(\d+(?:\.\d+)?)(?:\s*[x*×]\s*(\d+))?$/i.exec(tok);
+    const W = m ? Number(m[1]) : NaN;
+    const H = m ? Number(m[2]) : NaN;
+    const qty = m && m[3] !== undefined ? Number(m[3]) : defaultQty;
+    if (!m || !(W > 0) || !(H > 0) || (qty !== null && !(qty > 0))) invalid.push(tok);
+    else items.push({ W, H, qty });
+  }
+  return { items, invalid };
+}
+
+function fitsUsable(g: Group, S: Settings, rots: number[]): boolean {
+  const uw = S.W - 2 * S.mg;
+  const uh = S.H - 2 * S.mg;
+  return rots.some((r) => {
+    const b = rotBox(g, r);
+    return b.w <= uw + 0.01 && b.h <= uh + 0.01;
+  });
 }
 
 /** Returns null when there is nothing to nest (all quantities are 0). */
@@ -1509,19 +1584,119 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
   const replaced = new Map<number, Sheet>(); // base sheet index -> same sheet with the new parts added
   let it = 0;
   const ids = new Set(groups.map((g) => g.id));
+  const unWhy: Record<number, string> = {};
   const cur = (b: { sheets: Sheet[]; un: Group[] } | null, seedIdx: number[] = []): OptResult => {
     const sheets = baseSheets.map((x, i) => replaced.get(i) ?? x);
     seedIdx.forEach((bi, j) => b && sheets.splice(bi, 1, b.sheets[j]));
+    const why = { ...(base?.unWhy ?? {}), ...unWhy };
     return {
       sheets: sheets.concat(done, b ? b.sheets.slice(seedIdx.length) : []),
       un: (base ? base.un.filter((g) => !ids.has(g.cid ?? g.id)) : []).concat(dun, b ? b.un : []),
       skip: base ? Array.from(new Set(base.skip.concat(skip))) : skip,
       ...(base?.manual ? { manual: true } : {}),
+      ...(Object.keys(why).length ? { unWhy: why } : {}),
     };
+  };
+
+  /** Nests one lot on the sheet sources that apply to it: the limited ones (leftovers) first, then the unlimited ones,
+   *  then the default sheet. Parts that do not fit a source (or find no sheet left) go on to the next one. */
+  const nestOnSources = async (th: number, material: string, lot: Group[], list: SheetSource2D[], nLots: number) => {
+    const stages: { src: SheetSource2D | null; S: Settings; cap: number }[] = list.map((src) => ({
+      src,
+      S: makeSettings({ W: src.W, H: src.H, mg: S.mg, gp: S.gp, cell: S.cell, ro: S.ro }),
+      cap: src.qty === null ? Infinity : Math.max(0, src.qty - baseSheets.filter((x) => x.srcId === src.id).length),
+    }));
+    if (o.fallbackDefault !== false) stages.push({ src: null, S, cap: Infinity });
+    const active = stages.filter((x) => x.cap > 0);
+    const lbl = material ? `${material} • ${th || "?"} mm` : `${th || "?"} mm`;
+    let rem = lot.slice();
+    for (const st of active) {
+      if (!rem.length || o.shouldStop()) break;
+      const Ss = st.S;
+      const stamp = (sh: Sheet) => {
+        sh.th = th;
+        sh.material = material;
+        if (st.src) {
+          sh.W = st.src.W;
+          sh.H = st.src.H;
+          sh.stockW = st.src.W;
+          sh.stockH = st.src.H;
+          sh.srcId = st.src.id;
+        }
+      };
+      let cap = st.cap;
+      const cand: Group[] = [];
+      const next: Group[] = [];
+      for (const g of rem) {
+        const r = soloRot(g, Ss, R);
+        if (r !== null) {
+          // as big as this sheet: a sheet of its own, no margin / spacing
+          if (cap > 0) {
+            cap--;
+            const b = rotBox(g, r);
+            const sh: Sheet = { items: [{ g, rot: r, x: (Ss.W - b.w) / 2, y: (Ss.H - b.h) / 2 }], th, material, used: 0, solo: true };
+            stamp(sh);
+            done.push(sh);
+          } else next.push(g);
+        } else if (fitsUsable(g, Ss, R)) cand.push(g);
+        else next.push(g);
+      }
+      if (done.length) o.onBest(cur(null));
+      if (cand.length && cap > 0) {
+        const rc2: MaskCache = new Map();
+        const t0 = performance.now();
+        const lim = (o.timeSec * 1000) / nLots / active.length;
+        let best: { sheets: Sheet[]; un: Group[]; sc: number } | null = null;
+        let k = 0;
+        while (!o.shouldStop() && (k === 0 || performance.now() - t0 < lim)) {
+          const kf = k < 3 ? key[k] : key[3];
+          const ord = cand.slice().sort((a, b) => kf(b) - kf(a));
+          let rr = R;
+          if (k >= 4 && R.length >= 3) {
+            if (S.ro === 2) rr = [R, [0, 180], [0, 90], [0, 270, 90, 180]][(Math.random() * 4) | 0];
+            else {
+              const pick = (Math.random() * 3) | 0;
+              rr = pick === 0 ? R : pick === 1 ? R.filter((a) => a % 90 === 0) : R.slice().sort(() => Math.random() - 0.5);
+            }
+          }
+          const r = await attempt(Ss, rc2, ord, rr, o.shouldStop, [], cap);
+          k++;
+          it++;
+          r.sheets.forEach(stamp);
+          if (!o.shouldStop() && (!best || r.sc < best.sc)) {
+            best = r;
+            o.onBest(cur(best));
+          }
+          const where = st.src ? `sheet ${Math.round(st.src.W)}×${Math.round(st.src.H)}` : "default sheet";
+          o.onStatus(`${lbl} • ${where} • iteration ${it} • sheets: ${baseSheets.length + done.length + (best ? best.sheets.length : 0)}`);
+        }
+        if (best) {
+          done.push(...best.sheets);
+          next.push(...best.un);
+        } else next.push(...cand);
+      } else next.push(...cand);
+      rem = next;
+    }
+    if (rem.length) {
+      dun.push(...rem);
+      const biggest = stages.reduce((a, x) => (x.S.W * x.S.H > a.S.W * a.S.H ? x : a));
+      for (const g of rem) {
+        if (unWhy[g.sn]) continue;
+        const fitsAny = stages.some((x) => fitsUsable(g, x.S, R) || soloRot(g, x.S, R) !== null);
+        unWhy[g.sn] = fitsAny
+          ? `the sheets you have for ${lbl} are used up (${list.map((x) => `${Math.round(x.W)}×${Math.round(x.H)}${x.qty === null ? "" : ` ×${x.qty}`}`).join(", ")}) — add more sheets or allow the default sheet`
+          : whyNotNested(g, biggest.S);
+      }
+    }
   };
 
   for (const { th, material } of lots) {
     const lot = items.filter((g) => (g.th || 0) === th && (g.material || "") === material);
+    const list = o.sources?.length ? sourcesForLot(o.sources, th, material) : [];
+    if (list.length) {
+      await nestOnSources(th, material, lot, list, lots.length);
+      continue;
+    }
     // A part as big as the sheet (too big for the margins, but it fits the raw sheet) gets a sheet of its own with
     // NO edge margin and NO spacing: it is the only thing on that sheet, so there is nothing to keep clear of.
     const sub: Group[] = [];
@@ -2490,7 +2665,7 @@ export function problemMessages(res: OptResult, S: Settings): string[] {
     mp.set(g.sn, q);
   }
   mp.forEach(({ g, c }) =>
-    msgs.push(`Part #${snText(g)} (${g.name}) — ${c} pc${c > 1 ? "s" : ""} NOT nested: ${whyNotNested(g, S)}`),
+    msgs.push(`Part #${snText(g)} (${g.name}) — ${c} pc${c > 1 ? "s" : ""} NOT nested: ${res.unWhy?.[g.sn] ?? whyNotNested(g, S)}`),
   );
   return msgs;
 }

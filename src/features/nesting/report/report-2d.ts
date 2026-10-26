@@ -58,6 +58,18 @@ export function collectSheetRows(result: OptResult, S: Settings): SheetRow[] {
 
 const num = (v: number | null) => v ?? 0;
 
+/** "6000 × 1500 mm", plus the other sheet sizes (leftovers, a size per thickness) when the nest used any. */
+function stockText(result: OptResult, S: Settings): string {
+  const other = new Map<string, number>();
+  for (const sh of result.sheets) {
+    if (!sh.stockW) continue;
+    const k = `${Math.round(sh.stockW)} × ${Math.round(sh.stockH ?? 0)} mm`;
+    other.set(k, (other.get(k) ?? 0) + 1);
+  }
+  const main = `${S.W} × ${S.H} mm`;
+  return other.size ? `${main} (default); also used: ${[...other].map(([k, n]) => `${k} ×${n}`).join(", ")}` : main;
+}
+
 /** Adds the 2D report sheets to `wb` (names prefixed with `prefix`) and returns its overview lines. */
 export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix = ""): OverviewRow[] {
   const { result, S, groups } = input;
@@ -70,7 +82,7 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
   r = addKeyValues(ws, r, [
     ["Project", input.projectName || "—"],
     ["Date", stamp()],
-    ["Stock sheet", `${S.W} × ${S.H} mm`],
+    ["Stock sheet", stockText(result, S)],
     ["Edge margin / part gap", `${S.mg} mm / ${S.gp} mm`],
   ]) + 1;
 

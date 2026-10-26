@@ -6,7 +6,7 @@ import type { NestCfg, SavedNest } from "./saved-nests";
 
 interface EncItem { gid: number; rot: number; x: number; y: number }
 type EncSheet = Omit<Sheet, "items" | "grid"> & { items: EncItem[] };
-interface EncResult { sheets: EncSheet[]; un: number[]; skip: string[]; manual?: boolean }
+interface EncResult { sheets: EncSheet[]; un: number[]; skip: string[]; manual?: boolean; unWhy?: Record<number, string> }
 interface EncNest extends Omit<SavedNest, "result"> { result: EncResult }
 
 export interface Snapshot2D {
@@ -49,6 +49,7 @@ function encodeResult(r: OptResult, table: Map<number, Group>): EncResult {
     un: r.un.map(reg),
     skip: [...r.skip],
     manual: r.manual,
+    ...(r.unWhy ? { unWhy: { ...r.unWhy } } : {}),
   };
 }
 
@@ -64,6 +65,7 @@ function decodeResult(e: EncResult, find: (id: number) => Group | undefined): Op
     un: e.un.flatMap((id) => { const g = find(id); return g ? [g] : []; }),
     skip: e.skip,
     manual: e.manual,
+    ...(e.unWhy ? { unWhy: e.unWhy } : {}),
   };
 }
 
