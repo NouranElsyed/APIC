@@ -16,7 +16,8 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
   const isNesting = pathname?.startsWith("/takeoff/nesting") ?? false;
   const isScrap = pathname?.startsWith("/takeoff/scrap-material") ?? false;
   const isSteelPricing = pathname?.startsWith("/takeoff/steel-pricing") ?? false;
-  const isStandard = !isNesting && !isScrap && !isSteelPricing;
+  const isNozzles = pathname?.startsWith("/takeoff/nozzles") ?? false;
+  const isStandard = !isNesting && !isScrap && !isSteelPricing && !isNozzles;
 
   return (
     <div className="space-y-6">
@@ -26,6 +27,9 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
         </Link>
         <Link href="/takeoff/nesting" className={activeTabClass(isNesting)}>
           DXF Nesting
+        </Link>
+        <Link href="/takeoff/nozzles" className={activeTabClass(isNozzles)}>
+          Nozzles
         </Link>
         {showScrap && (
           <Link href="/takeoff/scrap-material" className={activeTabClass(isScrap)}>
