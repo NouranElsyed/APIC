@@ -149,7 +149,25 @@ export function add1DSheets(wb: ExcelJS.Workbook, input: Report1DInput, prefix =
 
   // ------------------------------------------------------------------ Parts
   const cutCount = new Map<number, number>();
-  for (const x of layouts) for (const c of x.b.cuts) cutCount.set(c.piece.id, (cutCount.get(c.piece.id) ?? 0) + x.repeat);
+  const segCount = new Map<number, Map<number, number>>(); // split part id -> segment index -> times cut
+  for (const x of layouts)
+    for (const c of x.b.cuts) {
+      const sg = c.piece.segment;
+      if (sg) {
+        const per = segCount.get(sg.parentId) ?? new Map<number, number>();
+        per.set(sg.index, (per.get(sg.index) ?? 0) + x.repeat);
+        segCount.set(sg.parentId, per);
+      } else cutCount.set(c.piece.id, (cutCount.get(c.piece.id) ?? 0) + x.repeat);
+    }
+  // a split part counts as cut once all of its segments are cut: the least-cut segment decides
+  const pieceTotal = new Map<number, number>();
+  for (const x of layouts) for (const c of x.b.cuts) if (c.piece.segment) pieceTotal.set(c.piece.segment.parentId, c.piece.segment.total);
+  for (const [pid, per] of segCount) {
+    const total = pieceTotal.get(pid) ?? 0;
+    let n = Infinity;
+    for (let i = 1; i <= total; i++) n = Math.min(n, per.get(i) ?? 0);
+    cutCount.set(pid, Number.isFinite(n) ? n : 0);
+  }
   const wsP = wb.addWorksheet(nm("Parts"), { views: [{ state: "frozen", ySplit: 1 }] });
   addTable(
     wsP, 1,

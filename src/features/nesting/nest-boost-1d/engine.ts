@@ -30,6 +30,8 @@ export interface Piece1D {
   qty: number;
   /** Plate / hot rolled / pipe (missing = hot rolled). */
   partType?: PartType1D;
+  /** Set on the pieces made by splitting a part that is longer than every stock bar: "segment `index` of `total`". */
+  segment?: { index: number; total: number; parentId: number; parentLength: number };
 }
 
 /** One available stock length for a given profile + material (a "Source"). */
@@ -116,7 +118,7 @@ export interface UsedSource {
 export interface Result1D {
   layouts: Layout[];
   usedSources: UsedSource[];
-  /** Pieces that could not be nested at all (longer than any usable source). */
+  /** Pieces that could not be nested at all (no stock of a matching profile/material, or the stock ran out). */
   skip: string[];
   /** Non-fatal warnings, e.g. a bar's leftover falls in the restricted "dead" rest range. */
   problems: string[];
@@ -265,6 +267,24 @@ function fits(b: OpenBar, p: Piece1D, S: Settings1D): boolean {
 }
 
 /**
+ * A part longer than the longest stock bar of its lot cannot be cut in one go, so it is split: as many segments as
+ * the longest bar can hold (each one as long as that bar) and one last segment with the rest. The segments are
+ * joined again after cutting (weld / splice), so the lengths add up to the original length and no kerf is taken
+ * off at the joint. Returns the segment lengths, longest first; a part that already fits comes back as-is.
+ */
+export function splitLongLength(length: number, maxBar: number): number[] {
+  if (!(maxBar > 0) || length <= maxBar + 1e-6) return [length];
+  const out: number[] = [];
+  let rest = length;
+  while (rest > maxBar + 1e-6) {
+    out.push(maxBar);
+    rest -= maxBar;
+  }
+  if (rest > 1e-6) out.push(Math.round(rest * 1000) / 1000);
+  return out;
+}
+
+/**
  * Best-Fit / First-Fit-Decreasing bin packing, run separately per (profile, material)
  * lot, picking from that lot's Sources (multiple stock lengths, limited or unlimited
  * quantity). Groups identical bars into Layouts with a repeat count, flags reusable
@@ -294,8 +314,40 @@ export function runOptimize1D(pieces: Piece1D[], sources: Source1D[], S: Setting
       .sort((a, b) => a.src.length - b.src.length);
     const lotBars: OpenBar[] = [];
 
+    // longest bar this lot can be cut from: a part longer than that is split into segments that each fit a bar
+    const maxBar = stock.reduce((m, st) => (st.remaining !== 0 && st.src.length > m ? st.src.length : m), 0);
+    const segCache = new Map<string, Piece1D>();
     const items: Piece1D[] = [];
-    for (const p of lot.pieces) for (let i = 0; i < p.qty; i++) items.push(p);
+    for (const p of lot.pieces) {
+      const lengths = splitLongLength(p.length, maxBar);
+      if (lengths.length > 1) {
+        problems.push(
+          `Part #${p.sn} (${p.name}) is ${Math.round(p.length)} mm, longer than the longest bar (${Math.round(maxBar)} mm) — split into ${lengths.length} segments: ${lengths.map((l) => Math.round(l)).join(" + ")} mm`,
+        );
+      }
+      for (let i = 0; i < p.qty; i++) {
+        if (lengths.length === 1) {
+          items.push(p);
+          continue;
+        }
+        lengths.forEach((len, k) => {
+          const key = `${p.id}|${k}|${len}`;
+          let seg = segCache.get(key);
+          if (!seg) {
+            seg = {
+              ...p,
+              id: -(segCache.size + 1) - p.id * 100000, // unique and negative: never collides with a real part id
+              name: `${p.name} (seg ${k + 1}/${lengths.length})`,
+              length: len,
+              qty: 1,
+              segment: { index: k + 1, total: lengths.length, parentId: p.id, parentLength: p.length },
+            };
+            segCache.set(key, seg);
+          }
+          items.push(seg);
+        });
+      }
+    }
     items.sort((a, b) => b.length - a.length);
 
     for (const p of items) {
