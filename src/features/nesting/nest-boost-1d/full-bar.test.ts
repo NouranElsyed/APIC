@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barStats, barTrims, minBarLength, runOptimize1D, type Piece1D, type Settings1D, type Source1D } from "./engine";
+import { barStats, barTrims, minBarLength, overallStats, runOptimize1D, type Piece1D, type Settings1D, type Source1D } from "./engine";
 
 const S: Settings1D = {
   kerf: 3, leftTrim: 10, rightTrim: 10, gripping: 5, minimizeLayoutCount: false, maxPartsInLayout: 0,
@@ -64,5 +64,11 @@ describe("a piece as long as the bar gets a bar of its own with no trims", () =>
     const r = runOptimize1D([piece(1, 12000, 2)], [src(1, 12000, 1)], S);
     expect(r.layouts.flatMap((l) => l.bars)).toHaveLength(1);
     expect(r.skip).toHaveLength(1);
+  });
+
+  it("a split part counts as one cut part in the summary", () => {
+    const sources = [src(1, 6000)];
+    const r = runOptimize1D([piece(1, 8020, 1), piece(2, 1000, 1)], sources, S);
+    expect(overallStats(r, sources).cutParts).toBe(2);
   });
 });

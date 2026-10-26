@@ -502,13 +502,29 @@ export function overallStats(res: Result1D, sources: Source1D[]) {
   let totalBarLength = 0;
   let cutParts = 0;
   let bars = 0;
+  // a part that was split counts once, when all of its segments are cut (the least-cut segment decides)
+  const segs = new Map<number, { total: number; per: Map<number, number> }>();
   for (const l of res.layouts)
     for (const b of l.bars) {
       bars++;
-      cutParts += b.cuts.length;
+      for (const c of b.cuts) {
+        const sg = c.piece.segment;
+        if (!sg) {
+          cutParts++;
+          continue;
+        }
+        const e = segs.get(sg.parentId) ?? { total: sg.total, per: new Map<number, number>() };
+        e.per.set(sg.index, (e.per.get(sg.index) ?? 0) + 1);
+        segs.set(sg.parentId, e);
+      }
       totalPieceLength += b.cuts.reduce((s, c) => s + c.piece.length, 0);
       totalBarLength += b.length ?? b.sourceLength;
     }
+  for (const e of segs.values()) {
+    let n = Infinity;
+    for (let i = 1; i <= e.total; i++) n = Math.min(n, e.per.get(i) ?? 0);
+    cutParts += Number.isFinite(n) ? n : 0;
+  }
   const costById = new Map(sources.map((s) => [s.id, s.cost]));
   const totalCost = res.usedSources.reduce((s, u) => s + (costById.get(u.sourceId) ?? 0) * u.count, 0);
   return {
