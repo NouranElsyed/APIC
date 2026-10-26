@@ -72,6 +72,7 @@ import {
   startPick,
   syncUnplaced,
   transfer,
+  snText,
   type Counters,
   type Group,
   type Item,
@@ -157,7 +158,7 @@ function UnplacedStrip({
   const [asc, setAsc] = React.useState(true);
   const list = React.useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const f = items.filter(({ g }) => !needle || `${g.name} #${g.sn}`.toLowerCase().includes(needle));
+    const f = items.filter(({ g }) => !needle || `${g.name} #${snText(g)}`.toLowerCase().includes(needle));
     const dir = asc ? 1 : -1;
     return [...f].sort((a, b) => {
       if (sortBy === "left") return (a.n - b.n) * dir || a.g.sn - b.g.sn;
@@ -210,11 +211,11 @@ function UnplacedStrip({
             type="button"
             disabled={running}
             onPointerDown={(e) => onHold(g, e)}
-            title={`Part #${g.sn} ${g.name} — ${n} of ${g.qty} left to nest`}
+            title={`Part #${snText(g)} ${g.name} — ${n} of ${g.qty} left to nest`}
             style={{ touchAction: "none" }}
             className="flex w-[128px] shrink-0 cursor-grab select-none flex-col items-stretch gap-0.5 border-r border-border px-2 pb-1.5 pt-1 text-left hover:bg-primary/10 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <span className="truncate text-xs font-semibold">#{g.sn} {g.name}</span>
+            <span className="truncate text-xs font-semibold">#{snText(g)} {g.name}</span>
             <span className="text-[11px] tabular-nums text-muted-foreground">
               <span className="font-semibold text-primary">{n}</span> of {g.qty} left
             </span>
@@ -314,7 +315,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   // --- hover readout + measure tool ---------------------------------------------------------------
-  type HoverInfo = { sn: number; name: string; w: number; h: number; rot: number; area: number };
+  type HoverInfo = { sn: string; name: string; w: number; h: number; rot: number; area: number };
   const [hover, setHover] = React.useState<HoverInfo | null>(null);
   const [measureOn, setMeasureOn] = React.useState(false);
   const measureRef = React.useRef<{ a: Pt; b: Pt; done: boolean } | null>(null);
@@ -684,7 +685,7 @@ function SheetCanvas({ sheet, index, S, width, selRef, version, heldIdx, dragRef
               if (!it) setHover(null);
               else {
                 const b = bbox(sides(it).o);
-                const next = { sn: it.g.sn, name: it.g.name, w: b[2] - b[0], h: b[3] - b[1], rot: it.rot, area: it.g.area };
+                const next = { sn: snText(it.g), name: it.g.name, w: b[2] - b[0], h: b[3] - b[1], rot: it.rot, area: it.g.area };
                 setHover((p) => (p && p.sn === next.sn && Math.abs(p.w - next.w) < 1e-6 && Math.abs(p.h - next.h) < 1e-6 && p.rot === next.rot ? p : next));
               }
             }
@@ -1017,7 +1018,7 @@ export function NestBoost() {
   const [width, setWidth] = React.useState(600);
   // What is currently picked up — mirrored into state so the UI can render it
   // (the live selection itself stays in selRef because it is mutated per mouse move).
-  const [held, setHeld] = React.useState<{ idx: number; sn: number; name: string; bad: boolean; fresh: boolean; ghost: boolean } | null>(null);
+  const [held, setHeld] = React.useState<{ idx: number; sn: string; name: string; bad: boolean; fresh: boolean; ghost: boolean } | null>(null);
   const bump = React.useCallback(() => {
     // nothing in hand any more: refresh what is still left to place after a manual change
     const r = resultRef.current;
@@ -1046,7 +1047,7 @@ export function NestBoost() {
     setVersion((v) => v + 1);
     const s = selRef.current;
     const next = s
-      ? { idx: s.idx, sn: s.it.g.sn, name: s.it.g.name, bad: !!s.bad, fresh: !!s.fresh, ghost: inGhost(s) }
+      ? { idx: s.idx, sn: snText(s.it.g), name: s.it.g.name, bad: !!s.bad, fresh: !!s.fresh, ghost: inGhost(s) }
       : null;
     // keep the same object when nothing changed so mouse moves don't re-render the whole page
     setHeld((p) =>
@@ -1379,7 +1380,7 @@ export function NestBoost() {
     }
     const copy: Group = { ...gs[i], id: counters.current.id++, sn: ++counters.current.sn };
     setG([...gs.slice(0, i + 1), copy, ...gs.slice(i + 1)]);
-    setMsg(`Part #${gs[i].sn} duplicated as #${copy.sn} — set its own thickness / material / quantity.`);
+    setMsg(`Part #${snText(gs[i])} duplicated as #${copy.sn} — set its own thickness / material / quantity.`);
   };
 
   /** Duplicates several parts at once (each copy goes right under its original). */
@@ -1447,7 +1448,7 @@ export function NestBoost() {
     setG(groupsRef.current.map((x) => (x.id === id ? resizeGroup(x, w, h) : x)));
     if (wasPlaced) clearResults();
     setMsg(
-      `Part #${g.sn} resized from ${g.w.toFixed(1)} × ${g.h.toFixed(1)} to ${w} × ${h} mm.` +
+      `Part #${snText(g)} resized from ${g.w.toFixed(1)} × ${g.h.toFixed(1)} to ${w} × ${h} mm.` +
         (wasPlaced ? " The nest was cleared — press Optimize to re-nest." : ""),
     );
     flashRows([id]);
@@ -1498,10 +1499,10 @@ export function NestBoost() {
     const add = Math.max(1, Math.round(Number(mf.qty) || 1));
     setMsg(
       r.merged
-        ? `${row.name}: same part already in the list (#${row.sn}) — quantity is now ${row.qty}.`
-        : `${row.name} added as part #${row.sn} (${row.w.toFixed(1)} × ${row.h.toFixed(1)} mm, quantity ${add}).`,
+        ? `${row.name}: same part already in the list (#${snText(row)}) — quantity is now ${row.qty}.`
+        : `${row.name} added as part #${snText(row)} (${row.w.toFixed(1)} × ${row.h.toFixed(1)} mm, quantity ${add}).`,
     );
-    toast.success(r.merged ? `Quantity of #${row.sn} increased to ${row.qty}` : `Part #${row.sn} added — ${row.name}`);
+    toast.success(r.merged ? `Quantity of #${snText(row)} increased to ${row.qty}` : `Part #${snText(row)} added — ${row.name}`);
     flashRows([r.id]);
     if (keepOpen) setMf((f) => ({ ...f, name: "" }));
     else {
@@ -1521,7 +1522,7 @@ export function NestBoost() {
     clearResults();
     setMsg(
       gone.length === 1
-        ? `Part #${gone[0].sn} (${gone[0].name}) removed. Press Optimize to re-nest.`
+        ? `Part #${snText(gone[0])} (${gone[0].name}) removed. Press Optimize to re-nest.`
         : `${gone.length} parts removed. Press Optimize to re-nest.`,
     );
   };
@@ -1540,7 +1541,7 @@ export function NestBoost() {
     setSegGroup(null);
     setChecked(new Set());
     setMsg(
-      `Part #${parent.sn} (${parent.name}) split into ${r.children.length} parts × ${r.parent.qty} pc. ` +
+      `Part #${snText(parent)} (${parent.name}) split into ${r.children.length} parts × ${r.parent.qty} pc. ` +
         `The original stays in the list as Segmented; nest its pieces like any other part.`,
     );
     flashRows(r.children.map((c) => c.id));
@@ -1566,7 +1567,7 @@ export function NestBoost() {
     const hadPlaced = r.removedIds.some((id) => (placed.get(id) ?? 0) > 0);
     setG(r.groups);
     if (hadPlaced) clearResults();
-    setMsg(`Segmentation of part #${parent.sn} (${parent.name}) undone — ${r.removedIds.length} pieces removed.`);
+    setMsg(`Segmentation of part #${snText(parent)} (${parent.name}) undone — ${r.removedIds.length} pieces removed.`);
   };
 
   const resetAll = () => {
@@ -1655,7 +1656,7 @@ export function NestBoost() {
     }
     const left = leftOf(g, placedCounts(resultRef.current));
     if (left <= 0) {
-      toast.warning(`Part #${g.sn}: all ${g.qty} pc(s) are already on sheets`);
+      toast.warning(`Part #${snText(g)}: all ${g.qty} pc(s) are already on sheets`);
       bump();
       return;
     }
@@ -1796,7 +1797,7 @@ export function NestBoost() {
   function runSolo(s: { g: Group; c: typeof cfg }, replaceOk = false) {
     const g = groupsRef.current.find((x) => x.id === s.g.id) ?? s.g;
     if (leftOf(g, placedCounts(resultRef.current)) <= 0) {
-      toast.info(`All pieces of part #${g.sn} are already placed.`);
+      toast.info(`All pieces of part #${snText(g)} are already placed.`);
       return;
     }
     if (soloContinues(s.c)) {
@@ -2297,7 +2298,7 @@ export function NestBoost() {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" aria-label={`Actions for part #${g.sn}`} title="More actions">
+          <Button variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" aria-label={`Actions for part #${snText(g)}`} title="More actions">
             <MoreVertical />
           </Button>
         </DropdownMenuTrigger>
@@ -2345,7 +2346,7 @@ export function NestBoost() {
   };
   const rowChecked = (g: Group) => (
     <Checkbox
-      aria-label={`Select part #${g.sn}`}
+      aria-label={`Select part #${snText(g)}`}
       checked={checked.has(g.id)}
       onCheckedChange={(v) =>
         setChecked((prev) => {
@@ -2634,7 +2635,7 @@ export function NestBoost() {
                     {visible.map((g) => (
                       <tr key={g.id} data-part-row={g.id} className={`border-t border-border transition-colors duration-700 ${rowTint(g)}`}>
                         <td className="p-1">{rowChecked(g)}</td>
-                        <td className="p-1 font-semibold">#{g.sn}</td>
+                        <td className="p-1 font-semibold">#{snText(g)}</td>
                         <td className="p-1"><PartThumb g={g} /></td>
                         <td className="max-w-40 break-all p-1">
                           {g.seg?.role === "child" && <span className="mr-1 text-muted-foreground">↳</span>}
@@ -2646,9 +2647,9 @@ export function NestBoost() {
                         </td>
                         <td className="p-1 whitespace-nowrap">
                           <div className="flex items-center gap-1">
-                            <DimInput label={`Length of #${g.sn}`} value={g.w} onCommit={(v) => sizeGroup(g, "w", v)} />
+                            <DimInput label={`Length of #${snText(g)}`} value={g.w} onCommit={(v) => sizeGroup(g, "w", v)} />
                             <span className="text-muted-foreground">×</span>
-                            <DimInput label={`Width of #${g.sn}`} value={g.h} onCommit={(v) => sizeGroup(g, "h", v)} />
+                            <DimInput label={`Width of #${snText(g)}`} value={g.h} onCommit={(v) => sizeGroup(g, "h", v)} />
                           </div>
                         </td>
                         <td className="hidden p-1 2xl:table-cell">{Math.round(g.area)}</td>
@@ -2691,7 +2692,7 @@ export function NestBoost() {
                   <div key={g.id} data-part-row={g.id} className={`rounded-lg border border-border p-3 transition-colors duration-700 ${rowTint(g)}`}>
                     <div className="flex items-center gap-2">
                       {rowChecked(g)}
-                      <span className="text-sm font-semibold">#{g.sn}</span>
+                      <span className="text-sm font-semibold">#{snText(g)}</span>
                       <PartThumb g={g} />
                       <div className="min-w-0 flex-1 text-xs">
                         <div className="break-all font-medium">
@@ -2705,8 +2706,8 @@ export function NestBoost() {
                       </div>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-2">
-                      <Field label="Length (mm)"><DimInput label={`Length of #${g.sn}`} value={g.w} onCommit={(v) => sizeGroup(g, "w", v)} /></Field>
-                      <Field label="Width (mm)"><DimInput label={`Width of #${g.sn}`} value={g.h} onCommit={(v) => sizeGroup(g, "h", v)} /></Field>
+                      <Field label="Length (mm)"><DimInput label={`Length of #${snText(g)}`} value={g.w} onCommit={(v) => sizeGroup(g, "w", v)} /></Field>
+                      <Field label="Width (mm)"><DimInput label={`Width of #${snText(g)}`} value={g.h} onCommit={(v) => sizeGroup(g, "h", v)} /></Field>
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-2">
                       <Field label="Thick (mm)">{thInput(g)}</Field>
@@ -2778,7 +2779,7 @@ export function NestBoost() {
           )}
           {stillToPlace.length > 0 && result?.manual && (
             <p className="mb-2 text-xs text-muted-foreground">
-              Still to place: {stillToPlace.map(({ g, n }) => `#${g.sn} ×${n}`).join(" • ")}
+              Still to place: {stillToPlace.map(({ g, n }) => `#${snText(g)} ×${n}`).join(" • ")}
             </p>
           )}
           {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
@@ -3276,7 +3277,7 @@ export function NestBoost() {
                                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">New part</span>
                               ) : (
                                 <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-800" title="Same shape, thickness and material already in the list: its quantity goes up">
-                                  Adds to #{x.g.sn}
+                                  Adds to #{snText(x.g)}
                                 </span>
                               )}
                             </td>
@@ -3314,7 +3315,7 @@ export function NestBoost() {
           {solo && (
             <>
               <DialogHeader>
-                <DialogTitle>Nest part #{solo.g.sn} alone</DialogTitle>
+                <DialogTitle>Nest part #{snText(solo.g)} alone</DialogTitle>
                 <DialogDescription>
                   {solo.g.name} — {leftOf(solo.g, placed)} pcs left to nest. Only this part is nested, using the settings below (the page settings stay as they are).
                 </DialogDescription>

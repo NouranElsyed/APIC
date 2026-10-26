@@ -92,7 +92,7 @@ export function commitSegmentation(a: CommitArgs): CommitResult {
   const counters: Counters = { id: a.counters.id, sn: a.counters.sn };
   const planId = `P${parent.id}.${counters.id}`;
 
-  const children: Group[] = a.plan.segments.map((s) => {
+  const children: Group[] = a.plan.segments.map((s, i) => {
     const shape = regionToGroupShape(s.cut, a.tol ?? 0.1);
     return {
       id: counters.id++,
@@ -107,7 +107,7 @@ export function commitSegmentation(a: CommitArgs): CommitResult {
       h: shape.h,
       area: shape.area,
       per: shape.per,
-      seg: { role: "child", planId, parentId: parent.id, segId: s.id },
+      seg: { role: "child", planId, parentId: parent.id, segId: s.id, label: `${parent.sn}-${i + 1}` },
     };
   });
 

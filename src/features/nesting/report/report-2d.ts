@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { Group, OptResult, Settings } from "../nest-boost/engine";
+import { snText, type Group, type OptResult, type Settings } from "../nest-boost/engine";
 import { addImageAt, addKeyValues, addTable, addTitle, pct, round, sheetName, stamp, workbookToBlob, type Cell, type OverviewRow } from "./excel-common";
 
 /** Steel plate weight factor: kg per (m² · mm) — same constant as Standard Calculations. */
@@ -119,7 +119,7 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
 
   if (result.skip.length || result.un.length) {
     r = addTitle(ws, r, "Not nested / warnings", 12);
-    for (const g of result.un) ws.getCell(r++, 1).value = `#${g.sn} ${g.name} (${g.material || "—"}, ${g.th || "?"} mm) — ${result.manual ? "not placed on any sheet" : "could not be placed"}`;
+    for (const g of result.un) ws.getCell(r++, 1).value = `#${snText(g)} ${g.name} (${g.material || "—"}, ${g.th || "?"} mm) — ${result.manual ? "not placed on any sheet" : "could not be placed"}`;
     for (const m of result.skip) ws.getCell(r++, 1).value = m;
   }
 
@@ -163,7 +163,7 @@ export function add2DSheets(wb: ExcelJS.Workbook, input: Report2DInput, prefix =
       const p = placed.get(g.id) ?? 0;
       const areaEach = g.area / 1e6;
       return [
-        g.sn, g.name, g.material || "—", g.th || null, g.qty, p, Math.max(0, g.qty - p),
+        snText(g), g.name, g.material || "—", g.th || null, g.qty, p, Math.max(0, g.qty - p),
         round(areaEach, 4), round(areaEach * p), kg(areaEach * p, g.th),
         [...(onSheets.get(g.id) ?? [])].sort((a, b) => a - b).join(", "),
       ];

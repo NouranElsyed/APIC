@@ -16,6 +16,8 @@ export interface SegInfo {
   parentId?: number;
   /** child: id of the piece inside the plan, e.g. "S01" or "S02a". */
   segId?: string;
+  /** child: number shown in the list, "<original #>-<piece no>", e.g. "1-2". */
+  label?: string;
   /** parent: ids of the pieces, in segment order. */
   childIds?: number[];
   /** parent: the cuts and settings the pieces were made from (JSON), so the layout can be re-opened and edited. */
@@ -49,6 +51,9 @@ export interface Group {
   /** Set on a segmented original part and on the pieces generated from it. */
   seg?: SegInfo;
 }
+
+/** The part number as shown to the user: "3" for a normal part, "1-2" for the 2nd piece of segmented part #1. */
+export const snText = (g: Pick<Group, "sn" | "seg">): string => g.seg?.label ?? String(g.sn);
 
 export interface Item {
   g: Group;
@@ -1471,7 +1476,7 @@ export async function runOptimize(groups: Group[], o: OptimizeOptions): Promise<
   const base = o.base ?? null;
   const baseSheets = base ? base.sheets : [];
   const placedBefore = placedCounts(base);
-  const skip = groups.filter((g) => !g.qty && g.seg?.role !== "parent").map((g) => `Part #${g.sn} (${g.name}) was skipped: quantity is 0`);
+  const skip = groups.filter((g) => !g.qty && g.seg?.role !== "parent").map((g) => `Part #${snText(g)} (${g.name}) was skipped: quantity is 0`);
   const items: Group[] = [];
   groups.forEach((g) => {
     if (g.seg?.role === "parent") return; // segmented original: its pieces are nested instead
@@ -2375,7 +2380,7 @@ export function drawSheet(sh: Sheet, cv: HTMLCanvasElement, k: number, S: Settin
     c.font = `bold ${Math.max(9 * u, Math.min(16 * u, m / 3))}px system-ui, Arial, sans-serif`;
     const x = ((b[0] + b[2]) / 2) * k;
     const y = cv.height - ((b[1] + b[3]) / 2) * k;
-    const t = `#${it.g.sn}`;
+    const t = `#${snText(it.g)}`;
     c.lineWidth = 3 * u;
     c.strokeStyle = "#fff";
     c.strokeText(t, x, y);
@@ -2485,7 +2490,7 @@ export function problemMessages(res: OptResult, S: Settings): string[] {
     mp.set(g.sn, q);
   }
   mp.forEach(({ g, c }) =>
-    msgs.push(`Part #${g.sn} (${g.name}) — ${c} pc${c > 1 ? "s" : ""} NOT nested: ${whyNotNested(g, S)}`),
+    msgs.push(`Part #${snText(g)} (${g.name}) — ${c} pc${c > 1 ? "s" : ""} NOT nested: ${whyNotNested(g, S)}`),
   );
   return msgs;
 }
