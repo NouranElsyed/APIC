@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { ChevronDown, Download, FileSpreadsheet, FolderInput, Gauge, Info, Loader2, PackageCheck, Plus, Recycle, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { ChevronDown, Download, FileSpreadsheet, FolderInput, Gauge, Loader2, PackageCheck, Plus, Recycle, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -835,18 +835,6 @@ export function NestBoost1D() {
                 ))}
                 {result.problems.map((m, i) => (
                   <li key={`p${i}`}>{m}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {result && (result.notes?.length ?? 0) > 0 && (
-            <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
-              <div className="mb-1 flex items-center gap-2 font-semibold">
-                <Info className="h-4 w-4" /> Notes
-              </div>
-              <ul className="list-disc space-y-1 pl-5 text-xs">
-                {result.notes!.map((m, i) => (
-                  <li key={`n${i}`}>{m}</li>
                 ))}
               </ul>
             </div>
