@@ -180,7 +180,8 @@ export function PartsGrid({
     toast.success(
       [ids2D.length && `${ids2D.length} plate(s) → 2D`, ids1D.length && `${ids1D.length} part(s) → 1D`].filter(Boolean).join(", ") || "Nothing to send",
     );
-    router.push("/takeoff/nesting");
+    // only bars / pipes / profiles were sent: open the 1D workspace, otherwise the 2D one
+    router.push(ids1D.length && !ids2D.length ? "/takeoff/nesting?view=1d" : "/takeoff/nesting");
   }
   const nestableIds = parts.filter(isNestable).map((p) => p.id);
 

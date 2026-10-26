@@ -129,9 +129,11 @@ interface Props {
   onLoad: (n: SavedNest, sheetIdx?: number) => void;
   onDelete: (id: number) => void;
   onRename: (id: number, name: string) => void;
+  /** Render without its own card frame (when it already sits inside a tab / panel). */
+  bare?: boolean;
 }
 
-export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: Props) {
+export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename, bare }: Props) {
   const [picked, setPicked] = React.useState<Set<number>>(new Set());
   const [editing, setEditing] = React.useState<{ id: number; name: string } | null>(null);
   const [shown, setShown] = React.useState<Set<number>>(new Set()); // nests whose sheets are expanded
@@ -168,10 +170,12 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
     setEditing(null);
   };
 
+  const Wrapper: React.ElementType = bare ? "div" : Card;
+
   return (
-    <Card className="p-4">
+    <Wrapper {...(bare ? {} : { className: "p-4" })}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Saved nests ({nests.length})</h3>
+        <h3 className={bare ? "text-sm font-semibold" : "text-xs font-semibold uppercase tracking-wide text-muted-foreground"}>Saved nests ({nests.length})</h3>
         {nests.length > 1 && (
           <div className="flex gap-2">
             <Button variant="ghost" size="sm" className="h-7" onClick={() => setPicked(new Set(nests.map((n) => n.id)))}>
@@ -310,6 +314,6 @@ export function SavedNestsCard({ nests, activeId, onLoad, onDelete, onRename }: 
           )}
         </>
       )}
-    </Card>
+    </Wrapper>
   );
 }

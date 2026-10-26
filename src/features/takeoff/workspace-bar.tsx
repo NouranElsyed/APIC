@@ -227,7 +227,7 @@ export function WorkspaceBar() {
           : { title: "Save as project", description: "Creates a project with this name and copies everything into it (parts, settings, results). Your history entry stays as it is.", label: "Project name", initial: prompt.name, confirmLabel: "Save project" };
 
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+    <div className="space-y-2 rounded-xl border border-border bg-card p-3 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex min-w-0 items-end gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">

@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Download, FileSpreadsheet, FolderInput, Loader2, Plus, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { ChevronDown, Download, FileSpreadsheet, FolderInput, Gauge, Loader2, PackageCheck, Plus, Recycle, Ruler, Scissors, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -12,10 +12,11 @@ import { pieceColor, renderBarPng } from "../report/draw-1d";
 import { register1D } from "../report/report-store";
 import type { Report1DInput } from "../report/report-1d";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { EmptyPanel, KpiTile, PaneTabs, Panel, stepStates, WorkflowStepper, WorkspaceHeader, type WorkflowStep } from "../ui/workspace-ui";
 import {
   addPiece,
   addSource,
@@ -76,7 +77,7 @@ function BarStrip({ b, S }: { b: Bar; S: Settings1D }) {
   const st = barStats(b, S);
   const t = barTrims(b, S);
   return (
-    <div className="relative h-9 w-full overflow-hidden rounded border border-border bg-secondary">
+    <div className="relative h-10 w-full overflow-hidden rounded-md border border-border bg-secondary">
       <div className="absolute inset-y-0 left-0 bg-muted" style={{ width: `${(100 * t.left) / L}%` }} />
       <div className="absolute inset-y-0 right-0 bg-muted" style={{ width: `${(100 * t.right) / L}%` }} />
       {b.cuts.map((c, i) => (
@@ -91,7 +92,7 @@ function BarStrip({ b, S }: { b: Bar; S: Settings1D }) {
             borderLeft: "1px solid rgba(255,255,255,.6)",
           }}
         >
-          #{c.piece.sn}
+          {c.piece.length / L > 0.07 ? `#${c.piece.sn} · ${Math.round(c.piece.length)}` : `#${c.piece.sn}`}
         </div>
       ))}
       {st.isRemnant && st.rest > 0 && (
@@ -125,8 +126,14 @@ function LayoutCard({
   const L = bar.length ?? bar.sourceLength;
   const st = barStats(bar, S);
   const trimmed = bar.length !== undefined;
+  const legend = new Map<number, { piece: (typeof bar.cuts)[number]["piece"]; n: number }>();
+  for (const c of bar.cuts) {
+    const e = legend.get(c.piece.sn);
+    if (e) e.n++;
+    else legend.set(c.piece.sn, { piece: c.piece, n: 1 });
+  }
   return (
-    <div>
+    <div className="rounded-lg border border-border p-3">
       <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>
           <b className="text-foreground">
@@ -157,6 +164,17 @@ function LayoutCard({
         )}
       </div>
       <BarStrip b={bar} S={S} />
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        {[...legend.values()].map(({ piece, n }) => (
+          <span key={piece.sn} className="inline-flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: pieceColor(piece.sn) }} />
+            #{piece.sn} {piece.name} · {Math.round(piece.length)} mm × {n}
+          </span>
+        ))}
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2.5 w-2.5 rounded-sm bg-muted ring-1 ring-border" /> trim
+        </span>
+      </div>
     </div>
   );
 }
@@ -225,6 +243,9 @@ export function NestBoost1D() {
   const [resS, setResS] = React.useState<Settings1D | null>(null);
   const [status, setStatus] = React.useState("");
   const [confirmReset, setConfirmReset] = React.useState(false);
+  // Layout only: which tab of the left rail / of the lower panel is open (every tab stays mounted)
+  const [railTab, setRailTab] = React.useState<"import" | "settings">("import");
+  const [mainTab, setMainTab] = React.useState<"parts" | "stock">("parts");
   const [, bumpV] = React.useReducer((v: number) => v + 1, 0);
 
   /**
@@ -570,18 +591,60 @@ export function NestBoost1D() {
 
   const summary = result && resS ? overallStats(result, sources) : null;
 
+  // ---- workspace chrome (display only): workflow steps, header exports, result numbers
+  const stockOk = pieces.length > 0 && sources.length > 0 && sources.every((x) => x.length > 0);
+  const wfState = stepStates([pieces.length > 0, stockOk, !!result, false]);
+  const wfSteps: WorkflowStep[] = [
+    { label: "Import Parts", hint: pieces.length ? `${pieces.length} part row${pieces.length === 1 ? "" : "s"}` : "CSV, DXF or manual", state: wfState[0] },
+    { label: "Configure Stock", hint: stockOk ? `${sources.length} stock row${sources.length === 1 ? "" : "s"}` : sources.some((x) => !(x.length > 0)) ? "Enter the bar lengths" : "Stock lengths and cutting settings", state: wfState[1] },
+    { label: "Nest Parts", hint: result ? `${summary?.bars ?? 0} bar(s)` : pieces.length ? "Ready to run" : "After import", state: wfState[2] },
+    { label: "Review Results", hint: canExport ? "Cut list and report" : "After optimization", state: wfState[3] },
+  ];
+  const stockMissing = sources.some((x) => !(x.length > 0));
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(320px,420px)_1fr]">
-      <div className="space-y-4">
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import parts</h3>
-          <div className="mb-2">
-            {workspaceId ? (
-              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
-            ) : (
-              <p className="text-xs text-muted-foreground">No project selected — importing a CSV / DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
-            )}
-          </div>
+    <div className="space-y-4">
+      <WorkspaceHeader
+        icon={<Ruler className="h-5 w-5" />}
+        title="1D Nesting"
+        subtitle="Optimize the cutting of bars, pipes, angles and profiles."
+        actions={
+          <>
+            {workspaceId && <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button><Download /> Export <ChevronDown /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuItem disabled={!canExport} onSelect={() => result && resS && download("cut-list.txt", buildCutList(result, resS), "text/plain")}>
+                  <Download /> Cut list (.txt)
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={!canExport} onSelect={() => result && resS && download("cut-list.csv", buildCutListCsv(result, resS), "text/csv")}>
+                  <Download /> Cut list (.csv)
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={!canExport || reporting} onSelect={() => void exportReport()}>
+                  <FileSpreadsheet /> Excel report (.xlsx)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
+      <WorkflowStepper steps={wfSteps} />
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)] xl:items-start">
+        <aside className="min-w-0">
+          <div className="rounded-xl border border-border bg-card shadow-sm">
+            <PaneTabs
+              value={railTab}
+              onValueChange={(v) => setRailTab(v as "import" | "settings")}
+              listClassName="px-2 pt-1"
+              paneClassName="p-4"
+              tabs={[
+                { id: "import", label: "1 · Import parts", content: <div>
+          {!workspaceId && (
+            <p className="mb-3 rounded-lg bg-muted/40 p-2 text-xs text-muted-foreground">No project selected — importing a CSV / DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
+          )}
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}
@@ -619,10 +682,8 @@ export function NestBoost1D() {
           </Button>
           {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
           {importMsg && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{importMsg}</pre>}
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Settings</h3>
+                </div> },
+                { id: "settings", label: "2 · Cutting settings", content: <div>
           <div className="mb-1 text-[11px] font-semibold text-muted-foreground">Basic</div>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Saw kerf (mm)">
@@ -671,27 +732,138 @@ export function NestBoost1D() {
             <Input type="number" min={0} className="h-9" value={cfg.remnantMinLength} onChange={(e) => setCfg((c) => ({ ...c, remnantMinLength: e.target.value }))} />
           </Field>
 
-          <Button className="mt-3 w-full" onClick={start} disabled={!pieces.length}>
-            <Ruler /> Optimize cutting
-          </Button>
-          {status && <p className="mt-2 text-xs text-destructive">{status}</p>}
-        </Card>
-      </div>
+                </div> },
+              ]}
+            />
+            <div className="sticky bottom-0 z-10 space-y-2 rounded-b-xl border-t border-border bg-muted p-3">
+              <Button className="w-full" onClick={start} disabled={!pieces.length}>
+                <Ruler /> Optimize cutting
+              </Button>
+              {status && <p className="text-xs text-destructive" role="alert">{status}</p>}
+            </div>
+          </div>
+        </aside>
 
-      <div className="space-y-4">
-        <Card
-          className="p-4"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const dropped = Array.from(e.dataTransfer.files);
-            const dxf = dropped.filter((f) => /\.dxf$/i.test(f.name));
-            if (dxf.length) handleDxf(dxf);
-            else handleCsv(dropped.filter((f) => /\.csv$/i.test(f.name)));
-          }}
-        >
+        <div className="min-w-0 space-y-4">
+          <Panel
+            title="Nesting preview"
+            meta={result ? `${result.layouts.length} layout(s)` : undefined}
+            actions={
+              <>
+                <Button variant="secondary" size="sm" disabled={!canExport} onClick={() => result && resS && download("cut-list.txt", buildCutList(result, resS), "text/plain")}>
+                  <Download /> Cut list (.txt)
+                </Button>
+                <Button variant="secondary" size="sm" disabled={!canExport} onClick={() => result && resS && download("cut-list.csv", buildCutListCsv(result, resS), "text/csv")}>
+                  <Download /> Cut list (.csv)
+                </Button>
+              </>
+            }
+          >
+            {!result || !resS ? (
+              <EmptyPanel
+                icon={<Ruler />}
+                title={pieces.length ? "Ready to cut" : "No parts yet"}
+                actions={
+                  pieces.length ? (
+                    <Button onClick={start}><Ruler /> Optimize cutting</Button>
+                  ) : (
+                    <Button onClick={() => setRailTab("import")}><Upload /> Import parts</Button>
+                  )
+                }
+              >
+                {pieces.length
+                  ? "Check the stock lengths, then press Optimize cutting."
+                  : "Import a CSV or DXF files, take the bars of a project, or add a part by hand in the Parts tab below. Then add the stock lengths and press Optimize cutting."}
+              </EmptyPanel>
+            ) : (
+              <div className="space-y-4">
+                {summary && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                      <KpiTile icon={<Ruler />} label="Bars required" value={summary.bars} hint={`${summary.layouts} layout${summary.layouts === 1 ? "" : "s"}`} />
+                      <KpiTile tone="success" icon={<Gauge />} label="Material utilization" value={`${summary.yieldPct.toFixed(1)}%`} progress={summary.yieldPct} />
+                      <KpiTile tone="violet" icon={<Recycle />} label="Waste" value={`${Math.max(0, 100 - summary.yieldPct).toFixed(1)}%`} hint="of the total bar length" />
+                      <KpiTile icon={<PackageCheck />} label="Parts cut" value={summary.cutParts} />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-muted/30 p-3">
+                      <Stat label="Layouts" value={String(summary.layouts)} />
+                      <Stat label="Total bar length" value={`${summary.totalBarLength.toLocaleString()} mm`} />
+                      <Stat label="Total cost" value={summary.totalCost > 0 ? summary.totalCost.toLocaleString() : "—"} />
+                    </div>
+                  </>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  <Scissors className="mr-1 inline h-3 w-3" />
+                  {result.layouts.length} distinct layout(s), {summary?.bars ?? 0} bar(s) total.
+                </p>
+                {result.layouts.map((l, i) => (
+                  <LayoutCard
+                    key={i}
+                    index={i}
+                    bar={l.bars[0]}
+                    repeat={l.repeat}
+                    S={resS}
+                    onResize={(len) => {
+                      l.bars.forEach((b) => resizeBar(b, resS, len));
+                      bumpV();
+                    }}
+                    onReset={() => {
+                      l.bars.forEach((b) => {
+                        b.length = undefined;
+                      });
+                      bumpV();
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+            {canExport && (
+              <div className="mt-4 flex justify-end border-t border-border pt-3">
+                <Button onClick={exportReport} disabled={reporting} title="Excel report: bars used, scrap, parts cut, cut list and a picture of every layout">
+                  {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
+                </Button>
+              </div>
+            )}
+          {result && (result.skip.length > 0 || result.problems.length > 0) && (
+            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <div className="mb-1 flex items-center gap-2 font-semibold">
+                <TriangleAlert className="h-4 w-4" /> Problems
+              </div>
+              <ul className="list-disc space-y-1 pl-5 text-xs">
+                {result.skip.map((m, i) => (
+                  <li key={`s${i}`}>{m}</li>
+                ))}
+                {result.problems.map((m, i) => (
+                  <li key={`p${i}`}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          </Panel>
+
+          <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+            <PaneTabs
+              value={mainTab}
+              onValueChange={(v) => setMainTab(v as "parts" | "stock")}
+              listClassName="px-2 pt-1"
+              paneClassName="p-3 sm:p-4"
+              tabs={[
+                {
+                  id: "parts",
+                  label: <>Parts &amp; quantities{pieces.length > 0 && <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{pieces.length}</span>}</>,
+                  content: (
+                    <div
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const dropped = Array.from(e.dataTransfer.files);
+                        const dxf = dropped.filter((f) => /\.dxf$/i.test(f.name));
+                        if (dxf.length) handleDxf(dxf);
+                        else handleCsv(dropped.filter((f) => /\.csv$/i.test(f.name)));
+                      }}
+                    >
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parts &amp; quantities</h3>
+            <h3 className="sr-only">Parts &amp; quantities</h3>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-muted-foreground">DXF as</span>
               <TypeSelect value={dxfType} onChange={setDxfType} />
@@ -798,12 +970,16 @@ export function NestBoost1D() {
               </table>
           </div>
           {status && <p className="mt-2 text-xs text-destructive">{status}</p>}
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sources</h3>
+                    </div>
+                  ),
+                },
+                {
+                  id: "stock",
+                  label: <>Stock (sources){sources.length > 0 && <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${stockMissing ? "bg-amber-100 text-amber-800" : "bg-muted text-muted-foreground"}`}>{stockMissing ? "length needed" : sources.length}</span>}</>,
+                  content: (
+                    <div>
           {!sources.length ? (
-            <p className="text-sm text-muted-foreground">No sources yet — they are added automatically when you add or import parts, or add them by hand below.</p>
+            <p className="rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">No stock yet — it is added automatically when you add or import parts, or add it by hand below.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
@@ -895,82 +1071,13 @@ export function NestBoost1D() {
             <datalist id="src-profiles">{[...new Set(pieces.map((p) => p.profile).filter(Boolean))].map((v) => <option key={v} value={v} />)}</datalist>
             <datalist id="src-materials">{[...new Set(pieces.map((p) => p.material).filter(Boolean))].map((v) => <option key={v} value={v} />)}</datalist>
           </div>
-        </Card>
-
-        <Card className="p-4">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Results</h3>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" disabled={!canExport} onClick={() => result && resS && download("cut-list.txt", buildCutList(result, resS), "text/plain")}>
-                <Download /> Cut list (.txt)
-              </Button>
-              <Button variant="secondary" size="sm" disabled={!canExport} onClick={() => result && resS && download("cut-list.csv", buildCutListCsv(result, resS), "text/csv")}>
-                <Download /> Cut list (.csv)
-              </Button>
-            </div>
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </div>
-          {!result || !resS ? (
-            <p className="text-sm text-muted-foreground">Add parts and sources, then press Optimize cutting.</p>
-          ) : (
-            <div className="space-y-4">
-              {summary && (
-                <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-secondary/40 p-3 sm:grid-cols-6">
-                  <Stat label="Yield" value={`${summary.yieldPct.toFixed(1)}%`} />
-                  <Stat label="Bars used" value={String(summary.bars)} />
-                  <Stat label="Layouts" value={String(summary.layouts)} />
-                  <Stat label="Cut parts" value={String(summary.cutParts)} />
-                  <Stat label="Total bar length" value={`${summary.totalBarLength.toLocaleString()} mm`} />
-                  <Stat label="Total cost" value={summary.totalCost > 0 ? summary.totalCost.toLocaleString() : "—"} />
-                </div>
-              )}
-              <p className="text-xs text-muted-foreground">
-                <Scissors className="mr-1 inline h-3 w-3" />
-                {result.layouts.length} distinct layout(s), {summary?.bars ?? 0} bar(s) total.
-              </p>
-              {result.layouts.map((l, i) => (
-                <LayoutCard
-                  key={i}
-                  index={i}
-                  bar={l.bars[0]}
-                  repeat={l.repeat}
-                  S={resS}
-                  onResize={(len) => {
-                    l.bars.forEach((b) => resizeBar(b, resS, len));
-                    bumpV();
-                  }}
-                  onReset={() => {
-                    l.bars.forEach((b) => {
-                      b.length = undefined;
-                    });
-                    bumpV();
-                  }}
-                />
-              ))}
-            </div>
-          )}
-          {canExport && (
-            <div className="mt-4 flex justify-end border-t border-border pt-3">
-              <Button onClick={exportReport} disabled={reporting} title="Excel report: bars used, scrap, parts cut, cut list and a picture of every layout">
-                {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
-              </Button>
-            </div>
-          )}
-          {result && (result.skip.length > 0 || result.problems.length > 0) && (
-            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-              <div className="mb-1 flex items-center gap-2 font-semibold">
-                <TriangleAlert className="h-4 w-4" /> Problems
-              </div>
-              <ul className="list-disc space-y-1 pl-5 text-xs">
-                {result.skip.map((m, i) => (
-                  <li key={`s${i}`}>{m}</li>
-                ))}
-                {result.problems.map((m, i) => (
-                  <li key={`p${i}`}>{m}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </Card>
+        </div>
       </div>
 
       <ConfirmDialog

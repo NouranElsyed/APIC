@@ -1,12 +1,11 @@
 "use client";
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, FileSpreadsheet, FolderInput, Layers, Loader2, Maximize2, Minimize2, MoreVertical, Plus, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, Eye, FileSpreadsheet, FolderInput, Gauge, Layers, Loader2, Maximize2, Minimize2, MoreVertical, PackageCheck, Plus, Recycle, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -19,6 +18,7 @@ import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type NestCfg, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
+import { EmptyPanel, KpiTile, PaneTabs, Panel, stepStates, WorkflowStepper, WorkspaceHeader, type WorkflowStep } from "../ui/workspace-ui";
 import { classifyAll, type FitResult } from "../segmentation/fit";
 import { SegmentDialog } from "../segmentation/segment-dialog";
 import { childrenOf, commitSegmentation, expandRemoval, patchGroup, removeSegmentation } from "../segmentation/commit";
@@ -1033,7 +1033,7 @@ type ImportPreview = {
   rows: ImportPreviewRow[];
 };
 
-export function NestBoost() {
+export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const { projectId, nestingQueue, clearNestingQueue, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
@@ -1060,6 +1060,9 @@ export function NestBoost() {
   });
   const [running, setRunning] = React.useState(false);
   const [status, setStatus] = React.useState("");
+  // Layout only: which tab of the left rail / of the lower panel is open (every tab stays mounted)
+  const [railTab, setRailTab] = React.useState<"import" | "settings">("import");
+  const [mainTab, setMainTab] = React.useState<"parts" | "saved">("parts");
   const [result, setResult] = React.useState<OptResult | null>(null);
   const [resS, setResS] = React.useState<Settings | null>(null);
   const [version, setVersion] = React.useState(0);
@@ -2091,6 +2094,7 @@ export function NestBoost() {
   );
 
   React.useEffect(() => {
+    if (!active) return; // the workspace is hidden (1D is open): Ctrl+Z / Ctrl+Y belong to the visible one
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       // let text fields keep their own undo
@@ -2106,7 +2110,7 @@ export function NestBoost() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stepHistory]);
+  }, [stepHistory, active]);
 
   // keyboard while a part is picked up
   React.useEffect(() => {
@@ -2265,7 +2269,15 @@ export function NestBoost() {
   );
 
   const actionBar = (
-          <div className="mb-2 min-h-[6.5rem]">
+          <div className={`mb-2 ${result ? "min-h-[6.5rem]" : ""}`}>
+          {result && !held && multiCount === 0 && (
+            <p className="flex items-start gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-2 text-xs text-muted-foreground">
+              <Layers className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Pick a part up on a sheet to move or rotate it, or drag a box around several parts to select them. Ctrl+Z / Ctrl+Y undo and redo.
+              </span>
+            </p>
+          )}
           {!held && multiCount > 0 && (
             <div className="flex min-h-[6.5rem] flex-wrap content-start items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/5 p-2">
               <span className="text-xs font-medium">{multiCount} part{multiCount > 1 ? "s" : ""} selected</span>
@@ -2519,18 +2531,80 @@ export function NestBoost() {
     );
   };
 
+  // ---- workspace chrome (display only): workflow steps and the result numbers
+  const wfCfgOk = Number(cfg.W) > 0 && Number(cfg.H) > 0;
+  const wfNested = !!result && result.sheets.length > 0;
+  const wfState = stepStates([groups.length > 0, groups.length > 0 && wfCfgOk, wfNested, false]);
+  const wfSteps: WorkflowStep[] = [
+    { label: "Import Parts", hint: groups.length ? `${groups.length} part row${groups.length === 1 ? "" : "s"}` : "DXF, dimensions or project", state: wfState[0] },
+    { label: "Configure Sheet", hint: wfCfgOk ? `${cfg.W} × ${cfg.H} mm` : "Check the sheet size", state: wfState[1] },
+    { label: "Nest Parts", hint: running ? "Optimizing…" : wfNested ? `${result?.sheets.length} sheet(s)` : groups.length ? "Ready to run" : "After import", state: wfState[2] },
+    { label: "Review Results", hint: wfNested ? "Save and export" : "After optimization", state: wfState[3] },
+  ];
+  const kpi = (() => {
+    if (!result || !resS || !result.sheets.length) return null;
+    let usedA = 0;
+    let sheetA = 0;
+    let partsOn = 0;
+    for (const sh of result.sheets) {
+      const st = sheetStats(sh, resS);
+      const w = sh.W ?? resS.W;
+      const h = sh.H ?? resS.H;
+      sheetA += w * h;
+      usedA += (st.utilization / 100) * w * h;
+      partsOn += st.parts;
+    }
+    const util = sheetA > 0 ? (100 * usedA) / sheetA : 0;
+    return { sheets: result.sheets.length, util, waste: Math.max(0, 100 - util), parts: partsOn, left: stillToPlace.reduce((n, x) => n + x.n, 0) };
+  })();
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(300px,380px)_1fr]">
-      <div className="space-y-4">
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">1. Import</h3>
-          <div className="mb-2">
-            {workspaceId ? (
-              <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />
-            ) : (
-              <p className="text-xs text-muted-foreground">No project selected — importing a DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
-            )}
-          </div>
+    <div className="space-y-4">
+      <WorkspaceHeader
+        icon={<Layers className="h-5 w-5" />}
+        title="DXF Nesting"
+        subtitle="Optimize your parts layout on sheets, save material and reduce waste."
+        actions={
+          <>
+            {workspaceId && <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />}
+            <Button variant="outline" onClick={saveNest} disabled={!canExport || !!held} title="Keep this nest so you can try another one and compare them">
+              <Save /> Save nest
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button><Download /> Export <ChevronDown /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuItem disabled={!canExport} onSelect={() => exportDxf()}>
+                  <Download /> Export DXF
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={!canExport || reporting} onSelect={() => void exportReport()}>
+                  <FileSpreadsheet /> Excel report (.xlsx)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
+      <WorkflowStepper steps={wfSteps} />
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)] xl:items-start">
+        <aside className="min-w-0">
+          <div className="rounded-xl border border-border bg-card shadow-sm">
+            <PaneTabs
+              value={railTab}
+              onValueChange={(v) => setRailTab(v as "import" | "settings")}
+              listClassName="px-2 pt-1"
+              paneClassName="p-4"
+              tabs={[
+                {
+                  id: "import",
+                  label: "1 · Import parts",
+                  content: (
+                    <div>
+          {!workspaceId && (
+            <p className="mb-3 rounded-lg bg-muted/40 p-2 text-xs text-muted-foreground">No project selected — importing a DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
+          )}
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-5 text-center text-sm text-muted-foreground hover:bg-secondary"
             onDragOver={(e) => e.preventDefault()}
@@ -2594,36 +2668,376 @@ export function NestBoost() {
             </Field>
           </div>
           <p className="mt-2 whitespace-pre-line text-xs text-muted-foreground">{msg}</p>
-        </Card>
+                    </div>
+                  ),
+                },
+                { id: "settings", label: "2 · Sheet & settings", content: settingsGrid },
+              ]}
+            />
+            <div className="sticky bottom-0 z-10 space-y-2 rounded-b-xl border-t border-border bg-muted p-3">
+              <div className="flex gap-2">
+                <Button className="flex-1" onClick={() => runMain()} disabled={running || !groups.length}>
+                  {running ? <Loader2 className="animate-spin" /> : <Layers />} Optimize nest
+                </Button>
+                <Button variant="secondary" onClick={() => (stopRef.current = true)} disabled={!running}>
+                  Stop
+                </Button>
+              </div>
+              <Button variant="outline" className="w-full" onClick={exportDxf} disabled={!canExport}>
+                <Download /> Export DXF
+              </Button>
+              {status && <p className="text-xs text-muted-foreground">{status}</p>}
+            </div>
+          </div>
+        </aside>
 
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">2. Sheet &amp; settings</h3>
-          {settingsGrid}
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button
-              onClick={() => runMain()}
-              disabled={running || !groups.length}
-            >
-              <Layers /> Optimize nest
+        <div className="min-w-0 space-y-4">
+          <Panel title="Nesting preview" meta={result?.sheets.length ? `${result.sheets.length} sheet(s)` : undefined}>
+          {running && (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2 text-xs" role="status">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+              <span className="font-semibold">Optimizing…</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">{status}</span>
+              <Button variant="secondary" size="sm" className="h-7" onClick={() => (stopRef.current = true)}>Stop</Button>
+            </div>
+          )}
+          {groups.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 p-2">
+              <span className="text-xs font-semibold">Manual nesting</span>
+              <select className={`${selectCls} !w-auto`} value={lotKey} onChange={(e) => setLotSel(e.target.value)} disabled={running}>
+                {lots.map((l) => (
+                  <option key={l.key} value={l.key}>{l.label}</option>
+                ))}
+              </select>
+              <Button variant="secondary" size="sm" onClick={addSheet} disabled={running || !lots.length}>
+                <Plus /> Add empty sheet
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => stepHistory("undo")}
+                disabled={running || !!held || carrying || !(hist.res === result && hist.undo)}
+                title="Undo the last change to the nest (Ctrl+Z)"
+              >
+                <Undo2 /> Undo
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => stepHistory("redo")}
+                disabled={running || !!held || carrying || !(hist.res === result && hist.redo)}
+                title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+              >
+                <Redo2 /> Redo
+              </Button>
+              <Button
+                variant={selectMode ? "default" : "outline"}
+                size="sm"
+                onClick={() => setSelectMode((v) => !v)}
+                title="Touch screens: when on, dragging on a sheet draws a selection box instead of scrolling the page"
+              >
+                Touch select {selectMode ? "on" : "off"}
+              </Button>
+              <Button
+                variant={angleSound ? "default" : "outline"}
+                size="sm"
+                onClick={() => setAngleSound((v) => !v)}
+                title="Rotation stops with a click (and a vibration on phones) at every 45° — 0, 45, 90, 135 ... — and the angle badge turns green"
+              >
+                Angle click {angleSound ? "on" : "off"}
+              </Button>
+              <span className="basis-full text-[11px] text-muted-foreground">
+                Press a part in the table (&quot;Left / place by hand&quot;) and drop it on a sheet. When its count reaches 0 it can&apos;t be taken again;
+                put a piece back with Delete to free it.
+              </span>
+            </div>
+          )}
+          {!!result && fs === null && stillToPlace.length > 0 && (
+            <UnplacedStrip items={stillToPlace} running={running} onHold={holdFromList} />
+          )}
+          {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
+          {actionBar}
+          {result && resS && (
+            <div className="mb-2 flex items-center gap-1 text-xs text-muted-foreground">
+              Sheet view
+              <Button variant={sheetView === "stack" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("stack")} title="Show every sheet under each other">
+                All sheets
+              </Button>
+              <Button variant={sheetView === "strip" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("strip")} title="Show a strip of sheet pictures (like TruTops) and open one sheet at a time">
+                Sheet strip
+              </Button>
+            </div>
+          )}
+          {result && resS && sheetView === "strip" && (
+            <SheetStrip
+              sheets={result.sheets} S={resS} version={version} active={act}
+              onSelect={setActiveSheet}
+              canAdd={!running && !!lots.length}
+              onAdd={() => {
+                const n = sheetCount;
+                addSheet();
+                setActiveSheet(n);
+              }}
+            />
+          )}
+          <div ref={boxRef} className="space-y-4">
+            {!result || !resS ? (
+              <EmptyPanel
+                icon={<Layers />}
+                title={groups.length ? "Ready to nest" : "No parts yet"}
+                actions={
+                  groups.length ? (
+                    <Button onClick={() => runMain()} disabled={running}><Layers /> Optimize nest</Button>
+                  ) : (
+                    <>
+                      <Button onClick={() => setRailTab("import")}><Upload /> Import DXF</Button>
+                      <Button variant="outline" onClick={() => setManualOpen(true)}><Shapes /> Add part by dimensions</Button>
+                    </>
+                  )
+                }
+              >
+                {groups.length
+                  ? "Press Optimize nest — or press a part in the table (“Left / place by hand”) and drop it on a sheet to nest it by hand."
+                  : "Import DXF files, add a part by its dimensions or take the plates of a project. Then press Optimize nest — or nest the parts by hand."}
+              </EmptyPanel>
+            ) : (
+              result.sheets.map((sh, i) => {
+                if (sheetView === "strip" && fs !== i && i !== act) return null; // strip mode: only the selected sheet is open
+                const st = sheetStats(sh, resS);
+                const node = (
+                  <div key={i} id={`nest-sheet-${i}`} className={fs === i ? "fixed inset-0 z-[45] flex h-dvh flex-col overflow-hidden bg-background p-3" : undefined}>
+                    <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
+                        {st.parts} parts • utilization {st.utilization.toFixed(1)}%
+                      </span>
+                      <span className="flex items-center gap-1">
+                        Cut size
+                        <CutSizeInput
+                          value={Math.round(sh.W ?? resS.W)}
+                          max={Math.round(sh.stockW ?? resS.W)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, v, sh.H ?? resS.H);
+                            bump();
+                          }}
+                        />
+                        ×
+                        <CutSizeInput
+                          value={Math.round(sh.H ?? resS.H)}
+                          max={Math.round(sh.stockH ?? resS.H)}
+                          onCommit={(v) => {
+                            resizeSheet(sh, resS, sh.W ?? resS.W, v);
+                            bump();
+                          }}
+                        />
+                        mm
+                      </span>
+                      <span className="inline-flex items-center gap-0.5">
+                        <span className="text-xs text-muted-foreground">Fit to parts:</span>
+                        {([
+                          ["width", "Width", "Trim only the sheet width (W) down to its parts; the height stays as it is"],
+                          ["height", "Height", "Trim only the sheet height (H) down to its parts; the width stays as it is"],
+                          ["both", "Both", "Trim both width and height down to its parts, to cut less material / less scrap"],
+                        ] as const).map(([dir, label, tip]) => (
+                          <Button
+                            key={dir}
+                            variant="ghost" size="sm" className="h-7 px-2"
+                            title={tip}
+                            onClick={() => {
+                              fitSheetToParts(sh, resS, dir);
+                              bump();
+                            }}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </span>
+                      {fs === i && (
+                        <span className="inline-flex items-center gap-1">
+                          <Button
+                            size="sm" className="h-7"
+                            disabled={running || !groups.length || !!held}
+                            title="Run the optimiser (uses the settings from the page)"
+                            onClick={() => runMain()}
+                          >
+                            {running ? <Loader2 className="animate-spin" /> : <Layers />} Optimize nest
+                          </Button>
+                          <Button variant="secondary" size="sm" className="h-7" disabled={!running} onClick={() => (stopRef.current = true)}>
+                            Stop
+                          </Button>
+                          <Button variant="outline" size="sm" className="h-7" onClick={() => setSettingsOpen(true)} title="Sheet size, margin, spacing, rotation and optimize time">
+                            <SlidersHorizontal /> Settings
+                          </Button>
+                          <Button variant="outline" size="sm" className="h-7" disabled={!canExport || !!held} onClick={saveNest} title="Keep this nest so you can try another one and compare them">
+                            <Save /> Save nest
+                          </Button>
+                          {status && <span className="max-w-[28ch] truncate" title={status}>{status}</span>}
+                        </span>
+                      )}
+                      {sh.items.length > 0 && (
+                        <Button
+                          variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held || running}
+                          title="Take every part off this sheet and give them back to the list"
+                          onClick={() => setPendingClear(i)}
+                        >
+                          <Trash2 /> Clear sheet
+                        </Button>
+                      )}
+                      {sh.items.length === 0 && (
+                        <Button variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held} onClick={() => deleteSheet(i)}>
+                          <Trash2 /> Delete empty sheet
+                        </Button>
+                      )}
+                      {(sh.W !== undefined || sh.H !== undefined) && (
+                        <Button
+                          variant="ghost" size="sm" className="h-7"
+                          onClick={() => {
+                            sh.W = undefined;
+                            sh.H = undefined;
+                            bump();
+                          }}
+                        >
+                          Reset to full sheet
+                        </Button>
+                      )}
+                      {fs === i && result.sheets.length > 1 && (
+                        <span className="ml-auto inline-flex items-center gap-1">
+                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === 0} title="Previous sheet (← / ↑)" onClick={() => setFsIdx(i - 1)}>
+                            <ChevronLeft />
+                          </Button>
+                          <span className="tabular-nums">{i + 1} / {result.sheets.length}</span>
+                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === result.sheets.length - 1} title="Next sheet (→ / ↓)" onClick={() => setFsIdx(i + 1)}>
+                            <ChevronRight />
+                          </Button>
+                        </span>
+                      )}
+                      <Button
+                        variant="ghost" size="sm" className={fs === i && result.sheets.length > 1 ? "h-7" : "ml-auto h-7"}
+                        title={fs === i ? "Back to the page (Esc)" : "Fill the whole window with this sheet"}
+                        onClick={() => setFsIdx(fs === i ? null : i)}
+                      >
+                        {fs === i ? <Minimize2 /> : <Maximize2 />} {fs === i ? "Exit full screen" : "Full screen"}
+                      </Button>
+                    </div>
+                    {fs === i && <div className="mb-2 shrink-0">{actionBar}</div>}
+                    {fs === i && stillToPlace.length > 0 && (
+                      <UnplacedStrip items={stillToPlace} running={running} onHold={holdFromList} />
+                    )}
+                    <div
+                      ref={fs === i ? fsBoxRef : undefined}
+                      className={fs === i ? "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]" : undefined}
+                    >
+                      <SheetCanvas sheet={sh} index={i} S={resS} width={fs === i ? fsWidth : width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} dragRef={dragRef} multiRef={multiRef} selectMode={selectMode} fullscreen={fs === i} onChange={bump} />
+                    </div>
+                  </div>
+                );
+                // fullscreen is rendered straight into <body> so no parent (sidebar, transforms, overflow) can clip or cover it
+                return fs === i && typeof document !== "undefined" ? createPortal(node, document.body, `fs-${i}`) : node;
+              })
+            )}
+          </div>
+          {kpi && result && resS && (
+            <>
+              <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <KpiTile icon={<Layers />} label="Sheets required" value={kpi.sheets} hint={kpi.sheets === 1 ? "sheet in this nest" : "sheets in this nest"} />
+                <KpiTile tone="success" icon={<Gauge />} label="Material utilization" value={`${kpi.util.toFixed(1)}%`} progress={kpi.util} />
+                <KpiTile tone="violet" icon={<Recycle />} label="Waste" value={`${kpi.waste.toFixed(1)}%`} hint="unused sheet area" />
+                <KpiTile tone={kpi.left > 0 ? "warning" : "primary"} icon={<PackageCheck />} label="Parts placed" value={kpi.parts} hint={kpi.left > 0 ? `${kpi.left} left to place` : "nothing left to place"} />
+              </div>
+              <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+                <table className="w-full border-collapse text-xs">
+                  <thead className="bg-muted/40 text-left text-muted-foreground">
+                    <tr>
+                      <th className="p-2">Sheet</th>
+                      <th className="p-2">Material</th>
+                      <th className="p-2">Size (mm)</th>
+                      <th className="p-2">Parts</th>
+                      <th className="p-2">Utilization</th>
+                      <th className="p-2">Waste</th>
+                      <th className="p-2 text-right">View</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.sheets.map((sh, i) => {
+                      const st = sheetStats(sh, resS);
+                      return (
+                        <tr key={i} className="border-t border-border">
+                          <td className="p-2 font-semibold">{i + 1}</td>
+                          <td className="p-2">{[sh.material, sh.th ? `${sh.th} mm` : ""].filter(Boolean).join(" • ") || "—"}</td>
+                          <td className="p-2 whitespace-nowrap tabular-nums">{Math.round(sh.W ?? resS.W)} × {Math.round(sh.H ?? resS.H)}</td>
+                          <td className="p-2 tabular-nums">{st.parts}</td>
+                          <td className="p-2">
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, st.utilization)}%` }} /></div>
+                              <span className="tabular-nums">{st.utilization.toFixed(1)}%</span>
+                            </div>
+                          </td>
+                          <td className="p-2 tabular-nums">{Math.max(0, 100 - st.utilization).toFixed(1)}%</td>
+                          <td className="p-2 text-right whitespace-nowrap">
+                            <Button
+                              variant="ghost" size="sm" className="h-7 px-2" title="Show this sheet"
+                              onClick={() => {
+                                if (sheetView === "strip") setActiveSheet(i);
+                                else document.getElementById(`nest-sheet-${i}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                              }}
+                            >
+                              <Eye /> Show
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-7 px-2" title="Fill the whole window with this sheet" aria-label={`Full screen sheet ${i + 1}`} onClick={() => setFsIdx(i)}>
+                              <Maximize2 />
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
+            <Input
+              className="h-9 w-44" placeholder="Name (optional)" value={nestName}
+              onChange={(e) => setNestName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && canExport) saveNest(); }}
+              disabled={!canExport}
+            />
+            <Button variant="secondary" onClick={saveNest} disabled={!canExport} title="Keep this nest so you can try another one and compare them">
+              <Save /> Save this nest
             </Button>
-            <Button variant="secondary" onClick={() => (stopRef.current = true)} disabled={!running}>
-              Stop
-            </Button>
-            <Button variant="secondary" onClick={exportDxf} disabled={!canExport}>
-              <Download /> Export DXF
+            <Button onClick={exportReport} disabled={!canExport || reporting} title="Excel report: material used, scrap, parts nested and a picture of every sheet">
+              {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
             </Button>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">{status}</p>
-        </Card>
-      </div>
+          {problems.length > 0 && (
+            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <div className="mb-1 flex items-center gap-2 font-semibold">
+                <TriangleAlert className="h-4 w-4" /> Nesting problems
+              </div>
+              <ul className="list-disc space-y-1 pl-5 text-xs">
+                {problems.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          </Panel>
 
-      <div className="min-w-0 space-y-4">
-        <Card className="p-3 sm:p-4">
+          <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+            <PaneTabs
+              value={mainTab}
+              onValueChange={(v) => setMainTab(v as "parts" | "saved")}
+              listClassName="px-2 pt-1"
+              paneClassName="p-3 sm:p-4"
+              tabs={[
+                {
+                  id: "parts",
+                  label: <>Parts &amp; quantities{groups.length > 0 && <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{groups.length}</span>}</>,
+                  content: (
+                    <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Parts &amp; quantities
+            <h3 className="text-sm font-semibold">
+              <span className="sr-only">Parts &amp; quantities</span>
               {groups.length > 0 && (
-                <span className="ml-2 font-normal normal-case tracking-normal">
+                <span className="font-normal normal-case tracking-normal text-muted-foreground">
                   {filtersOn ? `${visible.length} of ${groups.length} shown` : `${groups.length} part(s)`}
                 </span>
               )}
@@ -2845,266 +3259,30 @@ export function NestBoost() {
               </div>
             </>
           )}
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Nesting result</h3>
-          {groups.length > 0 && (
-            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary/40 p-2">
-              <span className="text-xs font-semibold">Manual nesting</span>
-              <select className={`${selectCls} !w-auto`} value={lotKey} onChange={(e) => setLotSel(e.target.value)} disabled={running}>
-                {lots.map((l) => (
-                  <option key={l.key} value={l.key}>{l.label}</option>
-                ))}
-              </select>
-              <Button variant="secondary" size="sm" onClick={addSheet} disabled={running || !lots.length}>
-                <Plus /> Add empty sheet
-              </Button>
-              <Button
-                variant="outline" size="sm"
-                onClick={() => stepHistory("undo")}
-                disabled={running || !!held || carrying || !(hist.res === result && hist.undo)}
-                title="Undo the last change to the nest (Ctrl+Z)"
-              >
-                <Undo2 /> Undo
-              </Button>
-              <Button
-                variant="outline" size="sm"
-                onClick={() => stepHistory("redo")}
-                disabled={running || !!held || carrying || !(hist.res === result && hist.redo)}
-                title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
-              >
-                <Redo2 /> Redo
-              </Button>
-              <Button
-                variant={selectMode ? "default" : "outline"}
-                size="sm"
-                onClick={() => setSelectMode((v) => !v)}
-                title="Touch screens: when on, dragging on a sheet draws a selection box instead of scrolling the page"
-              >
-                Touch select {selectMode ? "on" : "off"}
-              </Button>
-              <Button
-                variant={angleSound ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAngleSound((v) => !v)}
-                title="Rotation stops with a click (and a vibration on phones) at every 45° — 0, 45, 90, 135 ... — and the angle badge turns green"
-              >
-                Angle click {angleSound ? "on" : "off"}
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Press a part in the table (&quot;Left / place by hand&quot;) and drop it on a sheet. When its count reaches 0 it can&apos;t be taken again;
-                put a piece back with Delete to free it.
-              </span>
-            </div>
-          )}
-          {stillToPlace.length > 0 && result?.manual && (
-            <p className="mb-2 text-xs text-muted-foreground">
-              Still to place: {stillToPlace.map(({ g, n }) => `#${snText(g)} ×${n}`).join(" • ")}
-            </p>
-          )}
-          {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
-          {actionBar}
-          {result && resS && (
-            <div className="mb-2 flex items-center gap-1 text-xs text-muted-foreground">
-              Sheet view
-              <Button variant={sheetView === "stack" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("stack")} title="Show every sheet under each other">
-                All sheets
-              </Button>
-              <Button variant={sheetView === "strip" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("strip")} title="Show a strip of sheet pictures (like TruTops) and open one sheet at a time">
-                Sheet strip
-              </Button>
-            </div>
-          )}
-          {result && resS && sheetView === "strip" && (
-            <SheetStrip
-              sheets={result.sheets} S={resS} version={version} active={act}
-              onSelect={setActiveSheet}
-              canAdd={!running && !!lots.length}
-              onAdd={() => {
-                const n = sheetCount;
-                addSheet();
-                setActiveSheet(n);
-              }}
-            />
-          )}
-          <div ref={boxRef} className="space-y-4">
-            {!result || !resS ? (
-              <p className="text-sm text-muted-foreground">Import parts, then press Optimize — or press a part in the table to nest it by hand.</p>
-            ) : (
-              result.sheets.map((sh, i) => {
-                if (sheetView === "strip" && fs !== i && i !== act) return null; // strip mode: only the selected sheet is open
-                const st = sheetStats(sh, resS);
-                const node = (
-                  <div key={i} className={fs === i ? "fixed inset-0 z-[45] flex h-dvh flex-col overflow-hidden bg-background p-3" : undefined}>
-                    <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        <b className="text-foreground">Sheet {i + 1}</b> — {sh.material ? `${sh.material} • ` : ""}{sh.th ? `${sh.th} mm plate • ` : ""}
-                        {st.parts} parts • utilization {st.utilization.toFixed(1)}%
-                      </span>
-                      <span className="flex items-center gap-1">
-                        Cut size
-                        <CutSizeInput
-                          value={Math.round(sh.W ?? resS.W)}
-                          max={Math.round(sh.stockW ?? resS.W)}
-                          onCommit={(v) => {
-                            resizeSheet(sh, resS, v, sh.H ?? resS.H);
-                            bump();
-                          }}
-                        />
-                        ×
-                        <CutSizeInput
-                          value={Math.round(sh.H ?? resS.H)}
-                          max={Math.round(sh.stockH ?? resS.H)}
-                          onCommit={(v) => {
-                            resizeSheet(sh, resS, sh.W ?? resS.W, v);
-                            bump();
-                          }}
-                        />
-                        mm
-                      </span>
-                      <span className="inline-flex items-center gap-0.5">
-                        <span className="text-xs text-muted-foreground">Fit to parts:</span>
-                        {([
-                          ["width", "Width", "Trim only the sheet width (W) down to its parts; the height stays as it is"],
-                          ["height", "Height", "Trim only the sheet height (H) down to its parts; the width stays as it is"],
-                          ["both", "Both", "Trim both width and height down to its parts, to cut less material / less scrap"],
-                        ] as const).map(([dir, label, tip]) => (
-                          <Button
-                            key={dir}
-                            variant="ghost" size="sm" className="h-7 px-2"
-                            title={tip}
-                            onClick={() => {
-                              fitSheetToParts(sh, resS, dir);
-                              bump();
-                            }}
-                          >
-                            {label}
-                          </Button>
-                        ))}
-                      </span>
-                      {fs === i && (
-                        <span className="inline-flex items-center gap-1">
-                          <Button
-                            size="sm" className="h-7"
-                            disabled={running || !groups.length || !!held}
-                            title="Run the optimiser (uses the settings from the page)"
-                            onClick={() => runMain()}
-                          >
-                            {running ? <Loader2 className="animate-spin" /> : <Layers />} Optimize nest
-                          </Button>
-                          <Button variant="secondary" size="sm" className="h-7" disabled={!running} onClick={() => (stopRef.current = true)}>
-                            Stop
-                          </Button>
-                          <Button variant="outline" size="sm" className="h-7" onClick={() => setSettingsOpen(true)} title="Sheet size, margin, spacing, rotation and optimize time">
-                            <SlidersHorizontal /> Settings
-                          </Button>
-                          <Button variant="outline" size="sm" className="h-7" disabled={!canExport || !!held} onClick={saveNest} title="Keep this nest so you can try another one and compare them">
-                            <Save /> Save nest
-                          </Button>
-                          {status && <span className="max-w-[28ch] truncate" title={status}>{status}</span>}
-                        </span>
-                      )}
-                      {sh.items.length > 0 && (
-                        <Button
-                          variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held || running}
-                          title="Take every part off this sheet and give them back to the list"
-                          onClick={() => setPendingClear(i)}
-                        >
-                          <Trash2 /> Clear sheet
-                        </Button>
-                      )}
-                      {sh.items.length === 0 && (
-                        <Button variant="ghost" size="sm" className="h-7 text-destructive" disabled={!!held} onClick={() => deleteSheet(i)}>
-                          <Trash2 /> Delete empty sheet
-                        </Button>
-                      )}
-                      {(sh.W !== undefined || sh.H !== undefined) && (
-                        <Button
-                          variant="ghost" size="sm" className="h-7"
-                          onClick={() => {
-                            sh.W = undefined;
-                            sh.H = undefined;
-                            bump();
-                          }}
-                        >
-                          Reset to full sheet
-                        </Button>
-                      )}
-                      {fs === i && result.sheets.length > 1 && (
-                        <span className="ml-auto inline-flex items-center gap-1">
-                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === 0} title="Previous sheet (← / ↑)" onClick={() => setFsIdx(i - 1)}>
-                            <ChevronLeft />
-                          </Button>
-                          <span className="tabular-nums">{i + 1} / {result.sheets.length}</span>
-                          <Button variant="outline" size="sm" className="h-7 px-2" disabled={i === result.sheets.length - 1} title="Next sheet (→ / ↓)" onClick={() => setFsIdx(i + 1)}>
-                            <ChevronRight />
-                          </Button>
-                        </span>
-                      )}
-                      <Button
-                        variant="ghost" size="sm" className={fs === i && result.sheets.length > 1 ? "h-7" : "ml-auto h-7"}
-                        title={fs === i ? "Back to the page (Esc)" : "Fill the whole window with this sheet"}
-                        onClick={() => setFsIdx(fs === i ? null : i)}
-                      >
-                        {fs === i ? <Minimize2 /> : <Maximize2 />} {fs === i ? "Exit full screen" : "Full screen"}
-                      </Button>
                     </div>
-                    {fs === i && <div className="mb-2 shrink-0">{actionBar}</div>}
-                    {fs === i && stillToPlace.length > 0 && (
-                      <UnplacedStrip items={stillToPlace} running={running} onHold={holdFromList} />
-                    )}
-                    <div
-                      ref={fs === i ? fsBoxRef : undefined}
-                      className={fs === i ? "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]" : undefined}
-                    >
-                      <SheetCanvas sheet={sh} index={i} S={resS} width={fs === i ? fsWidth : width} selRef={selRef} version={version} heldIdx={held ? held.idx : null} dragRef={dragRef} multiRef={multiRef} selectMode={selectMode} fullscreen={fs === i} onChange={bump} />
-                    </div>
-                  </div>
-                );
-                // fullscreen is rendered straight into <body> so no parent (sidebar, transforms, overflow) can clip or cover it
-                return fs === i && typeof document !== "undefined" ? createPortal(node, document.body, `fs-${i}`) : node;
-              })
-            )}
-          </div>
-          <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
-            <Input
-              className="h-9 w-44" placeholder="Name (optional)" value={nestName}
-              onChange={(e) => setNestName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && canExport) saveNest(); }}
-              disabled={!canExport}
+                  ),
+                },
+                {
+                  id: "saved",
+                  label: <>Saved nests{savedNests.length > 0 && <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{savedNests.length}</span>}</>,
+                  content: (
+                    <SavedNestsCard
+                      bare
+                      nests={savedNests}
+                      activeId={activeNestId}
+                      onLoad={openSavedNest}
+                      onDelete={(id) => {
+                        setSavedNests((p) => p.filter((n) => n.id !== id));
+                        setActiveNestId((a) => (a === id ? null : a));
+                      }}
+                      onRename={(id, name) => setSavedNests((p) => p.map((n) => (n.id === id ? { ...n, name } : n)))}
+                    />
+                  ),
+                },
+              ]}
             />
-            <Button variant="secondary" onClick={saveNest} disabled={!canExport} title="Keep this nest so you can try another one and compare them">
-              <Save /> Save this nest
-            </Button>
-            <Button onClick={exportReport} disabled={!canExport || reporting} title="Excel report: material used, scrap, parts nested and a picture of every sheet">
-              {reporting ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Create report (.xlsx)
-            </Button>
           </div>
-          {problems.length > 0 && (
-            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-              <div className="mb-1 flex items-center gap-2 font-semibold">
-                <TriangleAlert className="h-4 w-4" /> Nesting problems
-              </div>
-              <ul className="list-disc space-y-1 pl-5 text-xs">
-                {problems.map((m, i) => (
-                  <li key={i}>{m}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </Card>
-
-        <SavedNestsCard
-          nests={savedNests}
-          activeId={activeNestId}
-          onLoad={openSavedNest}
-          onDelete={(id) => {
-            setSavedNests((p) => p.filter((n) => n.id !== id));
-            setActiveNestId((a) => (a === id ? null : a));
-          }}
-          onRename={(id, name) => setSavedNests((p) => p.map((n) => (n.id === id ? { ...n, name } : n)))}
-        />
+        </div>
       </div>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
