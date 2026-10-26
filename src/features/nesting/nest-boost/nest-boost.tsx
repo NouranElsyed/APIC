@@ -940,16 +940,36 @@ function CutSizeInput({ value, max, onCommit }: { value: number; max: number; on
 }
 
 /** The three "other ways to add parts" under the drop zone share one look: icon, title and a line saying what it does. */
-const importRowCls =
-  "flex w-full items-center gap-3 rounded-lg border border-border bg-card p-2.5 text-left transition-colors hover:border-primary/40 hover:bg-secondary/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-card";
-function ImportRowBody({ icon, title, hint }: { icon: React.ReactNode; title: string; hint: string }) {
+type ImportTone = "blue" | "teal" | "violet";
+const importTones: Record<ImportTone, { card: string; icon: string; chevron: string }> = {
+  blue: {
+    card: "border-blue-200 bg-gradient-to-br from-blue-50 to-blue-50/40 hover:border-blue-300 hover:from-blue-100/70 dark:border-blue-500/30 dark:from-blue-500/10 dark:to-blue-500/5 dark:hover:border-blue-400/50",
+    icon: "bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-300",
+    chevron: "text-blue-500 dark:text-blue-300",
+  },
+  teal: {
+    card: "border-teal-200 bg-gradient-to-br from-teal-50 to-teal-50/40 hover:border-teal-300 hover:from-teal-100/70 dark:border-teal-500/30 dark:from-teal-500/10 dark:to-teal-500/5 dark:hover:border-teal-400/50",
+    icon: "bg-teal-100 text-teal-600 dark:bg-teal-500/20 dark:text-teal-300",
+    chevron: "text-teal-500 dark:text-teal-300",
+  },
+  violet: {
+    card: "border-violet-200 bg-gradient-to-br from-violet-50 to-violet-50/40 hover:border-violet-300 hover:from-violet-100/70 dark:border-violet-500/30 dark:from-violet-500/10 dark:to-violet-500/5 dark:hover:border-violet-400/50",
+    icon: "bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300",
+    chevron: "text-violet-500 dark:text-violet-300",
+  },
+};
+/** The three "other ways to add parts" under the drop zone share one look: tinted card, icon tile, title + hint and a chevron. */
+const importRowCls = (tone: ImportTone) =>
+  `group flex w-full items-center gap-3.5 rounded-2xl border p-3.5 text-left shadow-sm transition-all hover:-translate-y-px hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none disabled:hover:translate-y-0 ${importTones[tone].card}`;
+function ImportRowBody({ icon, title, hint, tone }: { icon: React.ReactNode; title: string; hint: string; tone: ImportTone }) {
   return (
     <>
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">{icon}</span>
-      <span className="min-w-0">
-        <span className="block text-sm font-medium leading-tight">{title}</span>
-        <span className="block text-xs text-muted-foreground">{hint}</span>
+      <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${importTones[tone].icon}`}>{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold leading-tight text-foreground">{title}</span>
+        <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{hint}</span>
       </span>
+      <ChevronRight className={`h-5 w-5 shrink-0 transition-transform group-hover:translate-x-0.5 ${importTones[tone].chevron}`} />
     </>
   );
 }
@@ -2628,9 +2648,9 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             />
           </label>
           <p className="mb-1.5 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Other ways to add parts</p>
-          <div className="space-y-2">
-            <label className={`${importRowCls} cursor-pointer`} title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
-              <ImportRowBody icon={<Layers className="h-4 w-4" />} title="Import nest DXF" hint="A nest exported from here: sheets + parts" />
+          <div className="space-y-3">
+            <label className={`${importRowCls("blue")} cursor-pointer`} title="Load a nest DXF exported from here: the parts go into the list and the sheets are rebuilt as drawn">
+              <ImportRowBody tone="blue" icon={<Layers className="h-5 w-5" />} title="Import nest DXF" hint="A nest exported from here: sheets + parts" />
               <input
                 type="file"
                 accept=".dxf"
@@ -2642,18 +2662,19 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                 }}
               />
             </label>
-            <button type="button" className={importRowCls} onClick={() => setManualOpen(true)} title="Type a part in: rectangle, triangle, trapezoid, circle or a flattened cone">
-              <ImportRowBody icon={<Shapes className="h-4 w-4" />} title="Add part by dimensions" hint="Type a rectangle, triangle, trapezoid, circle or cone" />
+            <button type="button" className={importRowCls("teal")} onClick={() => setManualOpen(true)} title="Type a part in: rectangle, triangle, trapezoid, circle or a flattened cone">
+              <ImportRowBody tone="teal" icon={<Shapes className="h-5 w-5" />} title="Add part by dimensions" hint="Type a rectangle, triangle, trapezoid, circle or cone" />
             </button>
             <button
               type="button"
-              className={importRowCls}
+              className={importRowCls("violet")}
               disabled={!projectId || importing}
               onClick={() => importFromProject()}
               title="Import every plate of the selected project that has a valid DXF, with its quantity and thickness"
             >
               <ImportRowBody
-                icon={importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderInput className="h-4 w-4" />}
+                tone="violet"
+                icon={importing ? <Loader2 className="h-5 w-5 animate-spin" /> : <FolderInput className="h-5 w-5" />}
                 title="Import plates from Standard Calculations"
                 hint={projectId ? "Every plate of the selected project" : "Select a project above to enable this"}
               />
