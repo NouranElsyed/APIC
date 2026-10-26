@@ -21,7 +21,7 @@ import { classifyFit, gridCapacity } from "./fit";
 import { regionArea } from "./geometry";
 import { groupToRegion } from "./group-region";
 import { generateCandidates, type Plan } from "./planner";
-import { installFakeCanvas, removeFakeCanvas } from "./test-canvas";
+import { installFakeCanvas, removeFakeCanvas } from "./fake-canvas";
 
 /* ---------------- fixtures ---------------- */
 

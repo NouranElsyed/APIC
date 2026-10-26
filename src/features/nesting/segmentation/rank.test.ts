@@ -5,7 +5,7 @@ import { evaluatePlan, measure, piecesFor, type EngineCtx, type EngineEval } fro
 import { circleLoop, regionFromPolygon } from "./geometry";
 import { generateCandidates, type Candidate, type GenSettings, type Plan } from "./planner";
 import { PRIORITY_LABEL, compareRows, differences, explainOrder, rankCandidates, sheetsText, type Priority } from "./rank";
-import { installFakeCanvas, removeFakeCanvas } from "./test-canvas";
+import { installFakeCanvas, removeFakeCanvas } from "./fake-canvas";
 
 /* ---------------- fixtures ---------------- */
 
