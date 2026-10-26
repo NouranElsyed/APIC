@@ -19,6 +19,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   addPiece,
   addSource,
+  addSourceLengths,
   barStats,
   barTrims,
   buildCutList,
@@ -27,6 +28,7 @@ import {
   lotKey,
   minBarLength,
   overallStats,
+  parseSourceLengths,
   PART_TYPES_1D,
   resizeBar,
   runOptimize1D,
@@ -197,6 +199,9 @@ export function NestBoost1D() {
   const [pieceForm, setPieceForm] = React.useState<{ name: string; profile: string; material: string; length: string; qty: string; partType: PartType1D }>({
     name: "", profile: "", material: "", length: "", qty: "1", partType: DEFAULT_PART_TYPE_1D,
   });
+  // Manual stock entry: one profile + material, any number of bar lengths ("6000, 9000x10, 12000").
+  const [srcForm, setSrcForm] = React.useState({ profile: "", material: "", lengths: "", qty: "", cost: "" });
+  const [srcMsg, setSrcMsg] = React.useState("");
   // DXF import options: type given to every imported drawing, and the drawing units ("auto" = read from the file).
   const [dxfType, setDxfType] = React.useState<PartType1D>(DEFAULT_PART_TYPE_1D);
   const [dxfUnits, setDxfUnits] = React.useState("auto");
@@ -433,6 +438,33 @@ export function NestBoost1D() {
     setResult(null);
   };
   const updateSource = (id: number, patch: Partial<Source1D>) => setSources((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const addSourceRows = () => {
+    const { items, invalid } = parseSourceLengths(srcForm.lengths, srcForm.qty.trim() === "" ? null : Number(srcForm.qty));
+    if (invalid.length) {
+      setSrcMsg(`Cannot read: ${invalid.join(", ")}. Use lengths in mm like "6000, 9000x10, 12000" (x = how many bars).`);
+      return;
+    }
+    if (!items.length) {
+      setSrcMsg("Enter at least one stock bar length in mm.");
+      return;
+    }
+    const next = addSourceLengths(
+      sourcesRef.current,
+      { profile: srcForm.profile, material: srcForm.material, lengths: items, cost: Number(srcForm.cost) || 0 },
+      sourceCounters.current,
+    );
+    sourcesRef.current = next;
+    setSources(next);
+    setResult(null);
+    setSrcMsg("");
+    setSrcForm((f) => ({ ...f, lengths: "" }));
+  };
+  /** Another (blank) stock length for the same profile + material as an existing row. */
+  const addLengthLike = (s: Source1D) => {
+    const next = addSource(sourcesRef.current, { profile: s.profile, material: s.material, length: 0, qty: null, cost: s.cost, description: "" }, sourceCounters.current);
+    sourcesRef.current = next;
+    setSources(next);
+  };
   const removeSource = (id: number) => {
     setSources((prev) => prev.filter((s) => s.id !== id));
     setResult(null);
@@ -771,7 +803,7 @@ export function NestBoost1D() {
         <Card className="p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sources</h3>
           {!sources.length ? (
-            <p className="text-sm text-muted-foreground">No sources yet — they are added automatically when you import parts; you then enter each stock bar length.</p>
+            <p className="text-sm text-muted-foreground">No sources yet — they are added automatically when you add or import parts, or add them by hand below.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
@@ -815,6 +847,9 @@ export function NestBoost1D() {
                         <Input type="number" min={0} className="h-8 w-20" value={s.cost} onChange={(e) => updateSource(s.id, { cost: Number(e.target.value) || 0 })} />
                       </td>
                       <td className="p-1">
+                        <Button variant="ghost" size="sm" title="Add another stock length for this profile + material" onClick={() => addLengthLike(s)}>
+                          <Plus /> Length
+                        </Button>
                         <Button variant="ghost" size="sm" className="text-destructive" onClick={() => removeSource(s.id)}>
                           <Trash2 /> Remove
                         </Button>
@@ -825,6 +860,41 @@ export function NestBoost1D() {
               </table>
             </div>
           )}
+          <div className="mt-3 rounded-md border border-dashed border-border p-3">
+            <div className="mb-2 text-xs font-medium">Add stock by hand</div>
+            <div className="flex flex-wrap items-end gap-2 text-xs">
+              <label className="space-y-1">Profile
+                <Input type="text" list="src-profiles" className="h-8 w-32" value={srcForm.profile} onChange={(e) => setSrcForm((f) => ({ ...f, profile: e.target.value }))} />
+              </label>
+              <label className="space-y-1">Material
+                <Input type="text" list="src-materials" className="h-8 w-24" value={srcForm.material} onChange={(e) => setSrcForm((f) => ({ ...f, material: e.target.value }))} />
+              </label>
+              <label className="space-y-1">Lengths (mm)
+                <Input
+                  type="text" className="h-8 w-64" placeholder="6000, 9000x10, 12000"
+                  value={srcForm.lengths}
+                  onChange={(e) => setSrcForm((f) => ({ ...f, lengths: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === "Enter") addSourceRows(); }}
+                />
+              </label>
+              <label className="space-y-1">Qty each
+                <Input type="number" min={1} className="h-8 w-20" placeholder="∞" value={srcForm.qty} onChange={(e) => setSrcForm((f) => ({ ...f, qty: e.target.value }))} />
+              </label>
+              <label className="space-y-1">Cost/bar
+                <Input type="number" min={0} className="h-8 w-20" value={srcForm.cost} onChange={(e) => setSrcForm((f) => ({ ...f, cost: e.target.value }))} />
+              </label>
+              <Button size="sm" onClick={addSourceRows}>
+                <Plus /> Add lengths
+              </Button>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Type as many lengths as you have, separated by comma, space or new line. Put <code>x</code> and a number after a length for how many bars of it you have
+              (<code>9000x10</code>); lengths without it use “Qty each”, blank = unlimited. Profile and material must match the parts to cut.
+            </p>
+            {srcMsg && <p className="mt-1 text-xs text-destructive">{srcMsg}</p>}
+            <datalist id="src-profiles">{[...new Set(pieces.map((p) => p.profile).filter(Boolean))].map((v) => <option key={v} value={v} />)}</datalist>
+            <datalist id="src-materials">{[...new Set(pieces.map((p) => p.material).filter(Boolean))].map((v) => <option key={v} value={v} />)}</datalist>
+          </div>
         </Card>
 
         <Card className="p-4">

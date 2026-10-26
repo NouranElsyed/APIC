@@ -1,31 +1,26 @@
 /**
  * Nozzle calculator (pure functions).
  *
- *   neck   = projection (m) × kg/m of the pipe (STD in the workbook data; any wall in the catalogue data)
- *   flange = purchased WN RF class 150 (workbook table)   — or, with source "catalogue", any DN / class 150–2500 /
- *            type WN, SO, LAP, THR, BLIND from the Trouvay & Cauvin tables — or fabricated from plate for the DN600 manhole
+ *   neck   = projection (m) × kg/m of the pipe (B36.10, any wall: STD / XS / XXS or a thickness in mm)
+ *   flange = any DN / class 150–2500 / type WN, SO, LAP, THR, BLIND from the Trouvay & Cauvin tables
+ *            — or fabricated from plate for the DN600 manhole
  *   pad    = π/4 × (padDia² − pipeOD²) × padThk × 7.85e-6   — DN ≤ 50 has none
- *   unit   = neck + flange + pad                           — same definition as the workbook's "Unit wt"
+ *   unit   = neck + flange + pad
  *
  * Every default can be overridden per nozzle; an override is reported in `overrides` so it is never silent.
  */
 import { CAT_FLANGE, CAT_PIPE, type FlangeType, type PipeLabel } from "./catalogue-data";
 import {
-  FLANGE_WN_150_KG,
   MANHOLE,
   NO_PAD_MAX_DN,
   PAD_DIA,
   PAD_ESTIMATE_FACTOR,
   PAD_THK,
-  PIPE_STD,
   STEEL_KG_PER_MM3,
   type NozzleLocation,
 } from "./data";
 
 export type { NozzleLocation, FlangeType, PipeLabel };
-/** "workbook" = the tank workbook's Weight Ref (class 150 WN-ish values, STD pipe, DN25–DN250 + DN600 manhole; default, keeps the 12 tank sheets reproducible).
- *  "catalogue" = Trouvay & Cauvin tables: any DN, any wall, classes 150–2500, five flange types. */
-export type NozzleSource = "workbook" | "catalogue";
 export type NozzleKind = "nozzle" | "manhole";
 
 export interface NozzleInput {
@@ -44,9 +39,7 @@ export interface NozzleInput {
   noPad?: boolean;
   /** Replace the catalogue flange weight, kg. */
   flangeKg?: number;
-  /* ---- catalogue mode (source = "catalogue") ---- */
-  /** Data source. Default "workbook". */
-  source?: NozzleSource;
+  /* ---- flange and pipe wall ---- */
   /** ASME B16.5 class, default 150. */
   flangeClass?: number;
   /** Default "WN". */
@@ -88,7 +81,7 @@ export interface NozzleResult {
   pad: { diaMm: number; thkMm: number; source: PadSource };
   flangeSource: "catalogue" | "fabricated" | "override";
   /** Pipe actually used for the neck. */
-  pipe: { source: NozzleSource; wallMm: number | null; kgPerM: number };
+  pipe: { wallMm: number; kgPerM: number };
   /** Flange actually used (null for a fabricated manhole flange). */
   flange: { class: number; type: FlangeType } | null;
   flatParts: FlatPart[];
@@ -129,22 +122,13 @@ export function resolveCataloguePipe(dn: number, wallMm?: number, label: PipeLab
 export function calcNozzle(input: NozzleInput): NozzleOutcome {
   const fail = (error: string): NozzleOutcome => ({ ok: false, input, error });
   const kind = input.kind ?? "nozzle";
-  const dataSource: NozzleSource = input.source ?? "workbook";
   const warnings: string[] = [];
   const overrides: string[] = [];
-  let pipe: { od: number; kgPerM: number };
-  let wallMm: number | null = null;
-  if (dataSource === "catalogue") {
-    const r = resolveCataloguePipe(input.dn, input.wallMm, input.schedule);
-    if (!r.ok) return fail(r.error);
-    pipe = { od: r.od, kgPerM: r.kgPerM };
-    wallMm = r.wallMm;
-    if (r.warning) warnings.push(r.warning);
-  } else {
-    const p = PIPE_STD[input.dn];
-    if (!p) return fail(`DN${input.dn} is not in the pipe library — add it to data.ts (PIPE_STD), or use the catalogue data.`);
-    pipe = p;
-  }
+  const resolved = resolveCataloguePipe(input.dn, input.wallMm, input.schedule);
+  if (!resolved.ok) return fail(resolved.error);
+  const pipe = { od: resolved.od, kgPerM: resolved.kgPerM };
+  const wallMm = resolved.wallMm;
+  if (resolved.warning) warnings.push(resolved.warning);
   if (!(input.projectionMm > 0)) return fail("Projection must be greater than 0.");
   if (!Number.isInteger(input.qty) || input.qty < 1) return fail("Quantity must be a whole number, at least 1.");
   if (kind === "manhole" && input.dn !== MANHOLE.dn) return fail(`Only the DN${MANHOLE.dn} API-650 manhole is in the library.`);
@@ -159,13 +143,9 @@ export function calcNozzle(input: NozzleInput): NozzleOutcome {
   let tableKg: number | undefined;
   if (kind === "manhole") flangeSource = "fabricated";
   else {
-    tableKg = dataSource === "catalogue" ? CAT_FLANGE[fClass]?.[input.dn]?.w[fType] : FLANGE_WN_150_KG[input.dn];
+    tableKg = CAT_FLANGE[fClass]?.[input.dn]?.w[fType];
     if (tableKg === undefined && input.flangeKg === undefined) {
-      return fail(
-        dataSource === "catalogue"
-          ? `No ${fType} flange weight for DN${input.dn}, class ${fClass} in the catalogue — enter it as an override.`
-          : `No class 150 flange weight for DN${input.dn} — enter it as an override, add it to data.ts, or use the catalogue data.`,
-      );
+      return fail(`No ${fType} flange weight for DN${input.dn}, class ${fClass} in the catalogue — enter it as an override.`);
     }
     flangeKg = tableKg ?? 0;
   }
@@ -251,7 +231,7 @@ export function calcNozzle(input: NozzleInput): NozzleOutcome {
     fabricatedKg,
     pad: { diaMm: padDia, thkMm: padThk, source },
     flangeSource,
-    pipe: { source: dataSource, wallMm, kgPerM: pipe.kgPerM },
+    pipe: { wallMm, kgPerM: pipe.kgPerM },
     flange: kind === "manhole" ? null : { class: fClass, type: fType },
     flatParts,
     warnings,

@@ -179,6 +179,53 @@ export function addSource(
   ];
 }
 
+/**
+ * Reads a list of stock lengths typed by hand: "6000, 9000x10, 12000" (separators: comma, semicolon, space or new line;
+ * "x", "*" or "×" after a length gives how many bars of that length there are). Lengths without a count get `defaultQty`
+ * (null = unlimited). Anything that is not a positive number is returned in `invalid`.
+ */
+export function parseSourceLengths(text: string, defaultQty: number | null): { items: { length: number; qty: number | null }[]; invalid: string[] } {
+  const items: { length: number; qty: number | null }[] = [];
+  const invalid: string[] = [];
+  for (const tok of text.split(/[\s,;]+/).filter(Boolean)) {
+    const m = /^(\d+(?:\.\d+)?)(?:[x*×](\d+))?$/i.exec(tok);
+    const length = m ? Number(m[1]) : NaN;
+    const qty = m && m[2] !== undefined ? Number(m[2]) : defaultQty;
+    if (!m || !(length > 0) || (qty !== null && !(qty > 0))) invalid.push(tok);
+    else items.push({ length, qty });
+  }
+  return { items, invalid };
+}
+
+/**
+ * Adds several stock lengths for one profile + material at once. A blank source row of that lot (length 0, the one
+ * created automatically for imported parts) is filled first; a length that already exists for the lot is merged
+ * (counts add up, unlimited stays unlimited) instead of listed twice.
+ */
+export function addSourceLengths(
+  sources: Source1D[],
+  input: { profile: string; material: string; lengths: { length: number; qty: number | null }[]; cost: number; description?: string },
+  counters: Counters1D,
+): Source1D[] {
+  const key = lotKey(input.profile, input.material);
+  let out = sources.slice();
+  for (const { length, qty } of input.lengths) {
+    const same = out.findIndex((x) => lotKey(x.profile, x.material) === key && Math.abs(x.length - length) < 0.05);
+    if (same >= 0) {
+      const cur = out[same];
+      out[same] = { ...cur, qty: cur.qty === null || qty === null ? null : cur.qty + qty };
+      continue;
+    }
+    const blank = out.findIndex((x) => lotKey(x.profile, x.material) === key && !(x.length > 0));
+    if (blank >= 0) {
+      out[blank] = { ...out[blank], length, qty, cost: input.cost || out[blank].cost };
+      continue;
+    }
+    out = addSource(out, { profile: input.profile, material: input.material, length, qty, cost: input.cost, description: input.description ?? "" }, counters);
+  }
+  return out;
+}
+
 /** Usable length of a bar of the given stock length, after trims and gripping. */
 export function usableLength(sourceLength: number, S: Settings1D): number {
   return Math.max(0, sourceLength - S.leftTrim - S.rightTrim - S.gripping);

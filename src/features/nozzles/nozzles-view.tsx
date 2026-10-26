@@ -7,8 +7,8 @@ import * as React from "react";
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PIPE_STD, PAD_THK } from "./data";
-import { calcNozzle, scheduleTotals, type NozzleInput, type NozzleKind, type NozzleLocation, type NozzleOutcome, type NozzleSource } from "./calc";
+import { PAD_THK } from "./data";
+import { calcNozzle, scheduleTotals, type NozzleInput, type NozzleKind, type NozzleLocation, type NozzleOutcome } from "./calc";
 import { CAT_DNS, CAT_PIPE, FLANGE_CLASSES, FLANGE_TYPES, type FlangeType, type PipeLabel } from "./catalogue-data";
 
 interface Row {
@@ -31,7 +31,6 @@ interface Row {
   wall: string;
 }
 
-const WORKBOOK_DNS = Object.keys(PIPE_STD).map(Number);
 const selectCls = "h-8 rounded-lg border border-input bg-card px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const fmt = (v: number, d = 2) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 const optNum = (s: string) => (s.trim() === "" ? undefined : Number(s.replace(",", ".")));
@@ -40,15 +39,14 @@ const blank = (id: number, over: Partial<Row> = {}): Row => ({
   id, mark: `N${id}`, location: "shell", kind: "nozzle", dn: 150, projection: "200", qty: "1", padDia: "", padThk: "", noPad: false, flangeKg: "", flangeClass: 150, flangeType: "WN", wallSel: "STD", wall: "", ...over,
 });
 
-function toInput(r: Row, source: NozzleSource): NozzleInput {
+function toInput(r: Row): NozzleInput {
   const base: NozzleInput = {
     mark: r.mark, location: r.location, kind: r.kind, dn: r.dn,
     projectionMm: Number(r.projection.replace(",", ".")), qty: Number(r.qty),
     padDiaMm: optNum(r.padDia), padThkMm: optNum(r.padThk), noPad: r.noPad || undefined, flangeKg: optNum(r.flangeKg),
   };
-  if (source === "workbook") return base;
   return {
-    ...base, source,
+    ...base,
     flangeClass: r.flangeClass, flangeType: r.flangeType,
     ...(r.wallSel === "custom" ? { wallMm: optNum(r.wall) } : { schedule: r.wallSel }),
   };
@@ -59,12 +57,10 @@ export function NozzlesView() {
   const [rows, setRows] = React.useState<Row[]>(() => [blank(1, { mark: "N1", dn: 250 }), blank(2, { mark: "M1", kind: "manhole", dn: 600 })]);
   const [open, setOpen] = React.useState<Set<number>>(() => new Set());
 
-  const [source, setSource] = React.useState<NozzleSource>("workbook");
-  const cat = source === "catalogue";
-  const DNS = cat ? CAT_DNS : WORKBOOK_DNS;
-  const nCols = cat ? 17 : 14;
+  const DNS = CAT_DNS;
+  const nCols = 17;
 
-  const results = React.useMemo(() => rows.map((r) => calcNozzle(toInput(r, source))), [rows, source]);
+  const results = React.useMemo(() => rows.map((r) => calcNozzle(toInput(r))), [rows]);
   const totals = React.useMemo(() => scheduleTotals(results), [results]);
 
   const patch = (id: number, p: Partial<Row>) => setRows((l) => l.map((r) => (r.id === id ? { ...r, ...p } : r)));
@@ -73,11 +69,6 @@ export function NozzlesView() {
   const del = (id: number) => setRows((l) => l.filter((r) => r.id !== id));
   const toggle = (id: number) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const setKind = (r: Row, kind: NozzleKind) => patch(r.id, kind === "manhole" ? { kind, dn: 600 } : { kind, dn: r.dn === 600 ? 150 : r.dn });
-  const changeSource = (s: NozzleSource) => {
-    setSource(s);
-    // a DN that the other data set does not have falls back to DN150, which both have
-    setRows((l) => l.map((r) => (r.kind === "manhole" || (s === "catalogue" ? CAT_DNS : WORKBOOK_DNS).includes(r.dn) ? r : { ...r, dn: 150 })));
-  };
 
   const outcomeOf = (i: number): NozzleOutcome => results[i];
 
@@ -86,25 +77,16 @@ export function NozzlesView() {
       <div>
         <h1 className="text-lg font-semibold">Nozzle schedule</h1>
         <p className="text-sm text-muted-foreground">
-          {cat
-            ? "Neck = projection × pipe kg/m (B36.10, any wall) · flange from the B16.5 tables (class 150–2500, WN / SO / LAP / THR / BLIND) · pad = ring of Ø pad / Ø pipe × thickness. DN50 and smaller have no pad."
-            : "Neck = projection × pipe kg/m · flange from the class 150 table · pad = ring of Ø pad / Ø pipe × thickness. DN50 and smaller have no pad."}{" "}
+          Neck = projection × pipe kg/m (B36.10, any wall) · flange from the B16.5 tables (class 150–2500, WN / SO / LAP / THR / BLIND) · pad = ring of Ø pad / Ø pipe × thickness. DN50 and smaller have no pad.{" "}
           Nothing here is saved yet.
         </p>
-        <label className="mt-2 flex items-center gap-2 text-xs">
-          Data
-          <select className={selectCls} value={source} onChange={(e) => changeSource(e.target.value as NozzleSource)} aria-label="Data source">
-            <option value="workbook">Tank workbook (Weight Ref)</option>
-            <option value="catalogue">Catalogue — Trouvay &amp; Cauvin (all sizes)</option>
-          </select>
-        </label>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border bg-card">
         <table className="w-full min-w-[1000px] text-sm">
           <thead className="bg-secondary text-left text-xs text-muted-foreground">
             <tr>
-              {["Mark", "Location", "Type", "DN", ...(cat ? ["Class", "Flange", "Wall"] : []), "Projection (mm)", "Qty", "OD (mm)", "Neck (kg)", "Flange (kg)", "Pad", "Pad (kg)", "Unit (kg)", "Total (kg)", ""].map((h) => (
+              {["Mark", "Location", "Type", "DN", "Class", "Flange", "Wall", "Projection (mm)", "Qty", "OD (mm)", "Neck (kg)", "Flange (kg)", "Pad", "Pad (kg)", "Unit (kg)", "Total (kg)", ""].map((h) => (
                 <th key={h} className="p-2 font-medium">{h}</th>
               ))}
             </tr>
@@ -134,8 +116,7 @@ export function NozzlesView() {
                         {DNS.filter((d) => r.kind === "manhole" || d !== 600).map((d) => <option key={d} value={d}>DN{d}</option>)}
                       </select>
                     </td>
-                    {cat && (
-                      <>
+                    <>
                         <td className="p-1.5">
                           <select className={selectCls} value={r.flangeClass} disabled={r.kind === "manhole"} onChange={(e) => patch(r.id, { flangeClass: Number(e.target.value) })} aria-label="Flange class">
                             {FLANGE_CLASSES.map((c) => <option key={c} value={c}>#{c}</option>)}
@@ -157,8 +138,7 @@ export function NozzlesView() {
                             </>
                           )}
                         </td>
-                      </>
-                    )}
+                    </>
                     <td className="p-1.5"><Input className="h-8 w-24" inputMode="decimal" value={r.projection} onChange={(e) => patch(r.id, { projection: e.target.value })} aria-label="Projection" /></td>
                     <td className="p-1.5"><Input className="h-8 w-16" inputMode="numeric" value={r.qty} onChange={(e) => patch(r.id, { qty: e.target.value })} aria-label="Quantity" /></td>
                     {o.ok ? (

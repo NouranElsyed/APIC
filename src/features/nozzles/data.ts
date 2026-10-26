@@ -1,39 +1,12 @@
 /**
- * Nozzle library — every number here comes from the "Tanks Inventory" workbook (Weight Ref sheet and the nozzle
- * schedules of its 12 tank sheets). Adding a size = adding one row to the tables below.
+ * Nozzle library: pad sizes and thicknesses, the DN600 manhole and the shared constants. Pipe and flange weights
+ * live in catalogue-data.ts (Trouvay & Cauvin tables). Adding a pad size = adding one row to PAD_DIA.
  */
 
 export type NozzleLocation = "shell" | "roof";
 
 /** Steel density, kg per mm³ (7850 kg/m³). */
 export const STEEL_KG_PER_MM3 = 7.85e-6;
-
-/** ASME B36.10 STD pipe: outside diameter (mm) and mass (kg/m). */
-export const PIPE_STD: Record<number, { od: number; kgPerM: number }> = {
-  25: { od: 33.4, kgPerM: 2.5 },
-  40: { od: 48.3, kgPerM: 3.63 },
-  50: { od: 60.3, kgPerM: 5.44 },
-  80: { od: 88.9, kgPerM: 11.29 },
-  100: { od: 114.3, kgPerM: 16.07 },
-  125: { od: 141.3, kgPerM: 21.77 },
-  150: { od: 168.3, kgPerM: 28.26 },
-  200: { od: 219.1, kgPerM: 42.55 },
-  250: { od: 273.1, kgPerM: 60.3 },
-  600: { od: 610, kgPerM: 141.12 },
-};
-
-/** Purchased WN RF flange, class 150 (kg). DN600 is not bought: the manhole flange is made from plate (see MANHOLE). */
-export const FLANGE_WN_150_KG: Record<number, number> = {
-  25: 1,
-  40: 1.8,
-  50: 2.3,
-  80: 4,
-  100: 5.5,
-  125: 6.5,
-  150: 9,
-  200: 13,
-  250: 18,
-};
 
 /** Nozzles up to this size get no reinforcing pad. */
 export const NO_PAD_MAX_DN = 50;
