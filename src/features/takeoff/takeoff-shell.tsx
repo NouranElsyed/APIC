@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { TakeoffProjectProvider } from "./project-context";
 import { WorkspaceBar } from "./workspace-bar";
+import { ProjectGate } from "./project-gate";
 
 function activeTabClass(isActive: boolean) {
   return isActive
@@ -36,7 +37,9 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
   const isStandard = !isNesting && !isScrap && !isSteelPricing && !isNozzles;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      <WorkspaceBar />
+
       <div className="flex gap-5 overflow-x-auto border-b border-border">
         <Link href="/takeoff" className={activeTabClass(isStandard)}>
           Standard Calculations
@@ -65,8 +68,6 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
           </Link>
         )}
       </div>
-
-      <WorkspaceBar />
     </div>
   );
 }
@@ -84,7 +85,7 @@ export function TakeoffShell({
     <TakeoffProjectProvider>
       <div className="space-y-6">
         <TakeoffTopBar showScrap={showScrap} showSteelPricing={showSteelPricing} />
-        {children}
+        <ProjectGate>{children}</ProjectGate>
       </div>
     </TakeoffProjectProvider>
   );

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { useTakeoffProject } from "./project-context";
+import { NEW_PROJECT_EVENT } from "./project-gate";
 import type { HistoryEntry } from "./types";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong");
@@ -179,6 +180,13 @@ export function WorkspaceBar() {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
 
+  // the empty page shown when no project is open has its own "New project" button
+  React.useEffect(() => {
+    const open = () => setPrompt({ kind: "newProject" });
+    window.addEventListener(NEW_PROJECT_EVENT, open);
+    return () => window.removeEventListener(NEW_PROJECT_EVENT, open);
+  }, []);
+
   const project = projects.find((p) => p.id === projectId);
   const entry = history.find((h) => h.id === historyId);
 
@@ -230,11 +238,11 @@ export function WorkspaceBar() {
     <div className="space-y-2 rounded-xl border border-border bg-card p-3 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex min-w-0 items-end gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <FolderKanban className="h-5 w-5" />
           </div>
-          <div className="min-w-72">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Project</label>
+          <div className="min-w-64">
+            <label className="mb-0.5 block text-[11px] font-medium text-muted-foreground">Project</label>
             <Select value={projectId} onValueChange={setProjectId}>
               <SelectTrigger><SelectValue placeholder={entry ? "— working in history —" : "Select a project"} /></SelectTrigger>
               <SelectContent>
