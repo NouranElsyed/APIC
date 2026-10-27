@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { circleLoop, normalizeRegion, regionArea, regionFromPolygon } from "./geometry";
 import { buildPlan, type PlanInput, type Plan } from "./planner";
 import { splitRegionsRadial } from "./free-cut";
-import { boundsFor, commit, newEditor, removeCut, setRadial, moveRadialCenter, stateFromInput, toPlanInput, undo, isRadial, RADIAL_ID } from "./editor";
+import { rotateRadial, boundsFor, commit, newEditor, removeCut, setRadial, moveRadialCenter, stateFromInput, toPlanInput, undo, isRadial, RADIAL_ID } from "./editor";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlanPreview, SegmentationPanel } from "./segment-dialog";
@@ -141,7 +141,7 @@ describe("radial cut: dialog, approve, report", () => {
 
   it("shows the centre dot, the rays and the number fields", () => {
     const state = stateFromInput(plan.input);
-    const html = renderToStaticMarkup(createElement(PlanPreview, { region, plan, edit: { state, bounds: boundsFor([0, 0, 3000, 1400], "H"), selected: RADIAL_ID, mode: null, onSelect: noop, onDrag: noop, onDragEnd: noop, onAdd: noop, onAddFree: noop, onMoveFreePoint: noop, onMoveFree: noop, onSplitFree: noop, onRemoveFreePoint: noop, onSetCenter: noop } }));
+    const html = renderToStaticMarkup(createElement(PlanPreview, { region, plan, edit: { state, bounds: boundsFor([0, 0, 3000, 1400], "H"), selected: RADIAL_ID, mode: null, onSelect: noop, onDrag: noop, onDragEnd: noop, onAdd: noop, onAddFree: noop, onMoveFreePoint: noop, onMoveFree: noop, onSplitFree: noop, onRemoveFreePoint: noop, onSetCenter: noop, onRotateRadial: noop } }));
     expect(html).toContain('data-center="R"');
     expect((html.match(/pointer-events="none"/g) ?? []).length).toBeGreaterThan(4);
     const panel = renderToStaticMarkup(createElement(SegmentationPanel, { group: g, nest: { W: 6000, H: 1500, mg: 5, ro: 2, gp: 5, cell: 5 }, existing: plan.input }));
@@ -159,5 +159,49 @@ describe("radial cut: dialog, approve, report", () => {
     const d = reportData({ parent: g, original: region, plan, generatedAt: "t" });
     expect(String(d.summary.find(([k]) => k === "Radial cut")?.[1])).toContain("4 sectors");
     expect(Math.abs(d.reassemblyDiffMm2)).toBeLessThan(0.01);
+  });
+});
+
+describe("radial cut: turning the pattern by dragging a ray", () => {
+  const base = () => {
+    const r = setRadial(stateFromInput(input()), { center: [0, 0], count: 12, startDeg: 22.5 });
+    if (!r.ok) throw new Error("x");
+    return r.state;
+  };
+  const start = (r: ReturnType<typeof rotateRadial>) => (r.ok ? r.state.radial!.startDeg : NaN);
+
+  it("dragging ray 0 turns the first cut there and every other ray follows", () => {
+    expect(start(rotateRadial(base(), 0, 47.3))).toBeCloseTo(47.3, 6);
+    // ray 3 of 12 (step 30°) dragged to 100° → start angle 10°
+    expect(start(rotateRadial(base(), 3, 100))).toBeCloseTo(10, 6);
+  });
+
+  it("pulls a ray onto horizontal / vertical when it is within 2°, not when it is further", () => {
+    expect(start(rotateRadial(base(), 0, 1.4))).toBe(0); // horizontal
+    expect(start(rotateRadial(base(), 3, 91.9))).toBe(0); // ray 3 vertical → pattern at 0° (rays at 0, 30, 60, 90 …)
+    expect(start(rotateRadial(base(), 0, 3))).toBeCloseTo(3, 6);
+  });
+
+  it("Shift moves in 5° steps; the angle stays in 0…360", () => {
+    expect(start(rotateRadial(base(), 0, 47.3, true))).toBe(45);
+    expect(start(rotateRadial(base(), 0, -30))).toBe(330);
+    expect(start(rotateRadial(base(), 5, 10))).toBe(220); // 10° − 5·30° = −140° → 220°
+  });
+
+  it("the plan follows: after turning, one cut line is exactly horizontal", () => {
+    const plate = regionFromPolygon([[-2000, -1000], [2000, -1000], [2000, 1000], [-2000, 1000]]);
+    const r = rotateRadial(base(), 0, 0.5);
+    if (!r.ok) throw new Error("x");
+    const { direction: _d, stripCuts: _s, seamCuts: _m, freeCuts: _f, radial: _r, ...rest } = input();
+    void _d; void _s; void _m; void _f; void _r;
+    const p = buildPlan(plate, toPlanInput(r.state, rest));
+    const horizontal = p.seams.filter((m) => m.path!.every(([a, b]) => Math.abs(a[1]) < 1e-3 && Math.abs(b[1]) < 1e-3));
+    expect(horizontal.length).toBeGreaterThan(0);
+  });
+
+  it("refuses without a radial cut or with a bad ray", () => {
+    expect(rotateRadial(stateFromInput(input()), 0, 10).ok).toBe(false);
+    expect(rotateRadial(base(), 12, 10).ok).toBe(false);
+    expect(rotateRadial(base(), 0, NaN).ok).toBe(false);
   });
 });

@@ -349,7 +349,7 @@ describe("dialog: free cut tool", () => {
   const noop = () => undefined;
   const edit = (selected: string | null, mode: "free" | null = null) => ({
     state, bounds: boundsFor(regionBBox(region), "H"), selected, mode,
-    onSelect: noop, onDrag: noop, onDragEnd: noop, onAdd: noop, onAddFree: noop, onMoveFreePoint: noop, onMoveFree: noop, onSplitFree: noop, onRemoveFreePoint: noop,
+    onSelect: noop, onDrag: noop, onDragEnd: noop, onAdd: noop, onAddFree: noop, onMoveFreePoint: noop, onMoveFree: noop, onSplitFree: noop, onRemoveFreePoint: noop, onSetCenter: noop, onRotateRadial: noop,
   });
 
   it("draws the free cut in red with its label, and the seams along it", () => {

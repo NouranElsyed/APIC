@@ -36,6 +36,7 @@ import {
   moveFreePoint,
   moveRadialCenter,
   newEditor,
+  rotateRadial,
   redo,
   removeCut,
   removeFreePoint,
@@ -98,6 +99,8 @@ export interface PreviewEdit {
   onRemoveFreePoint: (id: string, index: number) => void;
   /** Radial cut: a click in "radial" mode sets the centre, dragging the centre dot moves it. */
   onSetCenter: (to: Pt) => void;
+  /** Radial cut: ray `index` was dragged to point at `deg`; the whole pattern turns with it. `fine` = Shift held. */
+  onRotateRadial: (index: number, deg: number, fine: boolean) => void;
 }
 
 const STRIP_COLOR = "hsl(215 90% 55%)";
@@ -109,7 +112,8 @@ type Drag =
   | { id: string; kind: "strip" | "seam" }
   | { id: string; kind: "free-move"; last: { x: number; y: number } }
   | { id: string; kind: "free-point"; index: number }
-  | { id: string; kind: "radial-center" };
+  | { id: string; kind: "radial-center" }
+  | { id: string; kind: "radial-ray"; index: number };
 
 /** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
 export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
@@ -172,6 +176,9 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
         if (d.kind === "free-move") {
           edit.onMoveFree(d.id, w.x - d.last.x, w.y - d.last.y);
           d.last = { x: w.x, y: w.y };
+        } else if (d.kind === "radial-ray") {
+          const rd = edit.state.radial;
+          if (rd) edit.onRotateRadial(d.index, (Math.atan2(w.y - rd.center[1], w.x - rd.center[0]) * 180) / Math.PI, e.shiftKey);
         } else if (d.kind === "radial-center") edit.onSetCenter([w.x, w.y]);
         else if (d.kind === "free-point") edit.onMoveFreePoint(d.id, d.index, [w.x, w.y]);
         else edit.onDrag(d.id, d.kind === "strip" ? across(w) : along(w));
@@ -311,7 +318,30 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
             <g data-cut={RADIAL_ID}>
               {Array.from({ length: rd.count }, (_, i) => {
                 const t = ((rd.startDeg + (360 * i) / rd.count) * Math.PI) / 180;
-                return <line key={i} x1={rd.center[0]} y1={rd.center[1]} x2={rd.center[0] + len * Math.cos(t)} y2={rd.center[1] + len * Math.sin(t)} stroke={RADIAL_COLOR} strokeWidth={sel ? size / 200 : size / 330} strokeDasharray={`${size / 90} ${size / 140}`} pointerEvents="none" />;
+                const x2 = rd.center[0] + len * Math.cos(t);
+                const y2 = rd.center[1] + len * Math.sin(t);
+                return (
+                  <g key={i}>
+                    <line x1={rd.center[0]} y1={rd.center[1]} x2={x2} y2={y2} stroke={RADIAL_COLOR} strokeWidth={sel ? size / 200 : size / 330} strokeDasharray={`${size / 90} ${size / 140}`} pointerEvents="none" />
+                    <line
+                      x1={rd.center[0]}
+                      y1={rd.center[1]}
+                      x2={x2}
+                      y2={y2}
+                      stroke="transparent"
+                      strokeWidth={size / 45}
+                      style={{ cursor: edit.mode ? "crosshair" : "alias" }}
+                      data-ray={i}
+                      onPointerDown={(e) => {
+                        if (edit.mode) return;
+                        e.stopPropagation();
+                        edit.onSelect(RADIAL_ID);
+                        dragging.current = { id: RADIAL_ID, kind: "radial-ray", index: i };
+                        (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                      }}
+                    />
+                  </g>
+                );
               })}
               <circle
                 cx={rd.center[0]}
@@ -543,6 +573,10 @@ export function SegmentationPanel({
       setMode(null);
       setSelCut(RADIAL_ID);
     }
+  };
+  /** Dragging a ray turns the whole pattern (one undo step per drag). */
+  const onRotateRadial = (index: number, deg: number, fine: boolean) => {
+    if (state) apply(rotateRadial(state, index, deg, fine), "drag:R:rot");
   };
   const onRadialField = (patch: { count?: number; startDeg?: number; x?: number; y?: number }) => {
     if (!state?.radial) return;
@@ -1011,7 +1045,7 @@ export function SegmentationPanel({
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {mode === "radial"
-                    ? "Click the drawing to set the centre point. Then choose the number of divisions below; drag the centre dot to move it."
+                    ? "Click the drawing to set the centre point. Then choose the number of divisions below; drag the centre dot to move it, or drag any ray to turn them all (it snaps to horizontal / vertical; hold Shift for 5° steps)."
                     : mode === "free"
                     ? "Press on the drawing, drag across the part and release to draw a cut line. Draw as many as you need; click Free cut again (or press Esc) to stop. A line that ends inside the part is extended straight to the edge."
                     : mode
@@ -1053,6 +1087,10 @@ export function SegmentationPanel({
                         </Field>
                       </div>
                     ))}
+                    <Button size="sm" variant="outline" title="Turn the pattern so that a ray is horizontal (start angle 0°)" onClick={() => onRadialField({ startDeg: 0 })}>
+                      Ray horizontal
+                    </Button>
+                    <p className="w-full text-[11px] text-muted-foreground">Drag any ray (dashed line) to turn all of them together; it snaps to horizontal / vertical, Shift = 5° steps.</p>
                   </div>
                 )}
                 {selCut && isFreeCut(state, selCut) && (
@@ -1073,7 +1111,7 @@ export function SegmentationPanel({
                 plan={plan}
                 edit={
                   state && bounds
-                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint, onSetCenter }
+                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint, onSetCenter, onRotateRadial }
                     : undefined
                 }
               />

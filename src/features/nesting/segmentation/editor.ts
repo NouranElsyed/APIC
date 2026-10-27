@@ -251,6 +251,26 @@ export function setRadial(state: EditorState, patch: Partial<RadialSpec>): EditR
   return { ok: true, state: { ...state, radial: { center: [next.center[0], next.center[1]], count: next.count, startDeg: next.startDeg } } };
 }
 
+/**
+ * Turns the whole radial pattern so that ray `index` (0-based) points at `deg` (degrees, counter-clockwise from +x);
+ * the other rays keep their spacing and turn with it. The dragged ray is pulled onto horizontal / vertical when it
+ * comes within 2° of one; with `fine` (Shift) it moves in steps of 5° instead.
+ */
+export function rotateRadial(state: EditorState, index: number, deg: number, fine = false): EditResult {
+  const rd = state.radial;
+  if (!rd) return { ok: false, reason: "There is no radial cut." };
+  if (!Number.isFinite(deg) || !Number.isInteger(index) || index < 0 || index >= rd.count) return { ok: false, reason: "Enter a valid angle." };
+  let a = deg;
+  if (fine) a = Math.round(a / 5) * 5;
+  else {
+    const q = Math.round(a / 90) * 90;
+    if (Math.abs(a - q) < 2) a = q;
+  }
+  const start = a - (index * 360) / rd.count;
+  const norm = Math.round((((start % 360) + 360) % 360) * 1e4) / 1e4;
+  return setRadial(state, { startDeg: norm === 360 ? 0 : norm });
+}
+
 /** Moves the centre of the radial cut (snapped to the grid when snapping is on). */
 export function moveRadialCenter(state: EditorState, to: Pt, grid?: number): EditResult {
   return setRadial(state, { center: [snap(to[0], grid), snap(to[1], grid)] });
