@@ -181,4 +181,49 @@ describe("parts typed in by hand", () => {
     expect(manualPartName({ kind: "cone", d1: 400, d2: 200, h: 300 })).toBe("Cone flat Ø400/Ø200×300");
     expect(manualPartName({ kind: "cone", d1: 400, d2: 0, h: 300 })).toBe("Cone flat Ø400×300");
   });
+
+  it("cylinder: flat pattern is a rectangle π·Ø × height", () => {
+    const c = geo({ kind: "cylinder", d: 300, h: 500 });
+    expect(c.w).toBeCloseTo(Math.PI * 300, 6);
+    expect(c.h).toBeCloseTo(500, 6);
+    expect(c.area).toBeCloseTo(Math.PI * 300 * 500, 4);
+    expect(c.holes).toHaveLength(0);
+    expect(buildManualShape({ kind: "cylinder", d: 0, h: 500 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylinder", d: 300, h: NaN })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylinder", d: 300, h: 500, hole: 20 })).toHaveProperty("error");
+    expect(manualPartName({ kind: "cylinder", d: 300, h: 500 })).toBe("Cylinder flat Ø300×500");
+  });
+
+  it("arc: ring-sector area, bounding box and validation", () => {
+    // inner R 1000, strip 50 wide, 60° → area = (angle/2)·(R² − r²)
+    const g = geo({ kind: "arc", r: 1000, w: 50, angle: 60 });
+    const expected = (Math.PI / 3 / 2) * (1050 ** 2 - 1000 ** 2);
+    expect(g.area).toBeGreaterThan(expected * 0.999);
+    expect(g.area).toBeLessThanOrEqual(expected * 1.0001);
+    // chord of the outer edge = 2·R·sin(30°) = R → 1050 wide
+    expect(g.w).toBeCloseTo(1050, 0);
+    expect(g.h).toBeGreaterThan(0);
+    // starts at 0,0 like every other part
+    expect(Math.min(...g.outer.map((q) => q[0]))).toBeCloseTo(0, 6);
+    expect(Math.min(...g.outer.map((q) => q[1]))).toBeCloseTo(0, 6);
+    // inner radius 0 = pie slice
+    const pie = geo({ kind: "arc", r: 0, w: 200, angle: 90 });
+    expect(pie.area).toBeGreaterThan((Math.PI / 4) * 200 ** 2 * 0.999);
+    expect(buildManualShape({ kind: "arc", r: 100, w: 0, angle: 30 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "arc", r: 100, w: 20, angle: 0 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "arc", r: 100, w: 20, angle: 360 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "arc", r: -5, w: 20, angle: 30 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "arc", r: 100, w: 20, angle: 30, hole: 5 })).toHaveProperty("error");
+    expect(manualPartName({ kind: "arc", r: 1000, w: 50, angle: 60 })).toBe("Arc R1000 W50 60°");
+  });
+
+  it("cylinder and arc can be added to the list like the other shapes", () => {
+    const counters = { id: 1, sn: 0 };
+    const r1 = addManualPart([], { kind: "cylinder", d: 300, h: 500 }, { th: 3, material: "S235", qty: 2 }, counters);
+    if ("error" in r1) throw new Error(r1.error);
+    const r2 = addManualPart(r1.groups, { kind: "arc", r: 1000, w: 50, angle: 60 }, { th: 3, material: "S235", qty: 1 }, counters);
+    if ("error" in r2) throw new Error(r2.error);
+    expect(r2.groups).toHaveLength(2);
+    expect(r2.groups.map((g) => g.name)).toEqual(["Cylinder flat Ø300×500", "Arc R1000 W50 60°"]);
+  });
 });

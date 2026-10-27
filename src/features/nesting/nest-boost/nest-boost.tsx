@@ -994,6 +994,25 @@ function ConeIcon({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+/** A cylinder icon (24×24, 2px outline). */
+function CylinderIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+    </svg>
+  );
+}
+
+/** A curved strip (ring sector) icon (24×24, 2px outline). */
+function ArcIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M2.5 15C6 7 18 7 21.5 15l-4 1.5C15 12 9 12 6.5 16.5z" />
+    </svg>
+  );
+}
+
 /**
  * Length / width field of a part: type freely, the new size is applied on Enter or when the field loses focus
  * (so half-typed numbers never rescale the part). Esc cancels.
@@ -1038,11 +1057,13 @@ type ManualForm = {
   tzA: string; tzB: string; tzH: string; tzRight: boolean; // trapezoid: bottom base, top base, height, one side at 90°
   d: string; // circle
   coneD1: string; coneD2: string; coneH: string; // cone: bottom Ø, top Ø (empty = pointed), height
+  cylD: string; cylH: string; // cylinder: diameter, height
+  arcR: string; arcW: string; arcAngle: string; // arc: inner radius (empty = 0), strip width, angle
   hasHole: boolean; hole: string;
   th: string; material: string; qty: string; name: string;
 };
 const EMPTY_MANUAL: ManualForm = {
-  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", tzA: "", tzB: "", tzH: "", tzRight: false, d: "", coneD1: "", coneD2: "", coneH: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
+  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", tzA: "", tzB: "", tzH: "", tzRight: false, d: "", coneD1: "", coneD2: "", coneH: "", cylD: "", cylH: "", arcR: "", arcW: "", arcAngle: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
 };
 
 /** One line of the "what will be added" popup that opens after choosing DXF files. */
@@ -1597,9 +1618,14 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
 
   // ---- "Add part by dimensions"
   const mfNum = (v: string) => (v.trim() === "" ? NaN : Number(v));
-  const mfHole = mf.hasHole && mf.kind !== "cone" ? mfNum(mf.hole) : 0;
+  const mfNoHole = mf.kind === "cone" || mf.kind === "cylinder" || mf.kind === "arc";
+  const mfHole = mf.hasHole && !mfNoHole ? mfNum(mf.hole) : 0;
   const mfShape: ManualShape =
-    mf.kind === "cone"
+    mf.kind === "cylinder"
+      ? { kind: "cylinder", d: mfNum(mf.cylD), h: mfNum(mf.cylH) }
+      : mf.kind === "arc"
+      ? { kind: "arc", r: mf.arcR.trim() === "" ? 0 : mfNum(mf.arcR), w: mfNum(mf.arcW), angle: mfNum(mf.arcAngle) }
+      : mf.kind === "cone"
       ? { kind: "cone", d1: mfNum(mf.coneD1), d2: mf.coneD2.trim() === "" ? 0 : mfNum(mf.coneD2), h: mfNum(mf.coneH) }
       : mf.kind === "rect"
       ? { kind: "rect", w: mfNum(mf.w), h: mfNum(mf.h), hole: mfHole }
@@ -1610,7 +1636,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           : { kind: "triangle", a: mfNum(mf.a), b: mfNum(mf.b), angle: mfNum(mf.angle), hole: mfHole };
   const mfGeo = buildManualShape(mfShape);
   // show the "what is wrong" message only once something was typed
-  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d + mf.tzA + mf.tzB + mf.tzH + mf.coneD1 + mf.coneD2 + mf.coneH !== "" || (mf.hasHole && mf.hole !== "");
+  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d + mf.tzA + mf.tzB + mf.tzH + mf.coneD1 + mf.coneD2 + mf.coneH + mf.cylD + mf.cylH + mf.arcR + mf.arcW + mf.arcAngle !== "" || (mf.hasHole && mf.hole !== "");
 
   async function addManual(keepOpen: boolean) {
     if ("error" in mfGeo) {
@@ -2662,8 +2688,8 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                 }}
               />
             </label>
-            <button type="button" className={importRowCls("teal")} onClick={() => setManualOpen(true)} title="Type a part in: rectangle, triangle, trapezoid, circle or a flattened cone">
-              <ImportRowBody tone="teal" icon={<Shapes className="h-5 w-5" />} title="Add part by dimensions" hint="Type a rectangle, triangle, trapezoid, circle or cone" />
+            <button type="button" className={importRowCls("teal")} onClick={() => setManualOpen(true)} title="Type a part in: rectangle, triangle, trapezoid, circle, a flattened cone / cylinder or an arc strip">
+              <ImportRowBody tone="teal" icon={<Shapes className="h-5 w-5" />} title="Add part by dimensions" hint="Type a rectangle, triangle, trapezoid, circle, cone, cylinder or arc" />
             </button>
             <button
               type="button"
@@ -3335,7 +3361,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             <DialogDescription>Type the size of the part (mm) and it is added to the list, ready to nest.</DialogDescription>
           </DialogHeader>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {(
               [
                 ["rect", "Rectangle", Square],
@@ -3343,6 +3369,8 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                 ["trapezoid", "Trapezoid", TrapezoidIcon],
                 ["circle", "Circle", CircleIcon],
                 ["cone", "Cone", ConeIcon],
+                ["cylinder", "Cylinder", CylinderIcon],
+                ["arc", "Arc", ArcIcon],
               ] as const
             ).map(([k, label, Icon]) => (
               <Button key={k} type="button" variant={mf.kind === k ? "default" : "outline"} onClick={() => setMf({ ...mf, kind: k })}>
@@ -3396,7 +3424,27 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                 </>
               )}
 
-              {mf.kind !== "cone" && (
+              {mf.kind === "cylinder" && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="Diameter Ø (mm)"><Input type="number" min={0} step="any" inputMode="decimal" autoFocus value={mf.cylD} onChange={(e) => setMf({ ...mf, cylD: e.target.value })} /></Field>
+                    <Field label="Height (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.cylH} onChange={(e) => setMf({ ...mf, cylH: e.target.value })} /></Field>
+                  </div>
+                  <p className="text-xs text-muted-foreground">The cylinder is added <b>flattened</b> (unrolled): a rectangle π × Ø long. Type the mean (neutral-line) Ø if the thickness matters.</p>
+                </>
+              )}
+              {mf.kind === "arc" && (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Field label="Inner radius (mm)"><Input type="number" min={0} step="any" inputMode="decimal" autoFocus placeholder="0 = pie slice" value={mf.arcR} onChange={(e) => setMf({ ...mf, arcR: e.target.value })} /></Field>
+                    <Field label="Strip width (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.arcW} onChange={(e) => setMf({ ...mf, arcW: e.target.value })} /></Field>
+                    <Field label="Angle (°)"><Input type="number" min={0} max={359.99} step="any" inputMode="decimal" value={mf.arcAngle} onChange={(e) => setMf({ ...mf, arcAngle: e.target.value })} /></Field>
+                  </div>
+                  <p className="text-xs text-muted-foreground">A curved strip (ring sector). The width is measured along the radius and the ends are cut along the radius.</p>
+                </>
+              )}
+
+              {!mfNoHole && (
               <div className="space-y-2">
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <Checkbox checked={mf.hasHole} onCheckedChange={(v) => setMf({ ...mf, hasHole: v === true })} />
@@ -3432,6 +3480,18 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                     {mfGeo.w.toFixed(1)} × {mfGeo.h.toFixed(1)} mm
                     <br />
                     area {Math.round(mfGeo.area)} mm²
+                    {mfShape.kind === "arc" && (
+                      <>
+                        <br />
+                        outer R {Math.round((mfShape.r + mfShape.w) * 100) / 100} · mid arc {Math.round(((mfShape.r + mfShape.w / 2) * mfShape.angle * Math.PI) / 180 * 100) / 100} mm
+                      </>
+                    )}
+                    {mfShape.kind === "cylinder" && (
+                      <>
+                        <br />
+                        π × Ø = {Math.round(Math.PI * mfShape.d * 100) / 100} mm
+                      </>
+                    )}
                     {mfShape.kind === "cone" && (() => {
                       const f = coneFlat(mfShape.d1, mfShape.d2, mfShape.h);
                       return "error" in f ? null : (

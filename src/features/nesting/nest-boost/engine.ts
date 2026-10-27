@@ -750,7 +750,17 @@ export type ManualShape =
    * A cone (or truncated cone) given by its bottom diameter `d1`, top diameter `d2` (0 = a pointed cone) and the vertical
    * height `h`. The part is the FLAT PATTERN (the cone unrolled): a circle sector, or a ring sector when `d2` > 0.
    */
-  | { kind: "cone"; d1: number; d2: number; h: number; hole?: number };
+  | { kind: "cone"; d1: number; d2: number; h: number; hole?: number }
+  /**
+   * A cylinder (pipe / shell) given by its diameter `d` and its height `h`. The part is the FLAT PATTERN (the cylinder
+   * unrolled): a rectangle π·d long and `h` wide. Type the mean (neutral-line) diameter when the thickness matters.
+   */
+  | { kind: "cylinder"; d: number; h: number; hole?: number }
+  /**
+   * A curved strip (a ring sector) like a bent flat bar: `r` = radius of the INNER edge (0 = a pie slice), `w` = width of
+   * the strip measured along the radius and `angle` = how many degrees of the ring it covers. The ends are cut along the radius.
+   */
+  | { kind: "arc"; r: number; w: number; angle: number; hole?: number };
 
 export interface ManualGeometry {
   outer: Pt[];
@@ -816,7 +826,35 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
   let outer: Pt[];
   let hc: Pt = [0, 0];
   let maxHole: number;
-  if (s.kind === "cone") {
+  if (s.kind === "cylinder") {
+    if (hole) return { error: "A cylinder has no hole option — untick the hole." };
+    if (!ok(s.d) || !ok(s.h)) return { error: "Enter the diameter and the height (greater than 0)." };
+    return buildManualShape({ kind: "rect", w: Math.PI * s.d, h: s.h });
+  } else if (s.kind === "arc") {
+    if (hole) return { error: "An arc has no hole option — untick the hole." };
+    if (!(Number.isFinite(s.r) && s.r >= 0)) return { error: "The inner radius cannot be negative (0 = a pie slice)." };
+    if (!ok(s.w)) return { error: "Enter the width of the strip (greater than 0)." };
+    if (!(Number.isFinite(s.angle) && s.angle > 0 && s.angle < 360)) return { error: "The arc angle must be between 0° and 360°." };
+    const half = (s.angle * Math.PI) / 360;
+    const mid = Math.PI / 2; // the strip arches upwards, like a bent bar
+    const outerArc = coneArcPts(s.r + s.w, mid - half, mid + half);
+    const innerArc = s.r > 1e-6 ? coneArcPts(s.r, mid + half, mid - half) : [[0, 0] as Pt];
+    const raw = [...outerArc, ...innerArc];
+    const x0 = Math.min(...raw.map((q) => q[0]));
+    const y0 = Math.min(...raw.map((q) => q[1]));
+    const arc = raw.map((q) => [q[0] - x0, q[1] - y0] as Pt);
+    if (Math.abs(area(arc)) < 1) return { error: "This arc is too thin / too small." };
+    const axs = arc.map((q) => q[0]);
+    const ays = arc.map((q) => q[1]);
+    return {
+      outer: arc,
+      holes: [],
+      w: Math.max(...axs) - Math.min(...axs),
+      h: Math.max(...ays) - Math.min(...ays),
+      area: Math.abs(area(arc)),
+      per: per(arc),
+    };
+  } else if (s.kind === "cone") {
     if (hole) return { error: "A cone has no hole option — untick the hole." };
     const f = coneFlat(s.d1, s.d2, s.h);
     if ("error" in f) return f;
@@ -910,6 +948,8 @@ export function manualPartName(s: ManualShape): string {
   const hole = s.hole && s.hole > 0 ? ` Ø${fmtMm(s.hole)}` : "";
   if (s.kind === "rect") return `Rectangle ${fmtMm(s.w)}×${fmtMm(s.h)}${hole}`;
   if (s.kind === "circle") return `Circle Ø${fmtMm(s.d)}${hole ? ` /${hole}` : ""}`;
+  if (s.kind === "cylinder") return `Cylinder flat Ø${fmtMm(s.d)}×${fmtMm(s.h)}`;
+  if (s.kind === "arc") return `Arc R${fmtMm(s.r)} W${fmtMm(s.w)} ${fmtMm(s.angle)}°`;
   if (s.kind === "cone") return `Cone flat Ø${fmtMm(s.d1)}${s.d2 > 0 ? `/Ø${fmtMm(s.d2)}` : ""}×${fmtMm(s.h)}`;
   if (s.kind === "trapezoid") return `Trapezoid ${fmtMm(s.a)}/${fmtMm(s.b)}×${fmtMm(s.h)}${s.right ? " right" : ""}${hole}`;
   return `Triangle ${fmtMm(s.a)}-${fmtMm(s.b)} ${fmtMm(s.angle)}°${hole}`;
