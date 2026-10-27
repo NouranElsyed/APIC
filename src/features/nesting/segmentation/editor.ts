@@ -14,7 +14,7 @@
  * prevented — `buildPlan` reports them with an explanation, so the user can pass through
  * temporary invalid states while dragging and then correct them.
  */
-import { FREE_MIN_SEGMENT, RADIAL_MAX, pathLength, pathSelfIntersects, simplifyPath, type RadialSpec } from "./free-cut";
+import { FREE_MIN_SEGMENT, RADIAL_MAX, radialAngles, radialOrdered, pathLength, pathSelfIntersects, simplifyPath, type RadialSpec } from "./free-cut";
 import type { Direction, FreeCut, PlanInput, StripCut } from "./planner";
 import type { Pt } from "./types";
 
@@ -69,7 +69,7 @@ export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" 
     stripCuts: strips,
     seams,
     freeCuts,
-    radial: input.radial ? { center: [input.radial.center[0], input.radial.center[1]], count: input.radial.count, startDeg: input.radial.startDeg } : null,
+    radial: input.radial ? cloneRadial(input.radial) : null,
     nextC: Math.max(0, ...strips.map((c) => suffix(c.id, "C"))) + 1,
     nextT: Math.max(0, ...seams.map((t) => suffix(t.id, "T"))) + 1,
     nextF: Math.max(0, ...freeCuts.map((f) => suffix(f.id, "F"))) + 1,
@@ -84,7 +84,7 @@ export function toPlanInput(state: EditorState, base: Omit<PlanInput, "direction
     direction: state.direction,
     stripCuts: state.stripCuts.map((c) => ({ ...c })),
     seamCuts: state.seams.map((s) => ({ id: s.id, strip: s.strip === null ? 0 : (index.get(s.strip) ?? 0), pos: s.pos })),
-    ...(state.radial ? { radial: { center: [state.radial.center[0], state.radial.center[1]] as Pt, count: state.radial.count, startDeg: state.radial.startDeg } } : {}),
+    ...(state.radial ? { radial: cloneRadial(state.radial) } : {}),
     ...(state.freeCuts.length ? { freeCuts: state.freeCuts.map((f) => ({ id: f.id, pts: f.pts.map((p) => [p[0], p[1]] as Pt) })) } : {}),
   };
 }
@@ -233,6 +233,18 @@ export function cutPos(state: EditorState, id: string): number | undefined {
 /** Id under which the radial cut is selected and removed. */
 export const RADIAL_ID = "R";
 export const DEFAULT_RADIAL_COUNT = 4;
+/** Closest two neighbouring rays may be turned towards each other, degrees. */
+export const RAY_MIN_GAP = 0.5;
+const norm4 = (v: number) => {
+  const r = Math.round((((v % 360) + 360) % 360) * 1e4) / 1e4;
+  return r === 360 ? 0 : r;
+};
+export const cloneRadial = (r: RadialSpec): RadialSpec => ({
+  center: [r.center[0], r.center[1]],
+  count: r.count,
+  startDeg: r.startDeg,
+  ...(r.custom && r.custom.some((c) => c != null) ? { custom: [...r.custom] } : {}),
+});
 
 export const isRadial = (state: EditorState, id: string | null | undefined): boolean => id === RADIAL_ID && !!state.radial;
 
@@ -243,12 +255,23 @@ export const isRadial = (state: EditorState, id: string | null | undefined): boo
 export function setRadial(state: EditorState, patch: Partial<RadialSpec>): EditResult {
   const cur: RadialSpec = state.radial ?? { center: [0, 0], count: DEFAULT_RADIAL_COUNT, startDeg: 0 };
   const next: RadialSpec = { center: patch.center ?? cur.center, count: patch.count ?? cur.count, startDeg: patch.startDeg ?? cur.startDeg };
+  // hand-set rays: a new number of divisions starts again from the even pattern; turning the pattern turns them too
+  let custom = cur.custom;
+  if (next.count !== cur.count) custom = undefined;
+  else if (custom && next.startDeg !== cur.startDeg && Number.isFinite(next.startDeg)) {
+    const d = next.startDeg - cur.startDeg;
+    custom = custom.map((c) => (c == null ? null : norm4(c + d)));
+  }
+  if ("custom" in patch) custom = patch.custom;
+  if (custom && custom.every((c) => c == null)) custom = undefined;
+  if (custom) next.custom = custom;
   if (!Number.isFinite(next.center[0]) || !Number.isFinite(next.center[1])) return { ok: false, reason: "Enter a valid centre (X and Y in mm)." };
   if (!Number.isInteger(next.count) || next.count < 2 || next.count > RADIAL_MAX) return { ok: false, reason: `The number of divisions must be a whole number from 2 to ${RADIAL_MAX}.` };
   if (!Number.isFinite(next.startDeg)) return { ok: false, reason: "Enter a valid start angle in degrees." };
-  const same = state.radial && state.radial.count === next.count && state.radial.startDeg === next.startDeg && state.radial.center[0] === next.center[0] && state.radial.center[1] === next.center[1];
+  if (!radialOrdered(next)) return { ok: false, reason: "The rays must stay in order around the centre, none on top of another." };
+  const same = state.radial && state.radial.count === next.count && state.radial.startDeg === next.startDeg && state.radial.center[0] === next.center[0] && state.radial.center[1] === next.center[1] && JSON.stringify(state.radial.custom ?? null) === JSON.stringify(next.custom ?? null);
   if (same) return { ok: true, state };
-  return { ok: true, state: { ...state, radial: { center: [next.center[0], next.center[1]], count: next.count, startDeg: next.startDeg } } };
+  return { ok: true, state: { ...state, radial: cloneRadial(next) } };
 }
 
 /**
@@ -260,15 +283,53 @@ export function rotateRadial(state: EditorState, index: number, deg: number, fin
   const rd = state.radial;
   if (!rd) return { ok: false, reason: "There is no radial cut." };
   if (!Number.isFinite(deg) || !Number.isInteger(index) || index < 0 || index >= rd.count) return { ok: false, reason: "Enter a valid angle." };
-  let a = deg;
-  if (fine) a = Math.round(a / 5) * 5;
-  else {
-    const q = Math.round(a / 90) * 90;
-    if (Math.abs(a - q) < 2) a = q;
+  const a = snapAngle(deg, fine);
+  // the whole pattern (hand-set rays included) turns by the amount ray `index` moved
+  return setRadial(state, { startDeg: norm4(rd.startDeg + (a - radialAngles(rd)[index])) });
+}
+
+/** Angle snapping used when dragging rays: onto horizontal / vertical within 2°, 5° steps with `fine`. */
+function snapAngle(deg: number, fine: boolean): number {
+  if (fine) return Math.round(deg / 5) * 5;
+  const q = Math.round(deg / 90) * 90;
+  return Math.abs(deg - q) < 2 ? q : deg;
+}
+
+/** The angle (degrees) of every ray of the radial cut, or [] when there is none. */
+export const rayAngles = (state: EditorState): number[] => (state.radial ? radialAngles(state.radial) : []);
+
+/**
+ * Sets the direction of ONE ray; the others stay where they are. The ray is held between its two neighbours
+ * (at least RAY_MIN_GAP away), snaps like `rotateRadial`, and `note` says when it was held back.
+ */
+export function setRayAngle(state: EditorState, index: number, deg: number, fine = false): EditResult {
+  const rd = state.radial;
+  if (!rd) return { ok: false, reason: "There is no radial cut." };
+  if (!Number.isFinite(deg) || !Number.isInteger(index) || index < 0 || index >= rd.count) return { ok: false, reason: "Enter a valid angle." };
+  const angles = radialAngles(rd);
+  const prev = angles[(index + rd.count - 1) % rd.count];
+  const next = angles[(index + 1) % rd.count];
+  const span = rd.count === 2 ? 360 : (((next - prev) % 360) + 360) % 360;
+  const lo = RAY_MIN_GAP;
+  const hi = span - RAY_MIN_GAP;
+  if (lo > hi) return { ok: false, reason: "There is no room to move that ray between its neighbours." };
+  let off = (((snapAngle(deg, fine) - prev) % 360) + 360) % 360;
+  let note: string | undefined;
+  if (off < lo || off > hi) {
+    // outside the free range: hold at the nearer neighbour
+    off = off > span ? (off - span < 360 - off ? hi : lo) : off < lo ? lo : hi;
+    note = `R${index + 1} was held ${RAY_MIN_GAP}° from its neighbour: rays cannot cross each other.`;
   }
-  const start = a - (index * 360) / rd.count;
-  const norm = Math.round((((start % 360) + 360) % 360) * 1e4) / 1e4;
-  return setRadial(state, { startDeg: norm === 360 ? 0 : norm });
+  const custom = Array.from({ length: rd.count }, (_, i) => (i === index ? norm4(prev + off) : (rd.custom?.[i] ?? null)));
+  const r = setRadial(state, { custom });
+  return r.ok && note ? { ...r, note } : r;
+}
+
+/** Puts one ray back on the even pattern. */
+export function resetRay(state: EditorState, index: number): EditResult {
+  const rd = state.radial;
+  if (!rd || !rd.custom || rd.custom[index] == null) return { ok: true, state };
+  return setRadial(state, { custom: rd.custom.map((c, i) => (i === index ? null : c)) });
 }
 
 /** Moves the centre of the radial cut (snapped to the grid when snapping is on). */

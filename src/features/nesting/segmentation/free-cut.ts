@@ -489,6 +489,26 @@ export interface RadialSpec {
   count: number;
   /** Direction of the first cut line, degrees counter-clockwise from +x. */
   startDeg: number;
+  /**
+   * Rays the user set by hand: absolute angle in degrees for ray i, or null / missing = the ray follows the even
+   * pattern (`startDeg + i · 360 / count`). Rays must stay in counter-clockwise order.
+   */
+  custom?: (number | null)[];
+}
+
+const mod360 = (v: number) => ((v % 360) + 360) % 360;
+
+/** The direction (degrees) of every ray: the hand-set angle when there is one, else the even pattern. */
+export function radialAngles(spec: RadialSpec): number[] {
+  return Array.from({ length: spec.count }, (_, i) => {
+    const c = spec.custom?.[i];
+    return typeof c === "number" && Number.isFinite(c) ? c : spec.startDeg + (360 * i) / spec.count;
+  });
+}
+
+/** Angle of sector i, from ray i to ray i+1 (counter-clockwise), degrees. A value of 0 means two rays coincide. */
+export function radialGaps(angles: number[]): number[] {
+  return angles.map((a, i) => mod360(angles[(i + 1) % angles.length] - a));
 }
 
 export const RADIAL_MAX = 72;
@@ -496,14 +516,25 @@ export const RADIAL_MAX = 72;
 export function radialValid(spec: RadialSpec): boolean {
   return (
     Array.isArray(spec.center) && Number.isFinite(spec.center[0]) && Number.isFinite(spec.center[1]) &&
-    Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= RADIAL_MAX && Number.isFinite(spec.startDeg)
+    Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= RADIAL_MAX && Number.isFinite(spec.startDeg) &&
+    (spec.custom === undefined || (Array.isArray(spec.custom) && spec.custom.length <= spec.count)) &&
+    radialOrdered(spec)
   );
+}
+
+/** True when the rays are in counter-clockwise order, once around, none on top of another. */
+export function radialOrdered(spec: RadialSpec): boolean {
+  const angles = radialAngles(spec);
+  if (!angles.every(Number.isFinite)) return false;
+  const gaps = radialGaps(angles);
+  return gaps.every((g) => g > 0.01) && Math.abs(gaps.reduce((t, g) => t + g, 0) - 360) < 1e-6;
 }
 
 /** The cut lines of a radial cut as segments from the centre outwards (length `len`). Ray i is the start of sector i. */
 export function radialRays(spec: RadialSpec, len: number): { id: string; deg: number; a: Pt; b: Pt }[] {
+  const angles = radialAngles(spec);
   return Array.from({ length: spec.count }, (_, i) => {
-    const deg = spec.startDeg + (360 * i) / spec.count;
+    const deg = angles[i];
     const t = (deg * Math.PI) / 180;
     return { id: `R${i + 1}`, deg, a: [spec.center[0], spec.center[1]] as Pt, b: [spec.center[0] + len * Math.cos(t), spec.center[1] + len * Math.sin(t)] as Pt };
   });
@@ -554,7 +585,7 @@ export function splitRegionsRadial(regionsIn: Region[], spec: RadialSpec, len: n
 }
 
 function radialTry(regions: Region[], spec: RadialSpec, len: number): { parts: RadialSplit[] } {
-  const step = 360 / spec.count;
+  const gaps = radialGaps(radialAngles(spec));
   const rays = radialRays(spec, len);
   const parts = regions.map((P) => {
     const pieces: Region[] = [];
@@ -568,7 +599,7 @@ function radialTry(regions: Region[], spec: RadialSpec, len: number): { parts: R
         if (!q) continue;
         const phi = (Math.atan2(q[1] - spec.center[1], q[0] - spec.center[0]) * 180) / Math.PI;
         const delta = (((phi - a.deg) % 360) + 360) % 360;
-        if (delta < step) {
+        if (delta < gaps[k]) {
           pieces.push(piece);
           sectors.push(k);
         }

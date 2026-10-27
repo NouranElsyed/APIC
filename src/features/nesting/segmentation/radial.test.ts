@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { circleLoop, normalizeRegion, regionArea, regionFromPolygon } from "./geometry";
 import { buildPlan, type PlanInput, type Plan } from "./planner";
 import { splitRegionsRadial } from "./free-cut";
-import { rotateRadial, boundsFor, commit, newEditor, removeCut, setRadial, moveRadialCenter, stateFromInput, toPlanInput, undo, isRadial, RADIAL_ID } from "./editor";
+import { rotateRadial, setRayAngle, resetRay, rayAngles, boundsFor, commit, newEditor, removeCut, setRadial, moveRadialCenter, stateFromInput, toPlanInput, undo, isRadial, RADIAL_ID } from "./editor";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlanPreview, SegmentationPanel } from "./segment-dialog";
@@ -203,5 +203,100 @@ describe("radial cut: turning the pattern by dragging a ray", () => {
     expect(rotateRadial(stateFromInput(input()), 0, 10).ok).toBe(false);
     expect(rotateRadial(base(), 12, 10).ok).toBe(false);
     expect(rotateRadial(base(), 0, NaN).ok).toBe(false);
+  });
+});
+
+describe("radial cut: one ray on its own", () => {
+  const mk = (count = 12, startDeg = 22.5) => {
+    const r = setRadial(stateFromInput(input()), { center: [0, 0], count, startDeg });
+    if (!r.ok) throw new Error("x");
+    return r.state;
+  };
+  const okState = (r: ReturnType<typeof setRayAngle>) => {
+    if (!r.ok) throw new Error(r.reason);
+    return r.state;
+  };
+
+  it("moves only that ray; the others stay on the pattern", () => {
+    const s = okState(setRayAngle(mk(), 2, 70)); // pattern angle of R3 is 82.5°
+    const a = rayAngles(s);
+    expect(a[2]).toBe(70);
+    expect(a.filter((_, i) => i !== 2)).toEqual(rayAngles(mk()).filter((_, i) => i !== 2));
+    expect(s.radial!.custom![2]).toBe(70);
+    expect(s.radial!.custom!.filter((c) => c != null)).toHaveLength(1);
+  });
+
+  it("snaps to horizontal / vertical and takes typed values exactly", () => {
+    // R6 sits at 172.5° with R5 at 142.5° and R7 at 202.5° on either side
+    expect(rayAngles(okState(setRayAngle(mk(), 5, 180.9)))[5]).toBe(180);
+    expect(rayAngles(okState(setRayAngle(mk(), 5, 190.37)))[5]).toBeCloseTo(190.37, 4);
+    expect(rayAngles(okState(setRayAngle(mk(), 5, 187.3, true)))[5]).toBe(185);
+  });
+
+  it("is held between its neighbours and says so", () => {
+    const base = mk(); // rays at 22.5, 52.5, 82.5 …
+    const r = setRayAngle(base, 1, 100); // past R3 (82.5°)
+    if (!r.ok) throw new Error(r.reason);
+    expect(rayAngles(r.state)[1]).toBeCloseTo(82.5 - 0.5, 6);
+    expect(r.note).toMatch(/R2/);
+    const low = setRayAngle(base, 1, 10);
+    if (!low.ok) throw new Error(low.reason);
+    expect(rayAngles(low.state)[1]).toBeCloseTo(22.5 + 0.5, 6);
+  });
+
+  it("two rays: the second can be anywhere except on top of the first", () => {
+    const s = mk(2, 0);
+    expect(rayAngles(okState(setRayAngle(s, 1, 120)))).toEqual([0, 120]);
+    const near = rayAngles(okState(setRayAngle(s, 1, 359.9)))[1]; // snaps onto ray 1, so it is held 0.5° away from it
+    expect(Math.min(near, 360 - near)).toBeCloseTo(0.5, 6);
+    expect(rayAngles(okState(setRayAngle(s, 1, 350)))[1]).toBe(350);
+  });
+
+  it("back to pattern; changing the number of divisions starts again; turning the pattern turns the hand-set rays too", () => {
+    let s = okState(setRayAngle(mk(), 2, 70));
+    expect(rayAngles(okState(resetRay(s, 2)))).toEqual(rayAngles(mk()));
+    expect(okState(resetRay(s, 2)).radial!.custom).toBeUndefined();
+    const more = okState(setRadial(s, { count: 8 }));
+    expect(more.radial!.custom).toBeUndefined();
+    const turned = okState(rotateRadial(s, 0, 32.5)); // ray 0 from 22.5° to 32.5° = +10°
+    expect(rayAngles(turned)[2]).toBeCloseTo(80, 6);
+    expect(rayAngles(turned)[0]).toBeCloseTo(32.5, 6);
+    // no change → same object
+    expect(resetRay(mk(), 3)).toEqual({ ok: true, state: mk() });
+  });
+
+  it("refuses rays that cross, bad values and a missing radial cut", () => {
+    expect(setRayAngle(stateFromInput(input()), 0, 10).ok).toBe(false);
+    expect(setRayAngle(mk(), 99, 10).ok).toBe(false);
+    expect(setRayAngle(mk(), 0, NaN).ok).toBe(false);
+    expect(setRadial(mk(), { custom: [null, 200] }).ok).toBe(false); // R2 at 200° jumps past R3
+  });
+
+  it("the plan cuts along the hand-set ray: unequal sectors, still adding up, one seam exactly horizontal", () => {
+    const plate = regionFromPolygon([[-2000, -1000], [2000, -1000], [2000, 1000], [-2000, 1000]]);
+    const s = okState(setRayAngle(mk(4, 45), 0, 0)); // R1 horizontal on its own; R2..R4 at 135, 225, 315
+    const { direction: _d, stripCuts: _s, seamCuts: _m, freeCuts: _f, radial: _r, ...rest } = input();
+    void _d; void _s; void _m; void _f; void _r;
+    const p = buildPlan(plate, toPlanInput(s, rest));
+    expect(p.segments).toHaveLength(4);
+    expect(total(p)).toBeCloseTo(4000 * 2000, 4);
+    const areas = p.segments.map((x) => Math.round(x.finishedArea));
+    expect(new Set(areas).size).toBeGreaterThan(1);
+    expect(p.seams.some((m) => m.cutId === "R1" && m.path!.every(([a, b]) => Math.abs(a[1]) < 1e-3 && Math.abs(b[1]) < 1e-3))).toBe(true);
+    // JSON round trip keeps the hand-set ray
+    const back = buildPlan(plate, JSON.parse(JSON.stringify(p.input)));
+    expect(back.segments.map((x) => Math.round(x.finishedArea))).toEqual(areas);
+  });
+
+  it("the dialog draws a handle and a label for every ray and offers the angle field for the picked one", () => {
+    const g: Group = { id: 1, sn: 1, name: "P", qty: 1, th: 10, material: "S", outer: [[0, 0], [3000, 0], [3000, 1400], [0, 1400]], holes: [], w: 3000, h: 1400, area: 3000 * 1400, per: 8800 };
+    const region = groupToRegion(g).region;
+    const s = okState(setRayAngle(okState(setRadial(stateFromInput(input()), { center: [1500, 700], count: 4, startDeg: 45 })), 1, 100));
+    const plan = buildPlan(region, toPlanInput(s, (({ direction, stripCuts, seamCuts, ...r }) => (void direction, void stripCuts, void seamCuts, r))(input())));
+    const noop = () => undefined;
+    const html = renderToStaticMarkup(createElement(PlanPreview, { region, plan, edit: { state: s, bounds: boundsFor([0, 0, 3000, 1400], "H"), selected: RADIAL_ID, mode: null, onSelect: noop, onDrag: noop, onDragEnd: noop, onAdd: noop, onAddFree: noop, onMoveFreePoint: noop, onMoveFree: noop, onSplitFree: noop, onRemoveFreePoint: noop, onSetCenter: noop, onRotateRadial: noop, selectedRay: 1, onSelectRay: noop, onSetRayAngle: noop } }));
+    for (let i = 0; i < 4; i++) expect(html).toContain(`data-ray="${i}"`);
+    for (let i = 1; i <= 4; i++) expect(html).toContain(`>R${i}<`);
+    expect(html).toContain("cursor:move"); // the picked ray
   });
 });

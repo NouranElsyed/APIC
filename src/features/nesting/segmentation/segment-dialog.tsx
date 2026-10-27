@@ -40,8 +40,11 @@ import {
   redo,
   removeCut,
   removeFreePoint,
+  rayAngles,
   reset,
+  resetRay,
   setRadial,
+  setRayAngle,
   splitFreeSegment,
   stateFromInput,
   toPlanInput,
@@ -55,6 +58,7 @@ import { candidateFacts, defaultForm, formFromInput, parseForm, planBaseFromForm
 import { savedPlan } from "./commit";
 import { exportSegmentation, type ExportResult } from "./export-action";
 import { regionBBox, regionInteriorPoint } from "./geometry";
+import { radialAngles } from "./free-cut";
 import { groupToRegion } from "./group-region";
 import { buildPlan, generateCandidates, type Candidate, type Plan, type PlanInput } from "./planner";
 import { regionPath, screenToWorld, seamLines, segmentFill, segmentStroke, svgViewBox } from "./preview-path";
@@ -101,6 +105,11 @@ export interface PreviewEdit {
   onSetCenter: (to: Pt) => void;
   /** Radial cut: ray `index` was dragged to point at `deg`; the whole pattern turns with it. `fine` = Shift held. */
   onRotateRadial: (index: number, deg: number, fine: boolean) => void;
+  /** The ray picked with a double-click (edited on its own), or null. */
+  selectedRay?: number | null;
+  onSelectRay?: (index: number | null) => void;
+  /** Dragging the picked ray: only that ray turns. */
+  onSetRayAngle?: (index: number, deg: number, fine: boolean) => void;
 }
 
 const STRIP_COLOR = "hsl(215 90% 55%)";
@@ -113,7 +122,8 @@ type Drag =
   | { id: string; kind: "free-move"; last: { x: number; y: number } }
   | { id: string; kind: "free-point"; index: number }
   | { id: string; kind: "radial-center" }
-  | { id: string; kind: "radial-ray"; index: number };
+  | { id: string; kind: "radial-ray"; index: number }
+  | { id: string; kind: "radial-ray-solo"; index: number };
 
 /** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
 export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
@@ -176,6 +186,9 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
         if (d.kind === "free-move") {
           edit.onMoveFree(d.id, w.x - d.last.x, w.y - d.last.y);
           d.last = { x: w.x, y: w.y };
+        } else if (d.kind === "radial-ray-solo") {
+          const rd = edit.state.radial;
+          if (rd) edit.onSetRayAngle?.(d.index, (Math.atan2(w.y - rd.center[1], w.x - rd.center[0]) * 180) / Math.PI, e.shiftKey);
         } else if (d.kind === "radial-ray") {
           const rd = edit.state.radial;
           if (rd) edit.onRotateRadial(d.index, (Math.atan2(w.y - rd.center[1], w.x - rd.center[0]) * 180) / Math.PI, e.shiftKey);
@@ -314,15 +327,17 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
           const [bx0, by0, bx1, by1] = rdBox;
           const len = Math.max(...[[bx0, by0], [bx1, by0], [bx0, by1], [bx1, by1]].map(([x, y]) => Math.hypot(x - rd.center[0], y - rd.center[1]))) * 1.02;
           const sel = edit.selected === RADIAL_ID;
+          const angles = radialAngles(rd);
           return (
             <g data-cut={RADIAL_ID}>
               {Array.from({ length: rd.count }, (_, i) => {
-                const t = ((rd.startDeg + (360 * i) / rd.count) * Math.PI) / 180;
+                const t = (angles[i] * Math.PI) / 180;
+                const solo = edit.selectedRay === i;
                 const x2 = rd.center[0] + len * Math.cos(t);
                 const y2 = rd.center[1] + len * Math.sin(t);
                 return (
                   <g key={i}>
-                    <line x1={rd.center[0]} y1={rd.center[1]} x2={x2} y2={y2} stroke={RADIAL_COLOR} strokeWidth={sel ? size / 200 : size / 330} strokeDasharray={`${size / 90} ${size / 140}`} pointerEvents="none" />
+                    <line x1={rd.center[0]} y1={rd.center[1]} x2={x2} y2={y2} stroke={solo ? FREE_COLOR : RADIAL_COLOR} strokeWidth={solo ? size / 120 : sel ? size / 200 : size / 330} strokeDasharray={solo ? undefined : `${size / 90} ${size / 140}`} pointerEvents="none" />
                     <line
                       x1={rd.center[0]}
                       y1={rd.center[1]}
@@ -330,13 +345,20 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
                       y2={y2}
                       stroke="transparent"
                       strokeWidth={size / 45}
-                      style={{ cursor: edit.mode ? "crosshair" : "alias" }}
+                      style={{ cursor: edit.mode ? "crosshair" : solo ? "move" : "alias" }}
                       data-ray={i}
+                      onDoubleClick={(e) => {
+                        if (edit.mode) return;
+                        e.stopPropagation();
+                        edit.onSelect(RADIAL_ID);
+                        edit.onSelectRay?.(i);
+                      }}
                       onPointerDown={(e) => {
                         if (edit.mode) return;
                         e.stopPropagation();
                         edit.onSelect(RADIAL_ID);
-                        dragging.current = { id: RADIAL_ID, kind: "radial-ray", index: i };
+                        // the picked ray moves on its own; any other ray turns the whole pattern
+                        dragging.current = { id: RADIAL_ID, kind: solo ? "radial-ray-solo" : "radial-ray", index: i };
                         (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
                       }}
                     />
@@ -379,6 +401,28 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
           {h.id}
         </text>
       ))}
+      {edit?.state.radial &&
+        (() => {
+          const rd = edit.state.radial;
+          const [bx0, by0, bx1, by1] = rdBox;
+          const len = Math.max(...[[bx0, by0], [bx1, by0], [bx0, by1], [bx1, by1]].map(([x, y]) => Math.hypot(x - rd.center[0], y - rd.center[1]))) * 1.02;
+          const angles = radialAngles(rd);
+          return angles.map((a, i) => (
+            <text
+              key={`ray-${i}`}
+              x={rd.center[0] + len * 0.93 * Math.cos((a * Math.PI) / 180)}
+              y={-(rd.center[1] + len * 0.93 * Math.sin((a * Math.PI) / 180))}
+              fontSize={size / 60}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fill={edit.selectedRay === i ? FREE_COLOR : RADIAL_COLOR}
+              fontWeight={edit.selectedRay === i ? 700 : 500}
+              pointerEvents="none"
+            >
+              R{i + 1}
+            </text>
+          ));
+        })()}
       {(edit?.state.freeCuts ?? []).map((f) => {
         const q = f.pts[Math.floor((f.pts.length - 1) / 2)];
         return (
@@ -440,6 +484,7 @@ export function SegmentationPanel({
   // editing (Phase 5): the draft cut lists with undo/redo, the selected cut, and the active "add" tool
   const [editor, setEditor] = React.useState<Editor | null>(() => (existing ? newEditor(stateFromInput(existing)) : null));
   const [selCut, setSelCut] = React.useState<string | null>(null);
+  const [selRay, setSelRay] = React.useState<number | null>(null); // the ray picked with a double-click
   const [mode, setMode] = React.useState<"strip" | "seam" | "free" | "radial" | null>(null);
   const [snapOn, setSnapOn] = React.useState(false);
   const [grid, setGrid] = React.useState("10");
@@ -570,6 +615,7 @@ export function SegmentationPanel({
     const r = moveRadialCenter(state, gridMm ? to : [Math.round(to[0] * 10) / 10, Math.round(to[1] * 10) / 10], gridMm);
     apply(r, first ? undefined : "drag:R");
     if (first && r.ok) {
+      setSelRay(null);
       setMode(null);
       setSelCut(RADIAL_ID);
     }
@@ -578,12 +624,17 @@ export function SegmentationPanel({
   const onRotateRadial = (index: number, deg: number, fine: boolean) => {
     if (state) apply(rotateRadial(state, index, deg, fine), "drag:R:rot");
   };
+  /** Dragging the picked ray: only that ray turns (held between its neighbours). */
+  const onSetRayAngle = (index: number, deg: number, fine: boolean) => {
+    if (state) apply(setRayAngle(state, index, deg, fine), `drag:R:${index}`);
+  };
   const onRadialField = (patch: { count?: number; startDeg?: number; x?: number; y?: number }) => {
     if (!state?.radial) return;
     const center: Pt = [patch.x ?? state.radial.center[0], patch.y ?? state.radial.center[1]];
     apply(setRadial(state, { center, count: patch.count ?? state.radial.count, startDeg: patch.startDeg ?? state.radial.startDeg }));
   };
   const removeSelected = () => {
+    if (selCut === RADIAL_ID) setSelRay(null);
     if (state && selCut && apply(removeCut(state, selCut))) setSelCut(null);
   };
   const setPos = (text: string) => {
@@ -1090,7 +1141,31 @@ export function SegmentationPanel({
                     <Button size="sm" variant="outline" title="Turn the pattern so that a ray is horizontal (start angle 0°)" onClick={() => onRadialField({ startDeg: 0 })}>
                       Ray horizontal
                     </Button>
-                    <p className="w-full text-[11px] text-muted-foreground">Drag any ray (dashed line) to turn all of them together; it snaps to horizontal / vertical, Shift = 5° steps.</p>
+                    {selRay !== null && selRay < state.radial.count && (
+                      <div className="flex w-full flex-wrap items-end gap-2 border-t border-border pt-2">
+                        <div className="w-[130px]">
+                          <Field label={`Angle of ray R${selRay + 1} (°)`}>
+                            <Input
+                              key={`ray${selRay}:${rayAngles(state)[selRay]}`}
+                              inputMode="decimal"
+                              aria-label={`Angle of ray R${selRay + 1}`}
+                              defaultValue={String(Math.round((((rayAngles(state)[selRay] % 360) + 360) % 360) * 100) / 100)}
+                              onKeyDown={(e) => e.key === "Enter" && apply(setRayAngle(state, selRay, Number(e.currentTarget.value.replace(",", "."))))}
+                              onBlur={(e) => apply(setRayAngle(state, selRay, Number(e.currentTarget.value.replace(",", "."))))}
+                            />
+                          </Field>
+                        </div>
+                        <Button size="sm" variant="outline" disabled={state.radial.custom?.[selRay] == null} title="Put this ray back on the even pattern" onClick={() => apply(resetRay(state, selRay))}>
+                          Back to pattern
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setSelRay(null)}>
+                          Done
+                        </Button>
+                      </div>
+                    )}
+                    <p className="w-full text-[11px] text-muted-foreground">
+                      Drag a ray (dashed line) to turn all of them together; it snaps to horizontal / vertical, Shift = 5° steps. Double-click a ray to move only that one: drag it or type its angle.
+                    </p>
                   </div>
                 )}
                 {selCut && isFreeCut(state, selCut) && (
@@ -1111,7 +1186,7 @@ export function SegmentationPanel({
                 plan={plan}
                 edit={
                   state && bounds
-                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint, onSetCenter, onRotateRadial }
+                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint, onSetCenter, onRotateRadial, selectedRay: state.radial ? selRay : null, onSelectRay: setSelRay, onSetRayAngle }
                     : undefined
                 }
               />
