@@ -30,7 +30,7 @@ import {
   addManualPart,
   buildManualShape,
   coneFlat,
-  cylPartInfo,
+  cylPartFlat,
   manualPartName,
   resizeGroup,
   addNestParts,
@@ -1070,12 +1070,13 @@ type ManualForm = {
   coneD1: string; coneD2: string; coneH: string; // cone: bottom Ø, top Ø (empty = pointed), height
   cylD: string; cylH: string; // cylinder: diameter, height
   arcR: string; arcW: string; arcAngle: string; // arc: inner radius (empty = 0), strip width, angle
-  cpR: string; cpH: string; cpBy: "angle" | "arc" | "chord"; cpV: string; // cylinder part: radius, height, how the piece is given, its value
+  cpR: string; cpH: string; cpBy: "angle" | "arc" | "chord" | "slope"; cpV: string; // cylinder part: radius, height, how the piece is given, its value
+  cpCut: boolean; cpH2: string; // cylinder part cut off at a slant: on/off, height at the other end
   hasHole: boolean; hole: string;
   th: string; material: string; qty: string; name: string;
 };
 const EMPTY_MANUAL: ManualForm = {
-  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", tzA: "", tzB: "", tzH: "", tzRight: false, d: "", coneD1: "", coneD2: "", coneH: "", cylD: "", cylH: "", arcR: "", arcW: "", arcAngle: "", cpR: "", cpH: "", cpBy: "chord", cpV: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
+  kind: "rect", w: "", h: "", a: "", b: "", angle: "90", tzA: "", tzB: "", tzH: "", tzRight: false, d: "", coneD1: "", coneD2: "", coneH: "", cylD: "", cylH: "", arcR: "", arcW: "", arcAngle: "", cpR: "", cpH: "", cpBy: "chord", cpV: "", cpCut: false, cpH2: "", hasHole: false, hole: "", th: "", material: "", qty: "1", name: "",
 };
 
 /** One line of the "what will be added" popup that opens after choosing DXF files. */
@@ -1634,7 +1635,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const mfHole = mf.hasHole && !mfNoHole ? mfNum(mf.hole) : 0;
   const mfShape: ManualShape =
     mf.kind === "cylpart"
-      ? { kind: "cylpart", r: mfNum(mf.cpR), h: mfNum(mf.cpH), by: mf.cpBy, v: mfNum(mf.cpV) }
+      ? { kind: "cylpart", r: mfNum(mf.cpR), h: mfNum(mf.cpH), ...(mf.cpCut ? { h2: mfNum(mf.cpH2) } : {}), by: !mf.cpCut && mf.cpBy === "slope" ? "chord" : mf.cpBy, v: mfNum(mf.cpV) }
       : mf.kind === "cylinder"
       ? { kind: "cylinder", d: mfNum(mf.cylD), h: mfNum(mf.cylH) }
       : mf.kind === "arc"
@@ -1650,7 +1651,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           : { kind: "triangle", a: mfNum(mf.a), b: mfNum(mf.b), angle: mfNum(mf.angle), hole: mfHole };
   const mfGeo = buildManualShape(mfShape);
   // show the "what is wrong" message only once something was typed
-  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d + mf.tzA + mf.tzB + mf.tzH + mf.coneD1 + mf.coneD2 + mf.coneH + mf.cylD + mf.cylH + mf.cpR + mf.cpH + mf.cpV + mf.arcR + mf.arcW + mf.arcAngle !== "" || (mf.hasHole && mf.hole !== "");
+  const mfTouched = mf.w + mf.h + mf.a + mf.b + mf.d + mf.tzA + mf.tzB + mf.tzH + mf.coneD1 + mf.coneD2 + mf.coneH + mf.cylD + mf.cylH + mf.cpR + mf.cpH + mf.cpV + mf.cpH2 + mf.arcR + mf.arcW + mf.arcAngle !== "" || (mf.hasHole && mf.hole !== "");
 
   async function addManual(keepOpen: boolean) {
     if ("error" in mfGeo) {
@@ -3452,21 +3453,29 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="Radius R (mm)"><Input type="number" min={0} step="any" inputMode="decimal" autoFocus value={mf.cpR} onChange={(e) => setMf({ ...mf, cpR: e.target.value })} /></Field>
-                    <Field label="Height (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.cpH} onChange={(e) => setMf({ ...mf, cpH: e.target.value })} /></Field>
+                    <Field label={mf.cpCut ? "Height – left end (mm)" : "Height (mm)"}><Input type="number" min={0} step="any" inputMode="decimal" value={mf.cpH} onChange={(e) => setMf({ ...mf, cpH: e.target.value })} /></Field>
                   </div>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm">
+                    <Checkbox checked={mf.cpCut} onCheckedChange={(v) => setMf({ ...mf, cpCut: v === true, cpBy: v !== true && mf.cpBy === "slope" ? "chord" : mf.cpBy })} />
+                    Cut off at an angle (one end taller than the other)
+                  </label>
+                  {mf.cpCut && (
+                    <Field label="Height – right end (mm)"><Input type="number" min={0} step="any" inputMode="decimal" value={mf.cpH2} onChange={(e) => setMf({ ...mf, cpH2: e.target.value })} /></Field>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="The piece is given by">
                       <select className={selectCls} value={mf.cpBy} onChange={(e) => setMf({ ...mf, cpBy: e.target.value as ManualForm["cpBy"] })}>
                         <option value="chord">Chord length (straight across)</option>
                         <option value="arc">Arc length (along the curve)</option>
-                        <option value="angle">Angle (°)</option>
+                        <option value="angle">Angle around the cylinder (°)</option>
+                        {mf.cpCut && <option value="slope">Cut angle in the flat pattern (°)</option>}
                       </select>
                     </Field>
-                    <Field label={mf.cpBy === "angle" ? "Angle (°)" : mf.cpBy === "arc" ? "Arc length (mm)" : "Chord (mm)"}>
+                    <Field label={mf.cpBy === "angle" ? "Angle (°)" : mf.cpBy === "slope" ? "Cut angle (°)" : mf.cpBy === "arc" ? "Arc length (mm)" : "Chord (mm)"}>
                       <Input type="number" min={0} step="any" inputMode="decimal" value={mf.cpV} onChange={(e) => setMf({ ...mf, cpV: e.target.value })} />
                     </Field>
                   </div>
-                  <p className="text-xs text-muted-foreground">A rolled plate, added <b>flattened</b>: a rectangle (arc length) × height. Type the mean (neutral-line) R if the thickness matters.</p>
+                  <p className="text-xs text-muted-foreground">A rolled plate, added <b>flattened</b>: a rectangle (arc length) × height{mf.cpCut ? ", or a right trapezoid when it is cut off at an angle" : ""}. Type the mean (neutral-line) R if the thickness matters.</p>
                 </>
               )}
               {mf.kind === "arc" && (
@@ -3523,12 +3532,12 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                       </>
                     )}
                     {mfShape.kind === "cylpart" && (() => {
-                      const f = cylPartInfo(mfShape.r, mfShape.by, mfShape.v);
+                      const f = cylPartFlat(mfShape);
                       const r2 = (n: number) => Math.round(n * 100) / 100;
                       return "error" in f ? null : (
                         <>
                           <br />
-                          {r2(f.angle)}° · arc {r2(f.arc)} · chord {r2(f.chord)} · rise {r2(f.rise)}
+                          {r2(f.info.angle)}° · arc {r2(f.info.arc)} · chord {r2(f.info.chord)} · rise {r2(f.info.rise)}
                         </>
                       );
                     })()}

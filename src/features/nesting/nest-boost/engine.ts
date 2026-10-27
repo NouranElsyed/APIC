@@ -765,8 +765,11 @@ export type ManualShape =
    * A PART of a cylinder (a rolled plate): radius `r`, height `h` and how much of the circle it covers, given as the
    * `angle` (°), the `arc` length or the `chord` (`by`, with the number in `v`). The part is the FLAT PATTERN: a rectangle
    * (arc length) × h. Type the mean (neutral-line) radius when the thickness matters.
+   * `h2` (optional) = the piece is CUT OFF at a slant: `h` is the height at the left end, `h2` at the right end, so the flat
+   * pattern is a right trapezoid. With `by: "slope"`, `v` is the angle (°) of the slanted edge in the flat pattern and the
+   * length follows from the two heights: (h2 − h) / tan(v).
    */
-  | { kind: "cylpart"; r: number; h: number; by: "angle" | "arc" | "chord"; v: number; hole?: number };
+  | { kind: "cylpart"; r: number; h: number; h2?: number; by: "angle" | "arc" | "chord" | "slope"; v: number; hole?: number };
 
 export interface ManualGeometry {
   outer: Pt[];
@@ -842,6 +845,22 @@ export function cylPartInfo(
   return { angle: (t * 180) / Math.PI, arc: r * t, chord: 2 * r * Math.sin(t / 2), rise: r * (1 - Math.cos(t / 2)) };
 }
 
+/** Flat length of a (cut) piece of cylinder, plus what the piece measures; or a message. */
+export function cylPartFlat(s: Extract<ManualShape, { kind: "cylpart" }>): { len: number; info: NonNullable<ReturnType<typeof okInfo>> } | { error: string } {
+  const cut = s.h2 !== undefined && !(Number.isNaN(s.h2));
+  if (s.by === "slope") {
+    if (!cut) return { error: "Enter the height at the other end." };
+    if (!(Number.isFinite(s.v) && s.v > 0 && s.v < 90)) return { error: "The cut angle must be between 0° and 90°." };
+    const dh = Math.abs((s.h2 as number) - s.h);
+    if (!(dh > 0)) return { error: "The two heights must be different for a slanted cut." };
+    const f = cylPartInfo(s.r, "arc", dh / Math.tan((s.v * Math.PI) / 180));
+    return "error" in f ? f : { len: f.arc, info: f };
+  }
+  const f = cylPartInfo(s.r, s.by, s.v);
+  return "error" in f ? f : { len: f.arc, info: f };
+}
+const okInfo = (x: ReturnType<typeof cylPartInfo>) => ("error" in x ? null : x);
+
 /** Outline (+ hole) of a typed-in part, moved to 0,0 like every other part; or a message saying what is wrong with the numbers. */
 export function buildManualShape(s: ManualShape): ManualGeometry | { error: string } {
   const ok = (n: number | undefined) => typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -854,9 +873,13 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
   if (s.kind === "cylpart") {
     if (hole) return { error: "A cylinder part has no hole option — untick the hole." };
     if (!ok(s.h)) return { error: "Enter the height (greater than 0)." };
-    const f = cylPartInfo(s.r, s.by, s.v);
+    const f = cylPartFlat(s);
     if ("error" in f) return f;
-    return buildManualShape({ kind: "rect", w: f.arc, h: s.h });
+    if (s.h2 === undefined || Number.isNaN(s.h2)) return buildManualShape({ kind: "rect", w: f.len, h: s.h });
+    if (!ok(s.h2)) return { error: "Enter the height at the other end (greater than 0)." };
+    const outer: Pt[] = [[0, 0], [f.len, 0], [f.len, s.h2], [0, s.h]];
+    if (Math.abs(area(outer)) < 1) return { error: "This piece is too thin / too small." };
+    return { outer, holes: [], w: f.len, h: Math.max(s.h, s.h2), area: Math.abs(area(outer)), per: per(outer) };
   } else if (s.kind === "cylinder") {
     if (hole) return { error: "A cylinder has no hole option — untick the hole." };
     if (!ok(s.d) || !ok(s.h)) return { error: "Enter the diameter and the height (greater than 0)." };
@@ -980,8 +1003,9 @@ export function manualPartName(s: ManualShape): string {
   if (s.kind === "rect") return `Rectangle ${fmtMm(s.w)}×${fmtMm(s.h)}${hole}`;
   if (s.kind === "circle") return `Circle Ø${fmtMm(s.d)}${hole ? ` /${hole}` : ""}`;
   if (s.kind === "cylpart") {
-    const f = cylPartInfo(s.r, s.by, s.v);
-    return `Cylinder part R${fmtMm(s.r)} ${"error" in f ? "" : `${fmtMm(f.angle)}° `}×${fmtMm(s.h)}`.replace("  ", " ");
+    const f = cylPartFlat(s);
+    const hh = s.h2 !== undefined && !Number.isNaN(s.h2) ? `${fmtMm(s.h)}/${fmtMm(s.h2)}` : fmtMm(s.h);
+    return `Cylinder part R${fmtMm(s.r)} ${"error" in f ? "" : `${fmtMm(f.info.angle)}° `}×${hh}`.replace("  ", " ");
   }
   if (s.kind === "cylinder") return `Cylinder flat Ø${fmtMm(s.d)}×${fmtMm(s.h)}`;
   if (s.kind === "arc") return `Arc R${fmtMm(s.r)} W${fmtMm(s.w)} ${fmtMm(s.angle)}°`;

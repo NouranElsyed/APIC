@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addManualPart, buildManualShape, coneFlat, cylPartInfo, manualPartName, resizeGroup, type Group } from "./engine";
+import { addManualPart, buildManualShape, coneFlat, cylPartInfo, cylPartFlat, manualPartName, resizeGroup, type Group } from "./engine";
 
 const geo = (s: Parameters<typeof buildManualShape>[0]) => {
   const r = buildManualShape(s);
@@ -252,5 +252,30 @@ describe("parts typed in by hand", () => {
     expect(buildManualShape({ kind: "cylpart", r: 100, h: 0, by: "angle", v: 30 })).toHaveProperty("error");
     expect(buildManualShape({ kind: "cylpart", r: 100, h: 50, by: "angle", v: 30, hole: 5 })).toHaveProperty("error");
     expect(manualPartName({ kind: "cylpart", r: 2840, h: 720, by: "angle", v: 30 })).toBe("Cylinder part R2840 30° ×720");
+  });
+
+  it("cylinder part cut off at an angle: right trapezoid, length from the cut angle", () => {
+    // heights 137 and 861, 15° in the flat pattern → length = 724 / tan 15°
+    const g = geo({ kind: "cylpart", r: 2940, h: 137, h2: 861, by: "slope", v: 15 });
+    const L = 724 / Math.tan((15 * Math.PI) / 180);
+    expect(g.w).toBeCloseTo(L, 6);
+    expect(g.h).toBeCloseTo(861, 6);
+    expect(g.area).toBeCloseTo((L * (137 + 861)) / 2, 4);
+    expect(g.outer).toHaveLength(4);
+    // same part given by its arc length
+    const g2 = geo({ kind: "cylpart", r: 2940, h: 137, h2: 861, by: "arc", v: L });
+    expect(g2.area).toBeCloseTo(g.area, 4);
+    const f = cylPartFlat({ kind: "cylpart", r: 2940, h: 137, h2: 861, by: "slope", v: 15 });
+    if ("error" in f) throw new Error(f.error);
+    expect(f.info.arc).toBeCloseTo(L, 6);
+    expect(manualPartName({ kind: "cylpart", r: 2940, h: 137, h2: 861, by: "slope", v: 15 })).toMatch(/^Cylinder part R2940 .*°\s?×137\/861$/);
+  });
+
+  it("cut cylinder part: bad numbers give a message", () => {
+    expect(buildManualShape({ kind: "cylpart", r: 2940, h: 137, by: "slope", v: 15 })).toHaveProperty("error"); // no second height
+    expect(buildManualShape({ kind: "cylpart", r: 2940, h: 137, h2: 137, by: "slope", v: 15 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylpart", r: 2940, h: 137, h2: 861, by: "slope", v: 90 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylpart", r: 2940, h: 137, h2: NaN, by: "arc", v: 1000 })).toBeDefined();
+    expect(buildManualShape({ kind: "cylpart", r: 2940, h: 137, h2: 0, by: "arc", v: 1000 })).toHaveProperty("error");
   });
 });
