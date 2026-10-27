@@ -12,6 +12,10 @@
  * cuts inside a strip. Direction "H" = horizontal strips (cut lines y = const, seams x = const);
  * "V" = vertical strips (cut lines x = const, seams y = const).
  *
+ * FREE CUTS (optional): the user can also draw free-form cut lines (polylines). They are applied after the
+ * strips and seams, to every cell, and split the pieces along the drawn line. Pieces are then numbered one
+ * by one (S01, S02, …). Overlap / gap is not supported together with free cuts (reported as an error).
+ *
  * Geometry kinds kept apart on every segment:
  *   finished — the exact piece of the original outline (pieces reassemble to the part)
  *   cut      — what is cut from sheet. Equal to `finished` unless overlap is enabled.
@@ -33,6 +37,15 @@ import { makeSettings, rotList, type Group } from "../nest-boost/engine";
 import { regionToGroupShape } from "./convert";
 import { classifyFit, gridCapacity, type FitResult, type SheetSize } from "./fit";
 import {
+  FREE_MIN_SEGMENT,
+  distanceToPath,
+  extendPath,
+  pathLength,
+  pathSelfIntersects,
+  sharedSegments,
+  splitRegionsByPath,
+} from "./free-cut";
+import {
   MIN_CUT_SPACING,
   clipRegionToBox,
   edgesOnLine,
@@ -45,7 +58,7 @@ import {
   sliceRegions,
   type Box,
 } from "./geometry";
-import type { Axis, CutRecord, Region } from "./types";
+import type { Axis, CutRecord, Pt, Region } from "./types";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -104,10 +117,18 @@ export interface SeamCut {
   pos: number;
 }
 
+/** A free-form cut line: an open polyline in world coordinates (mm). Its ends are extended to the part's edge. */
+export interface FreeCut {
+  id: string;
+  pts: Pt[];
+}
+
 export interface PlanInput {
   direction: Direction;
   stripCuts: StripCut[];
   seamCuts: SeamCut[];
+  /** Hand-drawn cut lines (optional; absent in plans saved before this tool existed). */
+  freeCuts?: FreeCut[];
   overlap: OverlapSpec;
   sheet: SheetCtx;
   holePolicy: HolePolicy;
@@ -121,6 +142,7 @@ export interface PlanInput {
 export type IssueCode =
   | "INVALID_OVERLAP"
   | "BAD_CUT"
+  | "FREE_CUT_OVERLAP"
   | "CUT_OUTSIDE_PART"
   | "CUT_SHIFTED"
   | "HOLE_CUT"
@@ -163,8 +185,8 @@ export interface PlanSeam {
   /** `${cutId}:${lowSegment}|${highSegment}` */
   id: string;
   cutId: string;
-  kind: "strip" | "transverse";
-  /** The cut line is `axis = pos`. */
+  kind: "strip" | "transverse" | "free";
+  /** The cut line is `axis = pos`. (Free cuts: axis "x" / pos 0 are placeholders, see `path`.) */
   axis: Axis;
   pos: number;
   low: string;
@@ -173,6 +195,8 @@ export interface PlanSeam {
   intervals: [number, number][];
   /** Which side carries the overlap / gap here, or null when it is off. */
   carrier: "low" | "high" | "both" | null;
+  /** Free cuts only: the seam as straight segments in world coordinates. */
+  path?: [Pt, Pt][];
 }
 
 export interface PlanMetrics {
@@ -237,7 +261,10 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     issues.push({ severity, code, message, ...extra });
   const cons = input.constraints ?? {};
   const tol = input.tol ?? TOL_MM;
-  const o = input.overlap.enabled ? input.overlap.mm : 0; // signed: > 0 overlap, < 0 gap
+  const freeCuts = input.freeCuts ?? [];
+  const hasFree = freeCuts.length > 0;
+  // free cuts do not support overlap / gap: it is switched off for the geometry and reported as an error below
+  const o = !hasFree && input.overlap.enabled ? input.overlap.mm : 0; // signed: > 0 overlap, < 0 gap
   const w = Math.abs(o);
   const isGap = o < 0;
 
@@ -257,7 +284,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
       valid: !issues.some((i) => i.severity === "error"),
       metrics: {
         segments: segments.length,
-        cuts: input.stripCuts.length + input.seamCuts.length,
+        cuts: input.stripCuts.length + input.seamCuts.length + freeCuts.length,
         cutLength: seams.reduce((s, m) => s + m.length, 0),
         finishedArea: segments.reduce((s, g) => s + g.finishedArea, 0),
         cutArea,
@@ -272,6 +299,10 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
   if (input.overlap.enabled && !(Number.isFinite(input.overlap.mm) && input.overlap.mm !== 0)) {
     add("error", "INVALID_OVERLAP", "Overlap is enabled but its value is missing or zero. Enter a positive value to overlap the pieces or a negative value for a gap between them.");
     return finish([], []);
+  }
+
+  if (hasFree && input.overlap.enabled) {
+    add("error", "FREE_CUT_OVERLAP", "Overlap / gap cannot be used together with free-form cuts yet. Turn the overlap off or remove the free cuts.");
   }
 
   const acrossAxis: Axis = input.direction === "H" ? "y" : "x";
@@ -344,6 +375,55 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     list.forEach((c, j) => checkCut(c.id, sub.cuts[j], `at ${alongAxis} = ${r2(c.pos)} in strip ${s + 1}`));
   });
 
+  /* ---- free-form cuts ---------------------------------------------------- */
+  // Applied to every cell, one cut after the other. A cut is first extended past both ends so it always runs out
+  // through the edge of the part; the planner reports (and skips) a line that crosses itself.
+  const freeUsed: { id: string; pts: Pt[] }[] = [];
+  if (hasFree) {
+    const [rx0, ry0, rx1, ry1] = regionBBox(region);
+    const reach = 2 * Math.hypot(rx1 - rx0, ry1 - ry0) + 10;
+    let placed = cells.flatMap((row, s) => row.flatMap((pieces, k) => pieces.map((reg) => ({ s, k, reg }))));
+    for (const fc of freeCuts) {
+      const pts = (fc.pts ?? []).filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+      if (pts.length < 2 || pathLength(pts) < FREE_MIN_SEGMENT) {
+        add("error", "BAD_CUT", `Free cut ${fc.id} needs at least two different points.`, { cutId: fc.id });
+        continue;
+      }
+      const path = extendPath(pts, reach);
+      if (pathSelfIntersects(path)) {
+        add("error", "BAD_CUT", `Free cut ${fc.id} crosses itself (or its straight extension to the edge does). Redraw it as a line that does not cross itself.`, { cutId: fc.id });
+        continue;
+      }
+      let res;
+      try {
+        res = splitRegionsByPath(placed.map((p) => p.reg), path);
+      } catch (e) {
+        add("error", "BAD_CUT", `Free cut ${fc.id} could not be applied: ${e instanceof Error ? e.message.replace(/^segmentation: /, "") : "unknown error"}.`, { cutId: fc.id });
+        continue;
+      }
+      const next: typeof placed = [];
+      res.parts.forEach((part, i) => part.pieces.forEach((reg) => next.push({ s: placed[i].s, k: placed[i].k, reg })));
+      placed = next;
+      freeUsed.push({ id: fc.id, pts: res.usedPath });
+      const seamLength = res.parts.reduce((t, p) => t + p.seamLength, 0);
+      const holes = res.parts.flatMap((p) => p.holesCrossed);
+      if (res.shifted) add("info", "CUT_SHIFTED", `Free cut ${fc.id} passed through a vertex or edge and was moved by a tiny step (0.0001 mm).`, { cutId: fc.id });
+      checkCut(fc.id, { requestedPos: 0, usedPos: 0, shifted: false, seams: [], seamLength, holesCrossed: holes }, "(free-form)");
+    }
+    cells.forEach((row, s) =>
+      row.forEach((_, k) => {
+        row[k] = placed
+          .filter((p) => p.s === s && p.k === k)
+          .map((p) => p.reg)
+          .sort((a, b) => {
+            const ba = loopBBox(a.outer);
+            const bb = loopBBox(b.outer);
+            return ba[1] - bb[1] || ba[0] - bb[0];
+          });
+      }),
+    );
+  }
+
   /* ---- segments ------------------------------------------------------ */
   const amt = (c: "low" | "high" | "both") => (c === "both" ? w / 2 : w);
   const side = input.overlap.side;
@@ -363,7 +443,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     for (let k = 0; k <= m; k++) {
       const pieces = cells[s][k];
       if (!pieces.length) continue;
-      counter++;
+      counter++; // with free cuts every piece gets its own number, starting here
 
       // overlap / gap: how far each side of this cell moves (out for an overlap, in for a gap)
       let eAL = 0;
@@ -426,7 +506,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
       }
 
       pieces.forEach((piece, pi) => {
-        const id = pieces.length > 1 ? `S${pad(counter)}${letter(pi)}` : `S${pad(counter)}`;
+        const id = hasFree ? `S${pad(counter + pi)}` : pieces.length > 1 ? `S${pad(counter)}${letter(pi)}` : `S${pad(counter)}`;
         const cut = cutRegions[pi] ?? piece;
         const shape = regionToGroupShape(cut, tol);
         const g: Group = {
@@ -451,6 +531,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
           finishedArea: regionArea(piece), cutArea: regionArea(cut), bbox: loopBBox(cut.outer), fit, solo,
         });
       });
+      if (hasFree) counter += pieces.length - 1;
     }
   }
 
@@ -478,13 +559,39 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
     ),
   );
 
+  // seams of free cuts: the boundary two pieces of one cell share along a drawn line
+  if (hasFree) {
+    for (let s = 0; s < nStrips; s++) {
+      for (let k = 0; k < cells[s].length; k++) {
+        const here = segments.filter((g) => g.cell.strip === s && g.cell.index === k);
+        for (let i = 0; i < here.length; i++) {
+          for (let j = i + 1; j < here.length; j++) {
+            const byCut = new Map<string, [Pt, Pt][]>();
+            for (const seg of sharedSegments(here[i].finished, here[j].finished)) {
+              const mid: Pt = [(seg[0][0] + seg[1][0]) / 2, (seg[0][1] + seg[1][1]) / 2];
+              const owner = freeUsed.find((f) => distanceToPath(f.pts, mid) < 1e-3);
+              if (!owner) continue;
+              byCut.set(owner.id, [...(byCut.get(owner.id) ?? []), seg]);
+            }
+            for (const [cutId, path] of byCut) {
+              const length = path.reduce((t, [p, q]) => t + Math.hypot(q[0] - p[0], q[1] - p[1]), 0);
+              if (length > 1e-6) {
+                seams.push({ id: `${cutId}:${here[i].id}|${here[j].id}`, cutId, kind: "free", axis: "x", pos: 0, low: here[i].id, high: here[j].id, length, intervals: [], carrier: null, path });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   /* ---- seam constraints ------------------------------------------------ */
   const segBy = new Map(segments.map((g) => [g.id, g]));
   for (const m of seams) {
     if (cons.maxSeamLength !== undefined && m.length > cons.maxSeamLength) {
       add("error", "SEAM_TOO_LONG", `Seam ${m.low}|${m.high} is ${r2(m.length)} mm long (max ${cons.maxSeamLength}).`, { cutId: m.cutId });
     }
-    if (cons.minSeamToBoundary !== undefined) {
+    if (cons.minSeamToBoundary !== undefined && m.kind !== "free") {
       const ai = m.axis === "x" ? 0 : 1;
       for (const id of [m.low, m.high]) {
         const b = loopBBox(segBy.get(id)!.finished.outer);

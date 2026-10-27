@@ -7,7 +7,7 @@
  * pieces. A part that is already segmented opens with its saved cuts for editing.
  */
 import * as React from "react";
-import { ArrowLeftRight, Download, Layers, Loader2, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeftRight, Download, Layers, Loader2, Pencil, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -17,6 +17,7 @@ import { evaluatePlan, type EngineCtx, type EngineEval } from "./evaluate";
 import { PRIORITY_LABEL, compareRows, explainOrder, rankCandidates, sheetsText, type Priority } from "./rank";
 import { classifyFit } from "./fit";
 import {
+  addFreeCut,
   addSeam,
   addStripCut,
   boundsFor,
@@ -27,11 +28,16 @@ import {
   endGesture,
   handleLines,
   isEdited,
+  isFreeCut,
   moveCut,
+  moveFreeCut,
+  moveFreePoint,
   newEditor,
   redo,
   removeCut,
+  removeFreePoint,
   reset,
+  splitFreeSegment,
   stateFromInput,
   toPlanInput,
   undo,
@@ -47,7 +53,7 @@ import { regionBBox, regionInteriorPoint } from "./geometry";
 import { groupToRegion } from "./group-region";
 import { buildPlan, generateCandidates, type Candidate, type Plan, type PlanInput } from "./planner";
 import { regionPath, screenToWorld, seamLines, segmentFill, segmentStroke, svgViewBox } from "./preview-path";
-import type { Region } from "./types";
+import type { Pt, Region } from "./types";
 
 const selectCls =
   "h-9 w-full rounded-lg border border-input bg-card px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -72,17 +78,30 @@ export interface PreviewEdit {
   state: EditorState;
   bounds: Bounds;
   selected: string | null;
-  /** When set, the next press on the drawing adds a cut of that kind. */
-  mode: "strip" | "seam" | null;
+  /** When set, the next press on the drawing adds a cut of that kind ("free": press, drag and release to draw a line). */
+  mode: "strip" | "seam" | "free" | null;
   onSelect: (id: string | null) => void;
   /** `value` is the new coordinate of the dragged line along its movable axis (world mm). */
   onDrag: (id: string, value: number) => void;
   onDragEnd: () => void;
   onAdd: (kind: "strip" | "seam", at: { across: number; along: number }) => void;
+  /** A finished hand-drawn stroke (world mm, as drawn). */
+  onAddFree: (stroke: Pt[]) => void;
+  /** Free cuts: drag one vertex / the whole line / double-click a line to add a vertex or a vertex to remove it. */
+  onMoveFreePoint: (id: string, index: number, to: Pt) => void;
+  onMoveFree: (id: string, dx: number, dy: number) => void;
+  onSplitFree: (id: string, index: number) => void;
+  onRemoveFreePoint: (id: string, index: number) => void;
 }
 
 const STRIP_COLOR = "hsl(215 90% 55%)";
 const SEAM_COLOR = "hsl(280 70% 55%)";
+const FREE_COLOR = "hsl(0 80% 50%)";
+
+type Drag =
+  | { id: string; kind: "strip" | "seam" }
+  | { id: string; kind: "free-move"; last: { x: number; y: number } }
+  | { id: string; kind: "free-point"; index: number };
 
 /** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
 export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
@@ -90,7 +109,10 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
   const labels = React.useMemo(() => plan.segments.map((s) => ({ id: s.id, p: regionInteriorPoint(s.finished) })), [plan]);
   const handles = React.useMemo(() => (edit ? handleLines(edit.state, edit.bounds) : []), [edit]);
   const svgRef = React.useRef<SVGSVGElement>(null);
-  const dragging = React.useRef<{ id: string; kind: "strip" | "seam" } | null>(null);
+  const dragging = React.useRef<Drag | null>(null);
+  // the stroke being drawn with the free-cut tool (ref for the event handlers, state to redraw)
+  const strokeRef = React.useRef<Pt[] | null>(null);
+  const [stroke, setStroke] = React.useState<Pt[] | null>(null);
   const H = edit?.state.direction === "H";
 
   const world = (e: React.PointerEvent) => {
@@ -111,24 +133,54 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
       aria-label="Segmentation preview"
       onPointerDown={(e) => {
         if (!edit) return;
-        if (edit.mode) {
+        if (edit.mode === "free") {
+          const w = world(e);
+          strokeRef.current = [[w.x, w.y]];
+          setStroke(strokeRef.current);
+          (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+        } else if (edit.mode) {
           const w = world(e);
           edit.onAdd(edit.mode, { across: across(w), along: along(w) });
         } else edit.onSelect(null);
       }}
       onPointerMove={(e) => {
+        if (!edit) return;
+        if (strokeRef.current) {
+          const w = world(e);
+          const last = strokeRef.current[strokeRef.current.length - 1];
+          if (Math.hypot(w.x - last[0], w.y - last[1]) >= size / 400) {
+            strokeRef.current = [...strokeRef.current, [w.x, w.y]];
+            setStroke(strokeRef.current);
+          }
+          return;
+        }
         const d = dragging.current;
-        if (!d || !edit) return;
+        if (!d) return;
         const w = world(e);
-        edit.onDrag(d.id, d.kind === "strip" ? across(w) : along(w));
+        if (d.kind === "free-move") {
+          edit.onMoveFree(d.id, w.x - d.last.x, w.y - d.last.y);
+          d.last = { x: w.x, y: w.y };
+        } else if (d.kind === "free-point") edit.onMoveFreePoint(d.id, d.index, [w.x, w.y]);
+        else edit.onDrag(d.id, d.kind === "strip" ? across(w) : along(w));
       }}
       onPointerUp={() => {
+        if (strokeRef.current) {
+          const done = strokeRef.current;
+          strokeRef.current = null;
+          setStroke(null);
+          edit?.onAddFree(done);
+          return;
+        }
         if (dragging.current) {
           dragging.current = null;
           edit?.onDragEnd();
         }
       }}
       onPointerCancel={() => {
+        if (strokeRef.current) {
+          strokeRef.current = null;
+          setStroke(null);
+        }
         if (dragging.current) {
           dragging.current = null;
           edit?.onDragEnd();
@@ -175,6 +227,71 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
             </g>
           );
         })}
+        {(edit?.state.freeCuts ?? []).map((f) => {
+          const sel = edit?.selected === f.id;
+          const pts = f.pts.map((q) => `${q[0]},${q[1]}`).join(" ");
+          return (
+            <g key={f.id} data-cut={f.id}>
+              <polyline points={pts} fill="none" stroke={FREE_COLOR} strokeWidth={sel ? size / 150 : size / 300} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
+              {f.pts.slice(1).map((q, i) => (
+                <line
+                  key={i}
+                  x1={f.pts[i][0]}
+                  y1={f.pts[i][1]}
+                  x2={q[0]}
+                  y2={q[1]}
+                  stroke="transparent"
+                  strokeWidth={size / 40}
+                  strokeLinecap="round"
+                  style={{ cursor: edit?.mode ? "crosshair" : "move" }}
+                  data-handle={f.id}
+                  onDoubleClick={(e) => {
+                    if (!edit || edit.mode) return;
+                    e.stopPropagation();
+                    edit.onSplitFree(f.id, i);
+                  }}
+                  onPointerDown={(e) => {
+                    if (!edit || edit.mode) return;
+                    e.stopPropagation();
+                    edit.onSelect(f.id);
+                    const w = world(e);
+                    dragging.current = { id: f.id, kind: "free-move", last: { x: w.x, y: w.y } };
+                    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                  }}
+                />
+              ))}
+              {sel &&
+                edit &&
+                f.pts.map((q, i) => (
+                  <circle
+                    key={i}
+                    cx={q[0]}
+                    cy={q[1]}
+                    r={size / 110}
+                    fill="white"
+                    stroke={FREE_COLOR}
+                    strokeWidth={size / 400}
+                    style={{ cursor: "grab" }}
+                    data-vertex={`${f.id}:${i}`}
+                    onDoubleClick={(e) => {
+                      if (edit.mode) return;
+                      e.stopPropagation();
+                      edit.onRemoveFreePoint(f.id, i);
+                    }}
+                    onPointerDown={(e) => {
+                      if (edit.mode) return;
+                      e.stopPropagation();
+                      dragging.current = { id: f.id, kind: "free-point", index: i };
+                      (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                    }}
+                  />
+                ))}
+            </g>
+          );
+        })}
+        {stroke && stroke.length > 1 && (
+          <polyline points={stroke.map((q) => `${q[0]},${q[1]}`).join(" ")} fill="none" stroke={FREE_COLOR} strokeWidth={size / 200} strokeDasharray={`${size / 120} ${size / 160}`} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
+        )}
       </g>
       {labels.map(({ id, p }) =>
         p ? (
@@ -188,6 +305,14 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
           {h.id}
         </text>
       ))}
+      {(edit?.state.freeCuts ?? []).map((f) => {
+        const q = f.pts[Math.floor((f.pts.length - 1) / 2)];
+        return (
+          <text key={`${f.id}-label`} x={q[0] + size / 90} y={-q[1] - size / 90} fontSize={size / 50} fill={FREE_COLOR} fontWeight={edit?.selected === f.id ? 700 : 500} pointerEvents="none">
+            {f.id}
+          </text>
+        );
+      })}
     </svg>
   );
 }
@@ -241,7 +366,7 @@ export function SegmentationPanel({
   // editing (Phase 5): the draft cut lists with undo/redo, the selected cut, and the active "add" tool
   const [editor, setEditor] = React.useState<Editor | null>(() => (existing ? newEditor(stateFromInput(existing)) : null));
   const [selCut, setSelCut] = React.useState<string | null>(null);
-  const [mode, setMode] = React.useState<"strip" | "seam" | null>(null);
+  const [mode, setMode] = React.useState<"strip" | "seam" | "free" | null>(null);
   const [snapOn, setSnapOn] = React.useState(false);
   const [grid, setGrid] = React.useState("10");
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -341,6 +466,29 @@ export function SegmentationPanel({
     const mine = kind === "strip" ? r.state.stripCuts.find((c) => !had.has(c.id)) : r.state.seams.find((x) => !had.has(x.id));
     setSelCut(mine?.id ?? null);
   };
+  const partSize = React.useMemo(() => {
+    const [x0, y0, x1, y1] = regionBBox(gr.region);
+    return Math.max(x1 - x0, y1 - y0, 1);
+  }, [gr]);
+  /** A finished stroke: simplified to a polyline (deviation ≤ 0.4 % of the part), added and selected. The tool stays on for the next line. */
+  const onAddFree = (stroke: Pt[]) => {
+    if (!state) return;
+    const r = addFreeCut(state, stroke, partSize / 250, gridMm);
+    if (!apply(r) || !r.ok) return;
+    setSelCut(r.state.freeCuts[r.state.freeCuts.length - 1]?.id ?? null);
+  };
+  const onMoveFreePoint = (id: string, index: number, to: Pt) => {
+    if (state) apply(moveFreePoint(state, id, index, to, gridMm), `drag:${id}:${index}`);
+  };
+  const onMoveFree = (id: string, dx: number, dy: number) => {
+    if (state) apply(moveFreeCut(state, id, dx, dy), `drag:${id}`);
+  };
+  const onSplitFree = (id: string, index: number) => {
+    if (state) apply(splitFreeSegment(state, id, index));
+  };
+  const onRemoveFreePoint = (id: string, index: number) => {
+    if (state) apply(removeFreePoint(state, id, index));
+  };
   const removeSelected = () => {
     if (state && selCut && apply(removeCut(state, selCut))) setSelCut(null);
   };
@@ -365,7 +513,8 @@ export function SegmentationPanel({
           setNotice("No layout could be generated in that direction.");
           return;
         }
-        setEditor((ed) => (ed ? commit(ed, stateFromInput(best.plan.input)) : ed));
+        // hand-drawn cuts do not depend on the direction: keep them
+        setEditor((ed) => (ed ? commit(ed, { ...stateFromInput(best.plan.input), freeCuts: state.freeCuts, nextF: state.nextF }) : ed));
         setEvalSheet(best.sheetIndex);
         setSelCut(null);
         setNotice(null);
@@ -385,10 +534,23 @@ export function SegmentationPanel({
       setEditor((ed) => (ed ? (k === "y" || e.shiftKey ? redo(ed) : undo(ed)) : ed));
       return;
     }
+    if (e.key === "Escape" && mode) {
+      e.preventDefault();
+      setMode(null);
+      return;
+    }
     if (!selCut || !state || !bounds) return;
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       removeSelected();
+      return;
+    }
+    if (isFreeCut(state, selCut)) {
+      const step = (gridMm ?? 1) * (e.shiftKey ? 10 : 1);
+      const move = ({ ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] } as Record<string, [number, number]>)[e.key];
+      if (!move) return;
+      e.preventDefault();
+      apply(moveFreeCut(state, selCut, move[0], move[1]));
       return;
     }
     // a strip cut moves across the strips, a seam along them; "horizontal" = the line moves left/right
@@ -409,7 +571,7 @@ export function SegmentationPanel({
   const ranked = React.useMemo(() => (cands ? rankCandidates(cands, evals, priority) : []), [cands, evals, priority]);
   const explanation = React.useMemo(() => (ranked.length ? explainOrder(ranked, priority, engineCtx.timeSec) : null), [ranked, priority, engineCtx]);
   const compared = ranked.filter((r) => compare.includes(r.cand.id));
-  const planKey = React.useMemo(() => (state ? JSON.stringify([state.direction, state.stripCuts, state.seams, base.overlap, base.sheet, base.constraints]) : ""), [state, base]);
+  const planKey = React.useMemo(() => (state ? JSON.stringify([state.direction, state.stripCuts, state.seams, state.freeCuts, base.overlap, base.sheet, base.constraints]) : ""), [state, base]);
 
   /** Downloads one zip: a DXF per piece (cut geometry), the assembly drawing and the segmentation report. */
   const doExport = async () => {
@@ -761,6 +923,9 @@ export function SegmentationPanel({
                   <Button size="sm" variant={mode === "seam" ? "default" : "outline"} aria-pressed={mode === "seam"} onClick={() => setMode((m) => (m === "seam" ? null : "seam"))}>
                     <Plus /> Seam
                   </Button>
+                  <Button size="sm" variant={mode === "free" ? "default" : "outline"} aria-pressed={mode === "free"} title="Draw a cut line by hand" onClick={() => setMode((m) => (m === "free" ? null : "free"))}>
+                    <Pencil /> Free cut
+                  </Button>
                   <Button size="sm" variant="outline" disabled={!selCut} onClick={removeSelected}>
                     <Trash2 /> Remove
                   </Button>
@@ -774,7 +939,11 @@ export function SegmentationPanel({
                   </label>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {mode ? `Click the drawing to place the ${mode === "strip" ? "strip cut" : "seam"}.` : "Drag a cut line, or select it and use the arrow keys (Shift = ×10). Delete removes it; Ctrl+Z undoes."}
+                  {mode === "free"
+                    ? "Press on the drawing, drag across the part and release to draw a cut line. Draw as many as you need; click Free cut again (or press Esc) to stop. A line that ends inside the part is extended straight to the edge."
+                    : mode
+                      ? `Click the drawing to place the ${mode === "strip" ? "strip cut" : "seam"}.`
+                      : "Drag a cut line, or select it and use the arrow keys (Shift = ×10). Delete removes it; Ctrl+Z undoes."}
                 </p>
                 {selCut && selPos !== undefined && (
                   <div className="max-w-[220px]">
@@ -789,6 +958,11 @@ export function SegmentationPanel({
                     </Field>
                   </div>
                 )}
+                {selCut && isFreeCut(state, selCut) && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Free cut {selCut}: drag the line to move it, drag a dot to bend it, double-click the line to add a dot and a dot to remove it. Arrow keys nudge it (Shift = ×10).
+                  </p>
+                )}
                 {notice && (
                   <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                     {notice}
@@ -802,7 +976,7 @@ export function SegmentationPanel({
                 plan={plan}
                 edit={
                   state && bounds
-                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd }
+                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint }
                     : undefined
                 }
               />

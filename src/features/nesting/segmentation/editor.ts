@@ -14,7 +14,9 @@
  * prevented — `buildPlan` reports them with an explanation, so the user can pass through
  * temporary invalid states while dragging and then correct them.
  */
-import type { Direction, PlanInput, StripCut } from "./planner";
+import { FREE_MIN_SEGMENT, pathLength, pathSelfIntersects, simplifyPath } from "./free-cut";
+import type { Direction, FreeCut, PlanInput, StripCut } from "./planner";
+import type { Pt } from "./types";
 
 /** Closest two cuts (or a cut and the part's edge) may be, mm. UI rule, not a manufacturing rule. */
 export const EDIT_MIN_GAP = 1;
@@ -32,8 +34,11 @@ export interface EditorState {
   /** Ascending by position. */
   stripCuts: StripCut[];
   seams: EditSeam[];
+  /** Hand-drawn cut lines. They do not belong to a strip: they cut every strip they cross. */
+  freeCuts: FreeCut[];
   nextC: number;
   nextT: number;
+  nextF: number;
 }
 
 /** The part's extent: `across` = the axis the strip cuts sit on, `along` = the strips' length axis. */
@@ -52,27 +57,31 @@ const suffix = (id: string, prefix: string) => {
   return m ? Number(m[1]) : 0;
 };
 
-export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" | "seamCuts">): EditorState {
+export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts">): EditorState {
   const strips = [...input.stripCuts].sort((a, b) => a.pos - b.pos).map((c) => ({ id: c.id, pos: c.pos }));
   const lower = (i: number) => (i <= 0 ? null : (strips[i - 1]?.id ?? null));
   const seams = input.seamCuts.map((s) => ({ id: s.id, strip: lower(s.strip), pos: s.pos }));
+  const freeCuts = (input.freeCuts ?? []).map((f) => ({ id: f.id, pts: f.pts.map((p) => [p[0], p[1]] as Pt) }));
   return {
     direction: input.direction,
     stripCuts: strips,
     seams,
+    freeCuts,
     nextC: Math.max(0, ...strips.map((c) => suffix(c.id, "C"))) + 1,
     nextT: Math.max(0, ...seams.map((t) => suffix(t.id, "T"))) + 1,
+    nextF: Math.max(0, ...freeCuts.map((f) => suffix(f.id, "F"))) + 1,
   };
 }
 
 /** Plan input for the current state; everything except the cuts comes from `base`. */
-export function toPlanInput(state: EditorState, base: Omit<PlanInput, "direction" | "stripCuts" | "seamCuts">): PlanInput {
+export function toPlanInput(state: EditorState, base: Omit<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts">): PlanInput {
   const index = new Map(state.stripCuts.map((c, i) => [c.id, i + 1]));
   return {
     ...base,
     direction: state.direction,
     stripCuts: state.stripCuts.map((c) => ({ ...c })),
     seamCuts: state.seams.map((s) => ({ id: s.id, strip: s.strip === null ? 0 : (index.get(s.strip) ?? 0), pos: s.pos })),
+    ...(state.freeCuts.length ? { freeCuts: state.freeCuts.map((f) => ({ id: f.id, pts: f.pts.map((p) => [p[0], p[1]] as Pt) })) } : {}),
   };
 }
 
@@ -191,6 +200,7 @@ export function addSeam(state: EditorState, across: number, pos: number, bounds:
 
 /** Removes a strip cut (its strip merges with the one below) or a seam. */
 export function removeCut(state: EditorState, id: string): EditResult {
+  if (state.freeCuts.some((f) => f.id === id)) return { ok: true, state: { ...state, freeCuts: state.freeCuts.filter((f) => f.id !== id) } };
   const ci = state.stripCuts.findIndex((c) => c.id === id);
   if (ci >= 0) {
     const target = ci === 0 ? null : state.stripCuts[ci - 1].id;
@@ -209,6 +219,64 @@ export function removeCut(state: EditorState, id: string): EditResult {
 /** The cut's current position, or undefined. */
 export function cutPos(state: EditorState, id: string): number | undefined {
   return state.stripCuts.find((c) => c.id === id)?.pos ?? state.seams.find((s) => s.id === id)?.pos;
+}
+
+/* ---- free-form cuts ------------------------------------------------ */
+
+export const isFreeCut = (state: EditorState, id: string | null | undefined): boolean => !!id && state.freeCuts.some((f) => f.id === id);
+
+/**
+ * Adds a hand-drawn cut. `raw` is the stroke as drawn (many points); it is simplified to a polyline whose
+ * deviation from the stroke is at most `tolMm`. Refused: fewer than two different points, or a line that crosses itself.
+ */
+export function addFreeCut(state: EditorState, raw: Pt[], tolMm: number, grid?: number): EditResult {
+  const pts = simplifyPath(raw.map((p) => [snap(p[0], grid), snap(p[1], grid)] as Pt), tolMm);
+  if (pts.length < 2 || pathLength(pts) < EDIT_MIN_GAP) return { ok: false, reason: "That line is too short to be a cut. Press, drag across the part and release." };
+  if (pathSelfIntersects(pts)) return { ok: false, reason: "A free cut cannot cross itself. Draw it again as a line that does not cross itself." };
+  let n = state.nextF;
+  let id = `F${n}`;
+  while (state.freeCuts.some((f) => f.id === id)) id = `F${++n}`;
+  return { ok: true, state: { ...state, freeCuts: [...state.freeCuts, { id, pts }], nextF: n + 1 } };
+}
+
+/** Moves one vertex of a free cut. Crossing itself is allowed while dragging: the plan reports it (and ignores that cut). */
+export function moveFreePoint(state: EditorState, id: string, index: number, to: Pt, grid?: number): EditResult {
+  const cut = state.freeCuts.find((f) => f.id === id);
+  if (!cut || index < 0 || index >= cut.pts.length) return { ok: false, reason: `Cut ${id} does not exist.` };
+  if (!Number.isFinite(to[0]) || !Number.isFinite(to[1])) return { ok: false, reason: "Enter a valid position." };
+  const p: Pt = [snap(to[0], grid), snap(to[1], grid)];
+  if (p[0] === cut.pts[index][0] && p[1] === cut.pts[index][1]) return { ok: true, state };
+  const pts = cut.pts.map((q, i) => (i === index ? p : q));
+  return { ok: true, state: { ...state, freeCuts: state.freeCuts.map((f) => (f.id === id ? { ...f, pts } : f)) } };
+}
+
+/** Moves a whole free cut by (dx, dy) mm. */
+export function moveFreeCut(state: EditorState, id: string, dx: number, dy: number): EditResult {
+  const cut = state.freeCuts.find((f) => f.id === id);
+  if (!cut) return { ok: false, reason: `Cut ${id} does not exist.` };
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return { ok: false, reason: "Enter a valid position." };
+  if (dx === 0 && dy === 0) return { ok: true, state };
+  const pts = cut.pts.map((q) => [q[0] + dx, q[1] + dy] as Pt);
+  return { ok: true, state: { ...state, freeCuts: state.freeCuts.map((f) => (f.id === id ? { ...f, pts } : f)) } };
+}
+
+/** Adds a vertex in the middle of segment `index` → `index + 1` (to make a straight stretch bendable). */
+export function splitFreeSegment(state: EditorState, id: string, index: number): EditResult {
+  const cut = state.freeCuts.find((f) => f.id === id);
+  if (!cut || index < 0 || index + 1 >= cut.pts.length) return { ok: false, reason: `Cut ${id} does not exist.` };
+  const [a, b] = [cut.pts[index], cut.pts[index + 1]];
+  if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 2 * FREE_MIN_SEGMENT) return { ok: false, reason: "That stretch is too short to split." };
+  const pts = [...cut.pts.slice(0, index + 1), [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as Pt, ...cut.pts.slice(index + 1)];
+  return { ok: true, state: { ...state, freeCuts: state.freeCuts.map((f) => (f.id === id ? { ...f, pts } : f)) } };
+}
+
+/** Removes one vertex of a free cut (a cut keeps at least two). */
+export function removeFreePoint(state: EditorState, id: string, index: number): EditResult {
+  const cut = state.freeCuts.find((f) => f.id === id);
+  if (!cut || index < 0 || index >= cut.pts.length) return { ok: false, reason: `Cut ${id} does not exist.` };
+  if (cut.pts.length <= 2) return { ok: false, reason: "A free cut needs at least two points. Remove the whole cut instead." };
+  const pts = cut.pts.filter((_, i) => i !== index);
+  return { ok: true, state: { ...state, freeCuts: state.freeCuts.map((f) => (f.id === id ? { ...f, pts } : f)) } };
 }
 
 export interface HandleLine {

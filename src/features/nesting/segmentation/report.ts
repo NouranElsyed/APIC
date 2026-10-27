@@ -36,7 +36,7 @@ export interface ReportInput {
 export interface MatingEdge {
   seam: string;
   cut: string;
-  kind: "strip" | "transverse";
+  kind: "strip" | "transverse" | "free";
   /** The segment on the other side of the seam. */
   with: string;
   /** The seam line, e.g. "y = 1490". */
@@ -95,6 +95,14 @@ export function appliedAt(o: OverlapSpec, seam: PlanSeam, role: "low" | "high"):
   return amount === 0 ? 0 : amount * Math.sign(o.mm); // never -0
 }
 
+/** The seam line as text: "y = 1490" for straight cuts, the end points for a free-form cut. */
+function seamLineText(m: PlanSeam): string {
+  if (m.kind !== "free" || !m.path?.length) return `${m.axis} = ${r3(m.pos)}`;
+  const pts = [m.path[0][0], ...m.path.map(([, q]) => q)];
+  const f = (p: [number, number]) => `(${r3(p[0])}, ${r3(p[1])})`;
+  return pts.length > 3 ? `free line ${f(pts[0])} → ${f(pts[pts.length - 1])}` : `free line ${pts.map(f).join(" → ")}`;
+}
+
 export function reportData(a: ReportInput): ReportData {
   const { parent, plan } = a;
   const o = plan.input.overlap;
@@ -113,7 +121,7 @@ export function reportData(a: ReportInput): ReportData {
         cut: m.cutId,
         kind: m.kind,
         with: m.low === s.id ? m.high : m.low,
-        line: `${m.axis} = ${r3(m.pos)}`,
+        line: seamLineText(m),
         lengthMm: r3(m.length),
         appliedMm: appliedAt(o, m, m.low === s.id ? "low" : "high"),
       }));
@@ -169,6 +177,7 @@ export function reportData(a: ReportInput): ReportData {
     ["Total seam length per original (m)", r3(plan.metrics.cutLength / 1000)],
     ["Direction", plan.input.direction === "H" ? "Horizontal strips" : "Vertical strips"],
     ["Strip cuts / transverse seams", `${plan.input.stripCuts.length} / ${plan.input.seamCuts.length}`],
+    ["Free-form cuts", (plan.input.freeCuts ?? []).length],
     ["Overlap / gap", overlapText(o)],
     ["Cuts through holes", plan.input.holePolicy === "reject" ? "rejected" : "allowed after confirmation"],
     ["Seam constraints", consText],
@@ -240,7 +249,7 @@ export function segmentationWorkbook(a: ReportInput): ExcelJS.Workbook {
     { header: "Applied to B (mm)", fmt: "0.###" },
   ];
   const seamRows: Cell[][] = d.seams.map(({ seam: m, appliedA, appliedB }) => [
-    m.id, m.cutId, m.kind === "strip" ? "strip cut" : "seam", `${m.axis} = ${r3(m.pos)}`, m.low, m.high, r3(m.length), appliedA, appliedB,
+    m.id, m.cutId, m.kind === "strip" ? "strip cut" : m.kind === "free" ? "free-form cut" : "seam", seamLineText(m), m.low, m.high, r3(m.length), appliedA, appliedB,
   ]);
   const seamNext = addTable(s3, 1, seamCols, seamRows, { label: "Total" });
   addTitle(s3, seamNext, "A seam is the joint between two pieces: the cut line and the material along which they are welded.", 10);

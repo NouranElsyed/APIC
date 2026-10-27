@@ -45,7 +45,8 @@ export function svgViewBox(region: Region, pad = 0.06): { box: string; size: num
 }
 
 /** The drawn pieces of a seam as line segments in world coordinates. */
-export function seamLines(seam: Pick<PlanSeam, "axis" | "pos" | "intervals">): { x1: number; y1: number; x2: number; y2: number }[] {
+export function seamLines(seam: Pick<PlanSeam, "axis" | "pos" | "intervals"> & { path?: PlanSeam["path"] }): { x1: number; y1: number; x2: number; y2: number }[] {
+  if (seam.path) return seam.path.map(([p, q]) => ({ x1: p[0], y1: p[1], x2: q[0], y2: q[1] }));
   return seam.intervals.map(([lo, hi]) =>
     seam.axis === "x" ? { x1: seam.pos, y1: lo, x2: seam.pos, y2: hi } : { x1: lo, y1: seam.pos, x2: hi, y2: seam.pos },
   );
