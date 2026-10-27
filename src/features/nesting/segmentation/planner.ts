@@ -38,6 +38,11 @@ import { regionToGroupShape } from "./convert";
 import { classifyFit, gridCapacity, type FitResult, type SheetSize } from "./fit";
 import {
   FREE_MIN_SEGMENT,
+  radialRays,
+  radialValid,
+  rayHolesEntered,
+  splitRegionsRadial,
+  type RadialSpec,
   distanceToPath,
   extendPath,
   pathLength,
@@ -123,12 +128,17 @@ export interface FreeCut {
   pts: Pt[];
 }
 
+/** Radial cut: `count` equal sectors around `center`, the first cut line pointing `startDeg` degrees from +x. */
+export type RadialCut = RadialSpec;
+
 export interface PlanInput {
   direction: Direction;
   stripCuts: StripCut[];
   seamCuts: SeamCut[];
   /** Hand-drawn cut lines (optional; absent in plans saved before this tool existed). */
   freeCuts?: FreeCut[];
+  /** Radial (pie-slice) cut around a centre point (optional). */
+  radial?: RadialCut;
   overlap: OverlapSpec;
   sheet: SheetCtx;
   holePolicy: HolePolicy;
@@ -262,7 +272,8 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
   const cons = input.constraints ?? {};
   const tol = input.tol ?? TOL_MM;
   const freeCuts = input.freeCuts ?? [];
-  const hasFree = freeCuts.length > 0;
+  const radial = input.radial;
+  const hasFree = freeCuts.length > 0 || !!radial;
   // free cuts do not support overlap / gap: it is switched off for the geometry and reported as an error below
   const o = !hasFree && input.overlap.enabled ? input.overlap.mm : 0; // signed: > 0 overlap, < 0 gap
   const w = Math.abs(o);
@@ -284,7 +295,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
       valid: !issues.some((i) => i.severity === "error"),
       metrics: {
         segments: segments.length,
-        cuts: input.stripCuts.length + input.seamCuts.length + freeCuts.length,
+        cuts: input.stripCuts.length + input.seamCuts.length + freeCuts.length + (radial ? radial.count : 0),
         cutLength: seams.reduce((s, m) => s + m.length, 0),
         finishedArea: segments.reduce((s, g) => s + g.finishedArea, 0),
         cutArea,
@@ -381,8 +392,33 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
   const freeUsed: { id: string; pts: Pt[] }[] = [];
   if (hasFree) {
     const [rx0, ry0, rx1, ry1] = regionBBox(region);
-    const reach = 2 * Math.hypot(rx1 - rx0, ry1 - ry0) + 10;
-    let placed = cells.flatMap((row, s) => row.flatMap((pieces, k) => pieces.map((reg) => ({ s, k, reg }))));
+    const cx0 = radial && radialValid(radial) ? radial.center : [(rx0 + rx1) / 2, (ry0 + ry1) / 2];
+    const reach = 2 * Math.hypot(rx1 - rx0, ry1 - ry0) + Math.hypot(cx0[0] - (rx0 + rx1) / 2, cx0[1] - (ry0 + ry1) / 2) + 10;
+    let placed = cells.flatMap((row, s) => row.flatMap((pieces, k) => pieces.map((reg) => ({ s, k, reg, sector: 0 }))));
+
+    if (radial) {
+      if (!radialValid(radial)) {
+        add("error", "BAD_CUT", "The radial cut needs a centre point, 2 to 72 divisions and a start angle.", { cutId: "R1" });
+      } else {
+        try {
+          const res = splitRegionsRadial(placed.map((p) => p.reg), radial, reach);
+          const next: typeof placed = [];
+          res.parts.forEach((part, i) => part.pieces.forEach((reg, j) => next.push({ ...placed[i], reg, sector: part.sectors[j] })));
+          const changed = next.length > placed.length;
+          placed = next;
+          const rays = radialRays({ ...radial, center: res.center }, reach);
+          rays.forEach((ray) => {
+            freeUsed.push({ id: ray.id, pts: [ray.a, ray.b] });
+            const holes = rayHolesEntered(region, ray);
+            checkCut(ray.id, { requestedPos: 0, usedPos: 0, shifted: false, seams: [], seamLength: 1, holesCrossed: holes }, "(radial)");
+          });
+          if (!changed) add("error", "CUT_OUTSIDE_PART", "The radial cut does not cross any material: move the centre onto the part.", { cutId: "R1" });
+          if (res.shifted) add("info", "CUT_SHIFTED", "A radial cut line passed through a vertex or edge and was moved by a tiny step (0.0001 mm).", { cutId: "R1" });
+        } catch (e) {
+          add("error", "BAD_CUT", `The radial cut could not be applied: ${e instanceof Error ? e.message.replace(/^segmentation: /, "") : "unknown error"}.`, { cutId: "R1" });
+        }
+      }
+    }
     for (const fc of freeCuts) {
       const pts = (fc.pts ?? []).filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
       if (pts.length < 2 || pathLength(pts) < FREE_MIN_SEGMENT) {
@@ -402,7 +438,7 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
         continue;
       }
       const next: typeof placed = [];
-      res.parts.forEach((part, i) => part.pieces.forEach((reg) => next.push({ s: placed[i].s, k: placed[i].k, reg })));
+      res.parts.forEach((part, i) => part.pieces.forEach((reg) => next.push({ ...placed[i], reg })));
       placed = next;
       freeUsed.push({ id: fc.id, pts: res.usedPath });
       const seamLength = res.parts.reduce((t, p) => t + p.seamLength, 0);
@@ -414,12 +450,12 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
       row.forEach((_, k) => {
         row[k] = placed
           .filter((p) => p.s === s && p.k === k)
-          .map((p) => p.reg)
           .sort((a, b) => {
-            const ba = loopBBox(a.outer);
-            const bb = loopBBox(b.outer);
-            return ba[1] - bb[1] || ba[0] - bb[0];
-          });
+            const ba = loopBBox(a.reg.outer);
+            const bb = loopBBox(b.reg.outer);
+            return a.sector - b.sector || ba[1] - bb[1] || ba[0] - bb[0];
+          })
+          .map((p) => p.reg);
       }),
     );
   }

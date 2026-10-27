@@ -14,7 +14,7 @@
  * prevented — `buildPlan` reports them with an explanation, so the user can pass through
  * temporary invalid states while dragging and then correct them.
  */
-import { FREE_MIN_SEGMENT, pathLength, pathSelfIntersects, simplifyPath } from "./free-cut";
+import { FREE_MIN_SEGMENT, RADIAL_MAX, pathLength, pathSelfIntersects, simplifyPath, type RadialSpec } from "./free-cut";
 import type { Direction, FreeCut, PlanInput, StripCut } from "./planner";
 import type { Pt } from "./types";
 
@@ -36,6 +36,8 @@ export interface EditorState {
   seams: EditSeam[];
   /** Hand-drawn cut lines. They do not belong to a strip: they cut every strip they cross. */
   freeCuts: FreeCut[];
+  /** Radial cut (N sectors around a centre), or null. Selected / removed under the id RADIAL_ID. */
+  radial: RadialSpec | null;
   nextC: number;
   nextT: number;
   nextF: number;
@@ -57,7 +59,7 @@ const suffix = (id: string, prefix: string) => {
   return m ? Number(m[1]) : 0;
 };
 
-export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts">): EditorState {
+export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts" | "radial">): EditorState {
   const strips = [...input.stripCuts].sort((a, b) => a.pos - b.pos).map((c) => ({ id: c.id, pos: c.pos }));
   const lower = (i: number) => (i <= 0 ? null : (strips[i - 1]?.id ?? null));
   const seams = input.seamCuts.map((s) => ({ id: s.id, strip: lower(s.strip), pos: s.pos }));
@@ -67,6 +69,7 @@ export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" 
     stripCuts: strips,
     seams,
     freeCuts,
+    radial: input.radial ? { center: [input.radial.center[0], input.radial.center[1]], count: input.radial.count, startDeg: input.radial.startDeg } : null,
     nextC: Math.max(0, ...strips.map((c) => suffix(c.id, "C"))) + 1,
     nextT: Math.max(0, ...seams.map((t) => suffix(t.id, "T"))) + 1,
     nextF: Math.max(0, ...freeCuts.map((f) => suffix(f.id, "F"))) + 1,
@@ -74,13 +77,14 @@ export function stateFromInput(input: Pick<PlanInput, "direction" | "stripCuts" 
 }
 
 /** Plan input for the current state; everything except the cuts comes from `base`. */
-export function toPlanInput(state: EditorState, base: Omit<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts">): PlanInput {
+export function toPlanInput(state: EditorState, base: Omit<PlanInput, "direction" | "stripCuts" | "seamCuts" | "freeCuts" | "radial">): PlanInput {
   const index = new Map(state.stripCuts.map((c, i) => [c.id, i + 1]));
   return {
     ...base,
     direction: state.direction,
     stripCuts: state.stripCuts.map((c) => ({ ...c })),
     seamCuts: state.seams.map((s) => ({ id: s.id, strip: s.strip === null ? 0 : (index.get(s.strip) ?? 0), pos: s.pos })),
+    ...(state.radial ? { radial: { center: [state.radial.center[0], state.radial.center[1]] as Pt, count: state.radial.count, startDeg: state.radial.startDeg } } : {}),
     ...(state.freeCuts.length ? { freeCuts: state.freeCuts.map((f) => ({ id: f.id, pts: f.pts.map((p) => [p[0], p[1]] as Pt) })) } : {}),
   };
 }
@@ -200,6 +204,7 @@ export function addSeam(state: EditorState, across: number, pos: number, bounds:
 
 /** Removes a strip cut (its strip merges with the one below) or a seam. */
 export function removeCut(state: EditorState, id: string): EditResult {
+  if (id === RADIAL_ID && state.radial) return { ok: true, state: { ...state, radial: null } };
   if (state.freeCuts.some((f) => f.id === id)) return { ok: true, state: { ...state, freeCuts: state.freeCuts.filter((f) => f.id !== id) } };
   const ci = state.stripCuts.findIndex((c) => c.id === id);
   if (ci >= 0) {
@@ -222,6 +227,34 @@ export function cutPos(state: EditorState, id: string): number | undefined {
 }
 
 /* ---- free-form cuts ------------------------------------------------ */
+
+/* ---- radial cut ------------------------------------------------------ */
+
+/** Id under which the radial cut is selected and removed. */
+export const RADIAL_ID = "R";
+export const DEFAULT_RADIAL_COUNT = 4;
+
+export const isRadial = (state: EditorState, id: string | null | undefined): boolean => id === RADIAL_ID && !!state.radial;
+
+/**
+ * Creates the radial cut (centre + number of divisions + start angle) or changes some of its values.
+ * A new one starts with 4 divisions and a start angle of 0°.
+ */
+export function setRadial(state: EditorState, patch: Partial<RadialSpec>): EditResult {
+  const cur: RadialSpec = state.radial ?? { center: [0, 0], count: DEFAULT_RADIAL_COUNT, startDeg: 0 };
+  const next: RadialSpec = { center: patch.center ?? cur.center, count: patch.count ?? cur.count, startDeg: patch.startDeg ?? cur.startDeg };
+  if (!Number.isFinite(next.center[0]) || !Number.isFinite(next.center[1])) return { ok: false, reason: "Enter a valid centre (X and Y in mm)." };
+  if (!Number.isInteger(next.count) || next.count < 2 || next.count > RADIAL_MAX) return { ok: false, reason: `The number of divisions must be a whole number from 2 to ${RADIAL_MAX}.` };
+  if (!Number.isFinite(next.startDeg)) return { ok: false, reason: "Enter a valid start angle in degrees." };
+  const same = state.radial && state.radial.count === next.count && state.radial.startDeg === next.startDeg && state.radial.center[0] === next.center[0] && state.radial.center[1] === next.center[1];
+  if (same) return { ok: true, state };
+  return { ok: true, state: { ...state, radial: { center: [next.center[0], next.center[1]], count: next.count, startDeg: next.startDeg } } };
+}
+
+/** Moves the centre of the radial cut (snapped to the grid when snapping is on). */
+export function moveRadialCenter(state: EditorState, to: Pt, grid?: number): EditResult {
+  return setRadial(state, { center: [snap(to[0], grid), snap(to[1], grid)] });
+}
 
 export const isFreeCut = (state: EditorState, id: string | null | undefined): boolean => !!id && state.freeCuts.some((f) => f.id === id);
 

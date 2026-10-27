@@ -178,6 +178,7 @@ export function reportData(a: ReportInput): ReportData {
     ["Direction", plan.input.direction === "H" ? "Horizontal strips" : "Vertical strips"],
     ["Strip cuts / transverse seams", `${plan.input.stripCuts.length} / ${plan.input.seamCuts.length}`],
     ["Free-form cuts", (plan.input.freeCuts ?? []).length],
+    ["Radial cut", plan.input.radial ? `${plan.input.radial.count} sectors around (${r3(plan.input.radial.center[0])}, ${r3(plan.input.radial.center[1])}), first cut at ${r3(plan.input.radial.startDeg)}°` : "none"],
     ["Overlap / gap", overlapText(o)],
     ["Cuts through holes", plan.input.holePolicy === "reject" ? "rejected" : "allowed after confirmation"],
     ["Seam constraints", consText],

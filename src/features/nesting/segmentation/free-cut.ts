@@ -18,7 +18,7 @@
  * by a tiny fixed step, the same policy as the axis-aligned cuts (`SplitResult.shifted`). The same
  * shift is used for every region cut by one line, so neighbouring pieces still mate exactly.
  */
-import { flattenLoop, loopArea, loopBBox, normalizeRegion, regionArea, ringsContain } from "./geometry";
+import { flattenLoop, loopArea, loopBBox, normalizeRegion, regionArea, regionInteriorPoint as regionInteriorPointOf, ringsContain } from "./geometry";
 import type { Edge, Loop, Pt, Region } from "./types";
 
 const TAU = Math.PI * 2;
@@ -419,7 +419,7 @@ export interface PathSplitAll {
  * Cuts every region along the path. The path must start and end OUTSIDE all of them (use
  * `extendPath` with a reach larger than the part). One shift is chosen for all regions.
  */
-export function splitRegionsByPath(regionsIn: Region[], path: Pt[]): PathSplitAll {
+export function splitRegionsByPath(regionsIn: Region[], path: Pt[], opts: { noShift?: boolean } = {}): PathSplitAll {
   if (path.length < 2) throw new Error("segmentation: a free cut needs at least two points");
   const regions = regionsIn.map(normalizeRegion);
   for (const r of regions) {
@@ -428,7 +428,7 @@ export function splitRegionsByPath(regionsIn: Region[], path: Pt[]): PathSplitAl
       throw new Error("segmentation: a free cut must start and end outside the part (extend the path first)");
     }
   }
-  for (let k = 0; k <= MAX_TRIES; k++) {
+  for (let k = 0; k <= (opts.noShift ? 0 : MAX_TRIES); k++) {
     const used: Pt[] = k === 0 ? path : path.map((p) => [p[0] + k * FREE_SHIFT_STEP, p[1] + k * FREE_SHIFT_STEP * 0.618] as Pt);
     try {
       return { parts: regions.map((r) => trySplit(r, used)), usedPath: used, shifted: k > 0 };
@@ -477,3 +477,106 @@ export function sharedSegments(a: Region, b: Region, tol = 1e-6): [Pt, Pt][] {
 }
 
 export const segmentLength = (s: [Pt, Pt]) => Math.hypot(s[1][0] - s[0][0], s[1][1] - s[0][1]);
+
+/* ------------------------------------------------------------------ */
+/* Radial cuts: N sectors around a centre point                        */
+/* ------------------------------------------------------------------ */
+
+export interface RadialSpec {
+  /** The point the cuts fan out from (world mm). */
+  center: Pt;
+  /** Number of equal sectors (≥ 2). */
+  count: number;
+  /** Direction of the first cut line, degrees counter-clockwise from +x. */
+  startDeg: number;
+}
+
+export const RADIAL_MAX = 72;
+
+export function radialValid(spec: RadialSpec): boolean {
+  return (
+    Array.isArray(spec.center) && Number.isFinite(spec.center[0]) && Number.isFinite(spec.center[1]) &&
+    Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= RADIAL_MAX && Number.isFinite(spec.startDeg)
+  );
+}
+
+/** The cut lines of a radial cut as segments from the centre outwards (length `len`). Ray i is the start of sector i. */
+export function radialRays(spec: RadialSpec, len: number): { id: string; deg: number; a: Pt; b: Pt }[] {
+  return Array.from({ length: spec.count }, (_, i) => {
+    const deg = spec.startDeg + (360 * i) / spec.count;
+    const t = (deg * Math.PI) / 180;
+    return { id: `R${i + 1}`, deg, a: [spec.center[0], spec.center[1]] as Pt, b: [spec.center[0] + len * Math.cos(t), spec.center[1] + len * Math.sin(t)] as Pt };
+  });
+}
+
+/** Indices of the holes the ray ENTERS. A hole that contains the centre is left, not cut through, so it does not count. */
+export function rayHolesEntered(region: Region, ray: { a: Pt; b: Pt }): number[] {
+  const out: number[] = [];
+  region.holes.forEach((h, i) => {
+    const ring = flattenLoop(h, 1e-2);
+    if (ringsContain([ring], ray.a)) return;
+    for (let j = 0, k = ring.length - 1; j < ring.length; k = j++) {
+      if (segmentsMeet(ray.a, ray.b, ring[k], ring[j], false)) {
+        out.push(i);
+        return;
+      }
+    }
+  });
+  return out;
+}
+
+export interface RadialSplit {
+  pieces: Region[];
+  /** Sector index (0-based) of each piece. */
+  sectors: number[];
+}
+
+/**
+ * Cuts every region into the sectors of the radial cut. Each sector is cut out of the region on its own with a
+ * V-shaped line (far point → centre → far point), so a sector's two sides are exact straight lines through the
+ * centre and neighbouring sectors mate exactly. Works with the centre inside material (solid part), in a hole
+ * (ring) or outside the part.
+ */
+export function splitRegionsRadial(regionsIn: Region[], spec: RadialSpec, len: number): { parts: RadialSplit[]; shifted: boolean; center: Pt } {
+  if (!radialValid(spec)) throw new Error("segmentation: invalid radial cut (centre, number of divisions 2–72, start angle)");
+  const regions = regionsIn.map(normalizeRegion);
+  // A degenerate pattern (a cut line through a vertex, along an edge …) is handled by moving the WHOLE pattern, i.e. its
+  // centre, by a tiny step, so that neighbouring sectors still share exactly the same cut line.
+  for (let k = 0; k <= MAX_TRIES; k++) {
+    const center: Pt = k === 0 ? spec.center : [spec.center[0] + k * FREE_SHIFT_STEP, spec.center[1] + k * FREE_SHIFT_STEP * 0.618];
+    try {
+      return { ...radialTry(regions, { ...spec, center }, len), shifted: k > 0, center };
+    } catch (e) {
+      if (!(e instanceof Error) || !/non-degenerate/.test(e.message)) throw e;
+    }
+  }
+  throw new Error("segmentation: could not find a non-degenerate position for the radial cut");
+}
+
+function radialTry(regions: Region[], spec: RadialSpec, len: number): { parts: RadialSplit[] } {
+  const step = 360 / spec.count;
+  const rays = radialRays(spec, len);
+  const parts = regions.map((P) => {
+    const pieces: Region[] = [];
+    const sectors: number[] = [];
+    for (let k = 0; k < spec.count; k++) {
+      const a = rays[k];
+      const b = rays[(k + 1) % spec.count];
+      const r = splitRegionsByPath([P], [a.b, a.a, b.b], { noShift: true });
+      for (const piece of r.parts[0].pieces) {
+        const q = regionInteriorPointOf(piece);
+        if (!q) continue;
+        const phi = (Math.atan2(q[1] - spec.center[1], q[0] - spec.center[0]) * 180) / Math.PI;
+        const delta = (((phi - a.deg) % 360) + 360) % 360;
+        if (delta < step) {
+          pieces.push(piece);
+          sectors.push(k);
+        }
+      }
+    }
+    const sum = pieces.reduce((t, x) => t + regionArea(x), 0);
+    if (Math.abs(sum - regionArea(P)) > 1e-6 * regionArea(P) + 1e-3) throw new Error("segmentation: the radial cut did not reassemble to the part");
+    return { pieces, sectors };
+  });
+  return { parts };
+}

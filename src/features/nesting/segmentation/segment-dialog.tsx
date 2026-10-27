@@ -7,7 +7,7 @@
  * pieces. A part that is already segmented opens with its saved cuts for editing.
  */
 import * as React from "react";
-import { ArrowLeftRight, Download, Layers, Loader2, Pencil, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeftRight, Download, Crosshair, Layers, Loader2, Pencil, Plus, Redo2, RotateCcw, Trash2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -29,14 +29,18 @@ import {
   handleLines,
   isEdited,
   isFreeCut,
+  isRadial,
+  RADIAL_ID,
   moveCut,
   moveFreeCut,
   moveFreePoint,
+  moveRadialCenter,
   newEditor,
   redo,
   removeCut,
   removeFreePoint,
   reset,
+  setRadial,
   splitFreeSegment,
   stateFromInput,
   toPlanInput,
@@ -79,7 +83,7 @@ export interface PreviewEdit {
   bounds: Bounds;
   selected: string | null;
   /** When set, the next press on the drawing adds a cut of that kind ("free": press, drag and release to draw a line). */
-  mode: "strip" | "seam" | "free" | null;
+  mode: "strip" | "seam" | "free" | "radial" | null;
   onSelect: (id: string | null) => void;
   /** `value` is the new coordinate of the dragged line along its movable axis (world mm). */
   onDrag: (id: string, value: number) => void;
@@ -92,21 +96,26 @@ export interface PreviewEdit {
   onMoveFree: (id: string, dx: number, dy: number) => void;
   onSplitFree: (id: string, index: number) => void;
   onRemoveFreePoint: (id: string, index: number) => void;
+  /** Radial cut: a click in "radial" mode sets the centre, dragging the centre dot moves it. */
+  onSetCenter: (to: Pt) => void;
 }
 
 const STRIP_COLOR = "hsl(215 90% 55%)";
 const SEAM_COLOR = "hsl(280 70% 55%)";
 const FREE_COLOR = "hsl(0 80% 50%)";
+const RADIAL_COLOR = "hsl(170 80% 35%)";
 
 type Drag =
   | { id: string; kind: "strip" | "seam" }
   | { id: string; kind: "free-move"; last: { x: number; y: number } }
-  | { id: string; kind: "free-point"; index: number };
+  | { id: string; kind: "free-point"; index: number }
+  | { id: string; kind: "radial-center" };
 
 /** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
 export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
   const { box, size } = React.useMemo(() => svgViewBox(region), [region]);
   const labels = React.useMemo(() => plan.segments.map((s) => ({ id: s.id, p: regionInteriorPoint(s.finished) })), [plan]);
+  const rdBox = React.useMemo(() => regionBBox(region), [region]);
   const handles = React.useMemo(() => (edit ? handleLines(edit.state, edit.bounds) : []), [edit]);
   const svgRef = React.useRef<SVGSVGElement>(null);
   const dragging = React.useRef<Drag | null>(null);
@@ -138,6 +147,9 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
           strokeRef.current = [[w.x, w.y]];
           setStroke(strokeRef.current);
           (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+        } else if (edit.mode === "radial") {
+          const w = world(e);
+          edit.onSetCenter([w.x, w.y]);
         } else if (edit.mode) {
           const w = world(e);
           edit.onAdd(edit.mode, { across: across(w), along: along(w) });
@@ -160,7 +172,8 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
         if (d.kind === "free-move") {
           edit.onMoveFree(d.id, w.x - d.last.x, w.y - d.last.y);
           d.last = { x: w.x, y: w.y };
-        } else if (d.kind === "free-point") edit.onMoveFreePoint(d.id, d.index, [w.x, w.y]);
+        } else if (d.kind === "radial-center") edit.onSetCenter([w.x, w.y]);
+        else if (d.kind === "free-point") edit.onMoveFreePoint(d.id, d.index, [w.x, w.y]);
         else edit.onDrag(d.id, d.kind === "strip" ? across(w) : along(w));
       }}
       onPointerUp={() => {
@@ -289,6 +302,37 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
             </g>
           );
         })}
+        {edit?.state.radial && (() => {
+          const rd = edit.state.radial;
+          const [bx0, by0, bx1, by1] = rdBox;
+          const len = Math.max(...[[bx0, by0], [bx1, by0], [bx0, by1], [bx1, by1]].map(([x, y]) => Math.hypot(x - rd.center[0], y - rd.center[1]))) * 1.02;
+          const sel = edit.selected === RADIAL_ID;
+          return (
+            <g data-cut={RADIAL_ID}>
+              {Array.from({ length: rd.count }, (_, i) => {
+                const t = ((rd.startDeg + (360 * i) / rd.count) * Math.PI) / 180;
+                return <line key={i} x1={rd.center[0]} y1={rd.center[1]} x2={rd.center[0] + len * Math.cos(t)} y2={rd.center[1] + len * Math.sin(t)} stroke={RADIAL_COLOR} strokeWidth={sel ? size / 200 : size / 330} strokeDasharray={`${size / 90} ${size / 140}`} pointerEvents="none" />;
+              })}
+              <circle
+                cx={rd.center[0]}
+                cy={rd.center[1]}
+                r={size / 90}
+                fill={RADIAL_COLOR}
+                stroke="white"
+                strokeWidth={size / 500}
+                style={{ cursor: edit.mode ? "crosshair" : "grab" }}
+                data-center={RADIAL_ID}
+                onPointerDown={(e) => {
+                  if (edit.mode) return;
+                  e.stopPropagation();
+                  edit.onSelect(RADIAL_ID);
+                  dragging.current = { id: RADIAL_ID, kind: "radial-center" };
+                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                }}
+              />
+            </g>
+          );
+        })()}
         {stroke && stroke.length > 1 && (
           <polyline points={stroke.map((q) => `${q[0]},${q[1]}`).join(" ")} fill="none" stroke={FREE_COLOR} strokeWidth={size / 200} strokeDasharray={`${size / 120} ${size / 160}`} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
         )}
@@ -366,7 +410,7 @@ export function SegmentationPanel({
   // editing (Phase 5): the draft cut lists with undo/redo, the selected cut, and the active "add" tool
   const [editor, setEditor] = React.useState<Editor | null>(() => (existing ? newEditor(stateFromInput(existing)) : null));
   const [selCut, setSelCut] = React.useState<string | null>(null);
-  const [mode, setMode] = React.useState<"strip" | "seam" | "free" | null>(null);
+  const [mode, setMode] = React.useState<"strip" | "seam" | "free" | "radial" | null>(null);
   const [snapOn, setSnapOn] = React.useState(false);
   const [grid, setGrid] = React.useState("10");
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -489,6 +533,22 @@ export function SegmentationPanel({
   const onRemoveFreePoint = (id: string, index: number) => {
     if (state) apply(removeFreePoint(state, id, index));
   };
+  /** Click / drag in the drawing: sets the centre of the radial cut (creating it with 4 divisions the first time). */
+  const onSetCenter = (to: Pt) => {
+    if (!state) return;
+    const first = !state.radial;
+    const r = moveRadialCenter(state, gridMm ? to : [Math.round(to[0] * 10) / 10, Math.round(to[1] * 10) / 10], gridMm);
+    apply(r, first ? undefined : "drag:R");
+    if (first && r.ok) {
+      setMode(null);
+      setSelCut(RADIAL_ID);
+    }
+  };
+  const onRadialField = (patch: { count?: number; startDeg?: number; x?: number; y?: number }) => {
+    if (!state?.radial) return;
+    const center: Pt = [patch.x ?? state.radial.center[0], patch.y ?? state.radial.center[1]];
+    apply(setRadial(state, { center, count: patch.count ?? state.radial.count, startDeg: patch.startDeg ?? state.radial.startDeg }));
+  };
   const removeSelected = () => {
     if (state && selCut && apply(removeCut(state, selCut))) setSelCut(null);
   };
@@ -514,7 +574,7 @@ export function SegmentationPanel({
           return;
         }
         // hand-drawn cuts do not depend on the direction: keep them
-        setEditor((ed) => (ed ? commit(ed, { ...stateFromInput(best.plan.input), freeCuts: state.freeCuts, nextF: state.nextF }) : ed));
+        setEditor((ed) => (ed ? commit(ed, { ...stateFromInput(best.plan.input), freeCuts: state.freeCuts, nextF: state.nextF, radial: state.radial }) : ed));
         setEvalSheet(best.sheetIndex);
         setSelCut(null);
         setNotice(null);
@@ -545,6 +605,14 @@ export function SegmentationPanel({
       removeSelected();
       return;
     }
+    if (isRadial(state, selCut) && state.radial) {
+      const step = (gridMm ?? 1) * (e.shiftKey ? 10 : 1);
+      const move = ({ ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] } as Record<string, [number, number]>)[e.key];
+      if (!move) return;
+      e.preventDefault();
+      apply(setRadial(state, { center: [state.radial.center[0] + move[0], state.radial.center[1] + move[1]] }));
+      return;
+    }
     if (isFreeCut(state, selCut)) {
       const step = (gridMm ?? 1) * (e.shiftKey ? 10 : 1);
       const move = ({ ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] } as Record<string, [number, number]>)[e.key];
@@ -571,7 +639,7 @@ export function SegmentationPanel({
   const ranked = React.useMemo(() => (cands ? rankCandidates(cands, evals, priority) : []), [cands, evals, priority]);
   const explanation = React.useMemo(() => (ranked.length ? explainOrder(ranked, priority, engineCtx.timeSec) : null), [ranked, priority, engineCtx]);
   const compared = ranked.filter((r) => compare.includes(r.cand.id));
-  const planKey = React.useMemo(() => (state ? JSON.stringify([state.direction, state.stripCuts, state.seams, state.freeCuts, base.overlap, base.sheet, base.constraints]) : ""), [state, base]);
+  const planKey = React.useMemo(() => (state ? JSON.stringify([state.direction, state.stripCuts, state.seams, state.freeCuts, state.radial, base.overlap, base.sheet, base.constraints]) : ""), [state, base]);
 
   /** Downloads one zip: a DXF per piece (cut geometry), the assembly drawing and the segmentation report. */
   const doExport = async () => {
@@ -926,6 +994,9 @@ export function SegmentationPanel({
                   <Button size="sm" variant={mode === "free" ? "default" : "outline"} aria-pressed={mode === "free"} title="Draw a cut line by hand" onClick={() => setMode((m) => (m === "free" ? null : "free"))}>
                     <Pencil /> Free cut
                   </Button>
+                  <Button size="sm" variant={mode === "radial" ? "default" : "outline"} aria-pressed={mode === "radial"} title="Divide the part into equal sectors around a centre point" onClick={() => setMode((m) => (m === "radial" ? null : "radial"))}>
+                    <Crosshair /> Radial
+                  </Button>
                   <Button size="sm" variant="outline" disabled={!selCut} onClick={removeSelected}>
                     <Trash2 /> Remove
                   </Button>
@@ -939,7 +1010,9 @@ export function SegmentationPanel({
                   </label>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {mode === "free"
+                  {mode === "radial"
+                    ? "Click the drawing to set the centre point. Then choose the number of divisions below; drag the centre dot to move it."
+                    : mode === "free"
                     ? "Press on the drawing, drag across the part and release to draw a cut line. Draw as many as you need; click Free cut again (or press Esc) to stop. A line that ends inside the part is extended straight to the edge."
                     : mode
                       ? `Click the drawing to place the ${mode === "strip" ? "strip cut" : "seam"}.`
@@ -956,6 +1029,30 @@ export function SegmentationPanel({
                         onBlur={(e) => setPos(e.currentTarget.value)}
                       />
                     </Field>
+                  </div>
+                )}
+                {state.radial && (
+                  <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-2" aria-label="Radial cut">
+                    <span className="self-center text-xs font-semibold" style={{ color: RADIAL_COLOR }}>Radial cut</span>
+                    {([
+                      ["Divisions", "count", String(state.radial.count)],
+                      ["Start angle (°)", "startDeg", String(Math.round(state.radial.startDeg * 100) / 100)],
+                      ["Centre X (mm)", "x", String(Math.round(state.radial.center[0] * 100) / 100)],
+                      ["Centre Y (mm)", "y", String(Math.round(state.radial.center[1] * 100) / 100)],
+                    ] as const).map(([label, key, value]) => (
+                      <div key={key} className="w-[110px]">
+                        <Field label={label}>
+                          <Input
+                            key={`${key}:${value}`}
+                            inputMode="decimal"
+                            defaultValue={value}
+                            aria-label={label}
+                            onKeyDown={(e) => e.key === "Enter" && onRadialField({ [key]: Number(e.currentTarget.value.replace(",", ".")) })}
+                            onBlur={(e) => onRadialField({ [key]: Number(e.currentTarget.value.replace(",", ".")) })}
+                          />
+                        </Field>
+                      </div>
+                    ))}
                   </div>
                 )}
                 {selCut && isFreeCut(state, selCut) && (
@@ -976,7 +1073,7 @@ export function SegmentationPanel({
                 plan={plan}
                 edit={
                   state && bounds
-                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint }
+                    ? { state, bounds, selected: selCut, mode, onSelect: setSelCut, onDrag, onDragEnd, onAdd, onAddFree, onMoveFreePoint, onMoveFree, onSplitFree, onRemoveFreePoint, onSetCenter }
                     : undefined
                 }
               />
