@@ -760,7 +760,13 @@ export type ManualShape =
    * A curved strip (a ring sector) like a bent flat bar: `r` = radius of the INNER edge (0 = a pie slice), `w` = width of
    * the strip measured along the radius and `angle` = how many degrees of the ring it covers. The ends are cut along the radius.
    */
-  | { kind: "arc"; r: number; w: number; angle: number; hole?: number };
+  | { kind: "arc"; r: number; w: number; angle: number; hole?: number }
+  /**
+   * A PART of a cylinder (a rolled plate): radius `r`, height `h` and how much of the circle it covers, given as the
+   * `angle` (°), the `arc` length or the `chord` (`by`, with the number in `v`). The part is the FLAT PATTERN: a rectangle
+   * (arc length) × h. Type the mean (neutral-line) radius when the thickness matters.
+   */
+  | { kind: "cylpart"; r: number; h: number; by: "angle" | "arc" | "chord"; v: number; hole?: number };
 
 export interface ManualGeometry {
   outer: Pt[];
@@ -817,6 +823,25 @@ export function coneFlat(d1: number, d2: number, h: number): { slant: number; R:
   return { slant, R, r, angle };
 }
 
+/** What a piece of a cylinder measures: opening angle (°), arc length, chord and rise (sagitta); or a message. */
+export function cylPartInfo(
+  r: number,
+  by: "angle" | "arc" | "chord",
+  v: number,
+): { angle: number; arc: number; chord: number; rise: number } | { error: string } {
+  if (!(Number.isFinite(r) && r > 0)) return { error: "Enter the radius (greater than 0)." };
+  if (!(Number.isFinite(v) && v > 0)) return { error: by === "angle" ? "Enter the angle (greater than 0)." : by === "arc" ? "Enter the arc length (greater than 0)." : "Enter the chord length (greater than 0)." };
+  let t: number; // radians
+  if (by === "angle") t = (v * Math.PI) / 180;
+  else if (by === "arc") t = v / r;
+  else {
+    if (v > 2 * r + 1e-9) return { error: `The chord cannot be longer than the diameter (${fmtMm(2 * r)} mm).` };
+    t = 2 * Math.asin(Math.min(1, v / (2 * r)));
+  }
+  if (!(t > 0 && t < 2 * Math.PI)) return { error: "The piece must cover less than a full circle (angle under 360°)." };
+  return { angle: (t * 180) / Math.PI, arc: r * t, chord: 2 * r * Math.sin(t / 2), rise: r * (1 - Math.cos(t / 2)) };
+}
+
 /** Outline (+ hole) of a typed-in part, moved to 0,0 like every other part; or a message saying what is wrong with the numbers. */
 export function buildManualShape(s: ManualShape): ManualGeometry | { error: string } {
   const ok = (n: number | undefined) => typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -826,7 +851,13 @@ export function buildManualShape(s: ManualShape): ManualGeometry | { error: stri
   let outer: Pt[];
   let hc: Pt = [0, 0];
   let maxHole: number;
-  if (s.kind === "cylinder") {
+  if (s.kind === "cylpart") {
+    if (hole) return { error: "A cylinder part has no hole option — untick the hole." };
+    if (!ok(s.h)) return { error: "Enter the height (greater than 0)." };
+    const f = cylPartInfo(s.r, s.by, s.v);
+    if ("error" in f) return f;
+    return buildManualShape({ kind: "rect", w: f.arc, h: s.h });
+  } else if (s.kind === "cylinder") {
     if (hole) return { error: "A cylinder has no hole option — untick the hole." };
     if (!ok(s.d) || !ok(s.h)) return { error: "Enter the diameter and the height (greater than 0)." };
     return buildManualShape({ kind: "rect", w: Math.PI * s.d, h: s.h });
@@ -948,6 +979,10 @@ export function manualPartName(s: ManualShape): string {
   const hole = s.hole && s.hole > 0 ? ` Ø${fmtMm(s.hole)}` : "";
   if (s.kind === "rect") return `Rectangle ${fmtMm(s.w)}×${fmtMm(s.h)}${hole}`;
   if (s.kind === "circle") return `Circle Ø${fmtMm(s.d)}${hole ? ` /${hole}` : ""}`;
+  if (s.kind === "cylpart") {
+    const f = cylPartInfo(s.r, s.by, s.v);
+    return `Cylinder part R${fmtMm(s.r)} ${"error" in f ? "" : `${fmtMm(f.angle)}° `}×${fmtMm(s.h)}`.replace("  ", " ");
+  }
   if (s.kind === "cylinder") return `Cylinder flat Ø${fmtMm(s.d)}×${fmtMm(s.h)}`;
   if (s.kind === "arc") return `Arc R${fmtMm(s.r)} W${fmtMm(s.w)} ${fmtMm(s.angle)}°`;
   if (s.kind === "cone") return `Cone flat Ø${fmtMm(s.d1)}${s.d2 > 0 ? `/Ø${fmtMm(s.d2)}` : ""}×${fmtMm(s.h)}`;

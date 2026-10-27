@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addManualPart, buildManualShape, coneFlat, manualPartName, resizeGroup, type Group } from "./engine";
+import { addManualPart, buildManualShape, coneFlat, cylPartInfo, manualPartName, resizeGroup, type Group } from "./engine";
 
 const geo = (s: Parameters<typeof buildManualShape>[0]) => {
   const r = buildManualShape(s);
@@ -225,5 +225,32 @@ describe("parts typed in by hand", () => {
     if ("error" in r2) throw new Error(r2.error);
     expect(r2.groups).toHaveLength(2);
     expect(r2.groups.map((g) => g.name)).toEqual(["Cylinder flat Ø300×500", "Arc R1000 W50 60°"]);
+  });
+
+  it("cylinder part: flat length is the arc, whichever way the piece is given", () => {
+    const R = 2840;
+    const byAngle = geo({ kind: "cylpart", r: R, h: 720, by: "angle", v: 30 });
+    expect(byAngle.w).toBeCloseTo((R * Math.PI) / 6, 6);
+    expect(byAngle.h).toBeCloseTo(720, 6);
+    const info = cylPartInfo(R, "chord", 1495);
+    if ("error" in info) throw new Error(info.error);
+    expect(info.chord).toBeCloseTo(1495, 6);
+    expect(info.arc).toBeGreaterThan(1495); // the curve is longer than the chord
+    expect(info.arc).toBeCloseTo(R * 2 * Math.asin(1495 / (2 * R)), 6);
+    const byChord = geo({ kind: "cylpart", r: R, h: 720, by: "chord", v: 1495 });
+    expect(byChord.w).toBeCloseTo(info.arc, 6);
+    const byArc = geo({ kind: "cylpart", r: R, h: 720, by: "arc", v: info.arc });
+    expect(byArc.w).toBeCloseTo(info.arc, 6);
+    expect(info.rise).toBeCloseTo(R - Math.sqrt(R * R - 747.5 ** 2), 6);
+  });
+
+  it("cylinder part: bad numbers give a message", () => {
+    expect(buildManualShape({ kind: "cylpart", r: 100, h: 50, by: "chord", v: 250 })).toHaveProperty("error"); // chord > Ø
+    expect(buildManualShape({ kind: "cylpart", r: 100, h: 50, by: "angle", v: 360 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylpart", r: 100, h: 50, by: "arc", v: 700 })).toHaveProperty("error"); // > full circle
+    expect(buildManualShape({ kind: "cylpart", r: 0, h: 50, by: "angle", v: 30 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylpart", r: 100, h: 0, by: "angle", v: 30 })).toHaveProperty("error");
+    expect(buildManualShape({ kind: "cylpart", r: 100, h: 50, by: "angle", v: 30, hole: 5 })).toHaveProperty("error");
+    expect(manualPartName({ kind: "cylpart", r: 2840, h: 720, by: "angle", v: 30 })).toBe("Cylinder part R2840 30° ×720");
   });
 });
