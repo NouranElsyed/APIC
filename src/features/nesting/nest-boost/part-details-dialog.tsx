@@ -61,6 +61,38 @@ export function PartDetailsDialog({
               <Row label="Cut length" value={`${n0(d.perimeterMm)} mm`} note="Outline + the outline of every hole." />
             </Section>
 
+            {d.formula && (
+              <Section title={`Shape — ${d.formula.title}`}>
+                <div className="space-y-1 py-1 text-xs leading-relaxed">
+                  {d.formula.steps.map((t, i) => (
+                    <div key={i} className="tabular-nums">{t}</div>
+                  ))}
+                  {d.formula.formulaMm2 !== null && Math.abs(d.formula.formulaMm2 - d.netMm2) > Math.max(1, d.netMm2 * 0.0001) && (
+                    <div className="pt-1 text-[11px] text-muted-foreground">
+                      The drawing outline is made of straight segments, so its area ({n0(d.netMm2)} mm²) differs from the exact formula
+                      by {(((d.netMm2 - d.formula.formulaMm2) / d.formula.formulaMm2) * 100).toFixed(3)}%. The weight uses the drawing area.
+                    </div>
+                  )}
+                  {d.formula.source === "detected" && (
+                    <div className="pt-1 text-[11px] text-muted-foreground">Recognised from the drawing outline.</div>
+                  )}
+                </div>
+              </Section>
+            )}
+
+            {d.holes.length > 0 && (
+              <Section title="Holes">
+                {d.holes.map((h, i) => (
+                  <Row
+                    key={i}
+                    label={h.d !== null ? `${h.count} × Ø${n2(h.d)}` : `${h.count} × free shape`}
+                    value={`${n0(h.each * h.count)} mm²`}
+                    note={h.d !== null ? `π × (${n2(h.d)} / 2)² = ${n0(h.each)} mm² each` : "Area from the outline points (shoelace formula)."}
+                  />
+                ))}
+              </Section>
+            )}
+
             <Section title="Area">
               <Row
                 label="Net area (1 piece)"

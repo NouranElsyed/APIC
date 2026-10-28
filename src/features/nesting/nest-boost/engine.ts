@@ -50,6 +50,8 @@ export interface Group {
   n?: number;
   /** Set on a segmented original part and on the pieces generated from it. */
   seg?: SegInfo;
+  /** The dimensions it was typed in with ("Add part by dimensions"), so the Details popup can show the exact formula. */
+  shape?: ManualShape;
 }
 
 /** The part number as shown to the user: "3" for a normal part, "1-2" for the 2nd piece of segmented part #1. */
@@ -1042,7 +1044,7 @@ export function addManualPart(
   );
   if (m) return { groups: groups.map((g) => (g === m ? { ...g, qty: g.qty + qty } : g)), id: m.id, merged: true };
   const id = counters.id++;
-  const g: Group = { ...geo, id, sn: ++counters.sn, name: (o.name ?? "").trim() || manualPartName(shape), qty, th, material };
+  const g: Group = { ...geo, id, sn: ++counters.sn, name: (o.name ?? "").trim() || manualPartName(shape), qty, th, material, shape };
   return { groups: [...groups, g], id, merged: false };
 }
 
@@ -1056,8 +1058,10 @@ export function resizeGroup(g: Group, w: number, h: number): Group {
   const m = (r: Pt[]) => r.map((q) => [q[0] * sx, q[1] * sy] as Pt);
   const outer = m(g.outer);
   const holes = g.holes.map(m);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { shape, ...rest } = g; // stretched: the typed-in dimensions no longer describe it
   return {
-    ...g,
+    ...rest,
     outer,
     holes,
     extra: g.extra?.map(m),

@@ -1,4 +1,5 @@
 import type { Group } from "./engine";
+import { holeLines, shapeFormula, type HoleLine, type ShapeFormula } from "./part-formula";
 
 /** Steel density: kg per (m² · mm) — same constant the nesting report and Standard Calculations use (7850 kg/m³). */
 export const STEEL_KG_PER_M2_MM = 7.85;
@@ -27,6 +28,10 @@ export interface PartDetails {
   totalKg: number | null;
   placedKg: number | null;
   leftKg: number | null;
+  /** How the outline / area is worked out for a known shape (typed in, or a plain rectangle / circle); null for a free outline. */
+  formula: ShapeFormula | null;
+  /** The holes, round ones grouped by diameter. */
+  holes: HoleLine[];
 }
 
 const shoelace = (p: [number, number][]) => {
@@ -64,5 +69,7 @@ export function partDetails(g: Group, placed: number, left: number): PartDetails
     totalKg: times(g.qty),
     placedKg: times(placed),
     leftKg: times(left),
+    formula: shapeFormula(g),
+    holes: holeLines(g.holes),
   };
 }
