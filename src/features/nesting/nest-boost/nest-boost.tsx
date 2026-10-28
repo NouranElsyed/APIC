@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, Eye, FileSpreadsheet, FolderInput, Gauge, Layers, Loader2, Maximize2, Minimize2, MoreVertical, PackageCheck, Plus, Recycle, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, Eye, FileSpreadsheet, FolderInput, Gauge, Info, Layers, Loader2, Maximize2, Minimize2, MoreVertical, PackageCheck, Plus, Recycle, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -18,6 +18,7 @@ import { angleClick, setAngleFeedback } from "./angle-feedback";
 import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } from "./history";
 import { cloneResult, SavedNestsCard, type NestCfg, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
+import { PartDetailsDialog } from "./part-details-dialog";
 import { EmptyPanel, KpiTile, PaneTabs, Panel, stepStates, WorkflowStepper, WorkspaceHeader, type WorkflowStep } from "../ui/workspace-ui";
 import { classifyAll, type FitResult } from "../segmentation/fit";
 import { SegmentDialog } from "../segmentation/segment-dialog";
@@ -1124,6 +1125,8 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
   // Multi-select in "Parts & quantities" + the "Are you sure?" for removals.
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
+  // "Details" popup of a part row (size / area / weight and how they are calculated)
+  const [detailsId, setDetailsId] = React.useState<number | null>(null);
   // Editing a part's length / width: with "keep proportions" on, changing one changes the other too.
   const [keepRatio, setKeepRatio] = React.useState(true);
   const [pendingResize, setPendingResize] = React.useState<{ id: number; w: number; h: number } | null>(null);
@@ -2497,6 +2500,10 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onSelect={() => setDetailsId(g.id)}>
+            <Info /> Details
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={!canNest}
             onSelect={() => openSolo(g)}
@@ -3585,6 +3592,18 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           setPendingResize(null);
         }}
       />
+
+      {(() => {
+        const dg = detailsId === null ? null : (groups.find((x) => x.id === detailsId) ?? null);
+        return (
+          <PartDetailsDialog
+            group={dg}
+            placed={dg ? (placed.get(dg.id) ?? 0) : 0}
+            left={dg ? leftOf(dg, placed) : 0}
+            onOpenChange={(v) => !v && setDetailsId(null)}
+          />
+        );
+      })()}
 
       <ConfirmDialog
         open={!!pendingRemove}
