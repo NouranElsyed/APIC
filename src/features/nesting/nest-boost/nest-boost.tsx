@@ -35,6 +35,7 @@ import {
   manualPartName,
   resizeGroup,
   addNestParts,
+  mergeDuplicateGroups,
   splitNestLoops,
   thicknessFromName,
   buildDxf,
@@ -1082,6 +1083,16 @@ const EMPTY_MANUAL: ManualForm = {
 
 /** One line of the "what will be added" popup that opens after choosing DXF files. */
 type ImportPreviewRow = { g: Group; file: string; status: "new" | "merged"; add: number };
+/** Thickness / material / quantity typed for one new row of the review popup (strings, as typed; "" = keep what was read from the file). */
+type ImportEdit = { th: string; material: string; qty: string };
+/** A nest DXF that was read and is waiting for the person to confirm its thickness and material. */
+type PendingNest = {
+  f: File;
+  r: ReturnType<typeof parseDXF>;
+  nest: ReturnType<typeof splitNestLoops>;
+  th: string;
+  material: string;
+};
 type ImportPreview = {
   scale: number;
   files: { f: File; r: ReturnType<typeof parseDXF> }[];
@@ -1094,6 +1105,12 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const [importing, setImporting] = React.useState(false);
   // Files chosen but not added yet: the popup lists every part they contain; "Add" puts them in the list.
   const [pendingImport, setPendingImport] = React.useState<ImportPreview | null>(null);
+  // What the person typed in the review popup for each NEW row (keyed by the row's group id): thickness / material / quantity.
+  const [importEdits, setImportEdits] = React.useState<Record<number, ImportEdit>>({});
+  // One value to fill into every new row at once.
+  const [importBulk, setImportBulk] = React.useState<ImportEdit>({ th: "", material: "", qty: "" });
+  // A nest DXF waiting for its thickness / material (asked in a popup instead of a browser prompt).
+  const [pendingNest, setPendingNest] = React.useState<PendingNest | null>(null);
   // Rows added / increased by the last import, highlighted in the parts table for a few seconds.
   const [newIds, setNewIds] = React.useState<Set<number>>(new Set());
   // Filters of the "Parts & quantities" list ("" = no filter on that column)
@@ -1351,6 +1368,8 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     if (!files.length) return;
     const parsedFiles: { f: File; r: ReturnType<typeof parseDXF> }[] = [];
     for (const f of files) parsedFiles.push({ f, r: parseDXF(await f.text()) });
+    setImportEdits({});
+    setImportBulk({ th: "", material: "", qty: "" });
     setPendingImport(buildPreview(parsedFiles, +units));
   }
 
@@ -1384,6 +1403,24 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
         (r.labels.length ? ` (quantity / thickness read from the drawing's QTY / thk notes for ${added.labelled} part(s))` : "") +
         (r.skip.length ? ` (unsupported/approximated: ${r.skip.join(", ")})` : "") +
         "\n";
+    }
+    // thickness / material / quantity typed in the popup (new rows only); rows that now equal an existing row fold into it
+    const edited = new Set<number>();
+    gs = gs.map((g) => {
+      const e = importEdits[g.id];
+      if (!e || !pi.rows.some((x) => x.status === "new" && x.g.id === g.id)) return g;
+      const th = e.th.trim() === "" ? g.th : Math.max(0, Number(e.th.replace(",", ".")) || 0);
+      const qty = e.qty.trim() === "" ? g.qty : Math.max(1, Math.round(Number(e.qty) || 1));
+      const material = e.material.trim();
+      if (th === g.th && qty === g.qty && material === g.material) return g;
+      edited.add(g.id);
+      return { ...g, th, qty, material };
+    });
+    if (edited.size) {
+      const m = mergeDuplicateGroups(gs, edited);
+      gs = m.groups;
+      for (let i = 0; i < touched.length; i++) touched[i] = m.merged.get(touched[i]) ?? touched[i];
+      text += `${edited.size} row(s) edited in the review popup (thickness / material / quantity).\n`;
     }
     setG(gs);
     const bad = parsedFiles.filter((x) => x.r.unclosed.length);
@@ -1419,12 +1456,19 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
       toast.error("No sheets found — a nest DXF needs a rectangle for each sheet with the parts inside it.");
       return;
     }
-    let th = r.labels.find((l) => l.th && l.th > 0)?.th ?? thicknessFromName(f.name);
-    if (!th) {
-      const a = window.prompt("Plate thickness (mm) of this nest? (the file has no 'thk: n' note or '8mm' in its name)", "");
-      if (a === null) return;
-      th = Number(a.replace(",", ".")) || 0;
-    }
+    // thickness: from the drawing's note or the file name when there is one; material is typed in the popup
+    const th0 = r.labels.find((l) => l.th && l.th > 0)?.th ?? thicknessFromName(f.name);
+    setPendingNest({ f, r, nest, th: th0 ? String(th0) : "", material: "" });
+  }
+
+  /** The "Import nest" button of the nest popup: rebuilds the sheets with the thickness and material the person confirmed. */
+  async function confirmNestImport() {
+    const pn = pendingNest;
+    if (!pn) return;
+    const { f, r, nest } = pn;
+    const th = Math.max(0, Number(pn.th.replace(",", ".")) || 0);
+    const material = pn.material.trim();
+    setPendingNest(null);
     const maxW = Math.round(Math.max(...nest.sheets.map((x) => x.W)));
     const maxH = Math.round(Math.max(...nest.sheets.map((x) => x.H)));
     // with a nest already open the new sheets are added to it (they must fit its sheet size); otherwise the sheet size follows the file
@@ -1446,7 +1490,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
         toast.error(`${err instanceof Error ? err.message : "Could not save this import to your history"} — it will not be auto-saved`);
       }
     }
-    const added = addNestParts(groupsRef.current, nest.sheets, f.name, counters.current, { th, material: "" });
+    const added = addNestParts(groupsRef.current, nest.sheets, f.name, counters.current, { th, material });
     if (!cur) setCfg(c);
     const res = manualResult(S);
     res.sheets.push(...added.sheets);
@@ -1456,6 +1500,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     bump();
     setMsg(
       `${f.name}: ${added.sheets.length} sheet(s), ${added.count} part(s) in ${added.groups.length} row(s)` +
+        (material ? ` — ${material}` : "") +
         (th ? ` — ${th} mm` : " — thickness unknown, set it in the parts list") +
         (nest.stray ? `\n${nest.stray} loose contour(s) outside any sheet were ignored` : "") +
         (r.unclosed.length ? unclosedWarning(f.name, r.unclosed.length) : "") +
@@ -3655,6 +3700,45 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
         }}
       />
 
+      <Dialog open={!!pendingNest} onOpenChange={(o) => !o && setPendingNest(null)}>
+        <DialogContent className="max-w-md">
+          {pendingNest && (() => {
+            const pn = pendingNest;
+            const nParts = pn.nest.sheets.reduce((n, sh) => n + sh.parts.length, 0);
+            const thNum = Number(pn.th.replace(",", ".")) || 0;
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Import nest — thickness &amp; material</DialogTitle>
+                  <DialogDescription>
+                    {pn.f.name}: {pn.nest.sheets.length} sheet(s) with {nParts} part(s). Quantities come from how many times each part is placed on the sheets.
+                    Every part and sheet of this file gets the thickness and material below.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Thickness (mm)">
+                    <Input type="number" min={0} step="any" autoFocus placeholder="e.g. 8" value={pn.th} onChange={(e) => setPendingNest({ ...pn, th: e.target.value })} />
+                  </Field>
+                  <Field label="Material">
+                    <Input type="text" placeholder="e.g. S235" value={pn.material} onChange={(e) => setPendingNest({ ...pn, material: e.target.value })} />
+                  </Field>
+                </div>
+                {!thNum && (
+                  <p className="flex items-start gap-1.5 text-xs text-amber-700">
+                    <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>No thickness found in the file (no “thk: n” note or “8mm” in its name). You can leave it empty and set it in the parts list later.</span>
+                  </p>
+                )}
+                <DialogFooter>
+                  <Button variant="secondary" onClick={() => setPendingNest(null)}>Cancel</Button>
+                  <Button onClick={() => void confirmNestImport()}><Plus /> Import nest</Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!pendingImport} onOpenChange={(o) => !o && setPendingImport(null)}>
         <DialogContent className="w-[calc(100vw-1rem)] max-w-4xl p-4 sm:p-6">
           {pendingImport && (() => {
@@ -3665,7 +3749,26 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             const bad = pi.files.filter((x) => x.r.unclosed.length);
             const badCount = bad.reduce((n, x) => n + x.r.unclosed.length, 0);
             const empty = pi.files.filter((x) => !x.r.loops.length && !x.r.unclosed.length);
-            const noTh = pi.rows.filter((x) => !x.g.th).length;
+            const isNew = (x: ImportPreviewRow) => x.status === "new";
+            const editOf = (x: ImportPreviewRow): ImportEdit => importEdits[x.g.id] ?? { th: "", material: "", qty: "" };
+            const setEdit = (x: ImportPreviewRow, patch: Partial<ImportEdit>) =>
+              setImportEdits((cur) => ({ ...cur, [x.g.id]: { ...(cur[x.g.id] ?? { th: "", material: "", qty: "" }), ...patch } }));
+            const effTh = (x: ImportPreviewRow) => (isNew(x) && editOf(x).th.trim() !== "" ? Number(editOf(x).th.replace(",", ".")) || 0 : x.g.th);
+            const noTh = pi.rows.filter((x) => !effTh(x)).length;
+            const newOnly = pi.rows.filter(isNew);
+            const applyBulk = () =>
+              setImportEdits((cur) => {
+                const next = { ...cur };
+                for (const x of newOnly) {
+                  const e = next[x.g.id] ?? { th: "", material: "", qty: "" };
+                  next[x.g.id] = {
+                    th: importBulk.th.trim() !== "" ? importBulk.th : e.th,
+                    material: importBulk.material.trim() !== "" ? importBulk.material : e.material,
+                    qty: importBulk.qty.trim() !== "" ? importBulk.qty : e.qty,
+                  };
+                }
+                return next;
+              });
             return (
               <>
                 <DialogHeader>
@@ -3693,9 +3796,25 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                     {noTh > 0 && (
                       <p className="flex items-start gap-1.5">
                         <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>{noTh} part(s) have no thickness yet (shown as “?”) — you can type it in the list after adding.</span>
+                        <span>{noTh} part(s) have no thickness yet — type it in the “Thick” column below (or in the list after adding).</span>
                       </p>
                     )}
+                  </div>
+                )}
+
+                {newOnly.length > 0 && (
+                  <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border bg-muted/30 p-2 text-xs">
+                    <span className="basis-full text-muted-foreground">Set for all {newOnly.length} new part(s) at once (leave a box empty to keep what was read from the file):</span>
+                    <label className="space-y-1">Thickness (mm)
+                      <Input type="number" min={0} step="any" className="h-8 w-24" placeholder="e.g. 8" value={importBulk.th} onChange={(e) => setImportBulk({ ...importBulk, th: e.target.value })} />
+                    </label>
+                    <label className="space-y-1">Material
+                      <Input type="text" className="h-8 w-28" placeholder="e.g. S235" value={importBulk.material} onChange={(e) => setImportBulk({ ...importBulk, material: e.target.value })} />
+                    </label>
+                    <label className="space-y-1">Quantity
+                      <Input type="number" min={1} step={1} className="h-8 w-20" placeholder="e.g. 4" value={importBulk.qty} onChange={(e) => setImportBulk({ ...importBulk, qty: e.target.value })} />
+                    </label>
+                    <Button type="button" size="sm" variant="secondary" disabled={!importBulk.th.trim() && !importBulk.material.trim() && !importBulk.qty.trim()} onClick={applyBulk}>Apply to all</Button>
                   </div>
                 )}
 
@@ -3711,6 +3830,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                           <th className="hidden p-2 sm:table-cell">Area</th>
                           <th className="hidden p-2 sm:table-cell">Holes</th>
                           <th className="p-2">Thick (mm)</th>
+                          <th className="p-2">Material</th>
                           <th className="p-2">Qty</th>
                           <th className="p-2">Status</th>
                         </tr>
@@ -3724,8 +3844,25 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                             <td className="p-2 whitespace-nowrap">{x.g.w.toFixed(1)} × {x.g.h.toFixed(1)}</td>
                             <td className="hidden p-2 sm:table-cell">{Math.round(x.g.area)}</td>
                             <td className="hidden p-2 sm:table-cell">{x.g.holes.length}</td>
-                            <td className={`p-2 ${x.g.th ? "" : "font-semibold text-amber-600"}`}>{x.g.th || "?"}</td>
-                            <td className="p-2 font-semibold tabular-nums">+{x.add}</td>
+                            {isNew(x) ? (
+                              <>
+                                <td className="p-1">
+                                  <Input type="number" min={0} step="any" className={`h-8 w-20 ${effTh(x) ? "" : "border-amber-400"}`} placeholder="?" value={editOf(x).th !== "" ? editOf(x).th : x.g.th || ""} onChange={(e) => setEdit(x, { th: e.target.value })} />
+                                </td>
+                                <td className="p-1">
+                                  <Input type="text" className="h-8 w-24" placeholder="any" value={editOf(x).material} onChange={(e) => setEdit(x, { material: e.target.value })} />
+                                </td>
+                                <td className="p-1">
+                                  <Input type="number" min={1} step={1} className="h-8 w-16 tabular-nums" value={editOf(x).qty !== "" ? editOf(x).qty : x.add} onChange={(e) => setEdit(x, { qty: e.target.value })} />
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className={`p-2 ${x.g.th ? "" : "font-semibold text-amber-600"}`}>{x.g.th || "?"}</td>
+                                <td className="p-2">{x.g.material || "—"}</td>
+                                <td className="p-2 font-semibold tabular-nums">+{x.add}</td>
+                              </>
+                            )}
                             <td className="p-2 whitespace-nowrap">
                               {x.status === "new" ? (
                                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">New part</span>

@@ -738,6 +738,38 @@ export function addFileParts(
   return { groups: out, count: parts.length, labelled };
 }
 
+/**
+ * After the user edits the thickness / material of freshly imported rows, two rows may end up being the same part
+ * (same shape, thickness and material). Folds every row in `ids` into an earlier identical row (its quantity goes up)
+ * so the list never shows the same part twice. Returns the new array and, for each folded row, the id it went into.
+ */
+export function mergeDuplicateGroups(groups: Group[], ids: Set<number>): { groups: Group[]; merged: Map<number, number> } {
+  const out = groups.slice();
+  const merged = new Map<number, number>();
+  for (const id of ids) {
+    const i = out.findIndex((g) => g.id === id);
+    if (i < 0) continue;
+    const g = out[i];
+    if (g.seg) continue;
+    const j = out.findIndex(
+      (m, k) =>
+        k < i &&
+        !m.seg &&
+        m.th === g.th &&
+        m.material === g.material &&
+        m.holes.length === g.holes.length &&
+        Math.abs(m.area - g.area) <= m.area * 0.002 + 0.5 &&
+        Math.abs(m.per - g.per) <= m.per * 0.005 + 0.5 &&
+        Math.abs(Math.max(m.w, m.h) - Math.max(g.w, g.h)) < 0.3,
+    );
+    if (j < 0) continue;
+    out[j] = { ...out[j], qty: out[j].qty + g.qty };
+    out.splice(i, 1);
+    merged.set(g.id, out[j].id);
+  }
+  return { groups: out, merged };
+}
+
 // ------------------------------------------------------- parts typed in by hand (no DXF)
 
 /** A part described by its dimensions (mm). `hole` = diameter of one round hole in the middle (omit / 0 = solid part). */
