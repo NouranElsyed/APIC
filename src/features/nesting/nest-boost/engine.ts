@@ -2872,11 +2872,29 @@ export function buildDxf(sheets: Sheet[], S: Settings): string {
     });
     s += "0\nSEQEND\n8\n0\n";
   };
+  // A note written above each sheet: number, material, thickness, size and what is on it.
+  const txt = (str: string, x: number, y: number, h: number) => {
+    const clean = str.replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7E]/g, "?");
+    s += `0\nTEXT\n8\n0\n10\n${x.toFixed(3)}\n20\n${y.toFixed(3)}\n30\n0.0\n40\n${h.toFixed(3)}\n1\n${clean}\n`;
+  };
   let ox = 0;
-  sheets.forEach((sh) => {
+  sheets.forEach((sh, si) => {
     const W = sh.W ?? S.W;
     const H = sh.H ?? S.H;
     pl([[0, 0], [W, 0], [W, H], [0, H]], ox);
+    const th = sh.th ?? 0;
+    const mat = (sh.material ?? "").trim();
+    const th_h = Math.min(80, Math.max(15, W / 60));
+    const perPart = new Map<string, number>();
+    for (const it of sh.items) perPart.set(snText(it.g), (perPart.get(snText(it.g)) ?? 0) + 1);
+    txt(
+      `Sheet ${si + 1} | Material: ${mat || "-"} | thk: ${th > 0 ? `${th} mm` : "-"} | ${Math.round(W)} x ${Math.round(H)} | ${sh.items.length} pcs`,
+      ox,
+      H + th_h * 1.2,
+      th_h,
+    );
+    if (perPart.size)
+      txt(`Parts: ${[...perPart].map(([sn, n]) => `#${sn} x${n}`).join("  ")}`, ox, H + th_h * 0.1, th_h * 0.7);
     for (const it of sh.items)
       for (const r of [it.g.outer, ...it.g.holes, ...(it.g.extra || [])])
         pl(

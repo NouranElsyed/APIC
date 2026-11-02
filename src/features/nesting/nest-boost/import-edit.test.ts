@@ -28,3 +28,19 @@ describe("editing thickness / material / quantity of imported rows", () => {
     expect(mergeDuplicateGroups(edited, new Set(edited.map((g) => g.id))).groups).toHaveLength(3);
   });
 });
+
+import { buildDxf, makeSettings, parseDXF, splitNestLoops, type Sheet } from "./engine";
+
+describe("exported nest DXF carries a note per sheet", () => {
+  it("writes material, thickness, size and parts above every sheet, and still re-imports", () => {
+    const S = makeSettings({ W: 2000, H: 1000, mg: 5, gp: 5, cell: 5, ro: 2 });
+    const g: Group = { id: 0, sn: 3, name: "p", qty: 2, th: 8, material: "S235", outer: rect(100, 50), holes: [], w: 100, h: 50, area: 5000, per: 300 };
+    const sheets: Sheet[] = [{ items: [{ g, rot: 0, x: 10, y: 10 }, { g, rot: 0, x: 200, y: 10 }], th: 8, material: "S235", used: 0 }];
+    const dxf = buildDxf(sheets, S);
+    expect(dxf).toContain("Sheet 1 | Material: S235 | thk: 8 mm | 2000 x 1000 | 2 pcs");
+    expect(dxf).toContain("#3 x2");
+    const r = parseDXF(dxf);
+    expect(r.labels.some((l) => l.th === 8)).toBe(true);
+    expect(splitNestLoops(r.loops, 1).sheets).toHaveLength(1);
+  });
+});
