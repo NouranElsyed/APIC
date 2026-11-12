@@ -5,6 +5,7 @@ import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
 import { getProject } from "@/server/services/project.service";
 import { getPlanningData } from "@/server/services/planning.service";
+import { getMaterialsData } from "@/server/services/materials.service";
 import { Button } from "@/components/ui/button";
 import { ProjectStageBadge, ProjectStatusBadge } from "@/components/shared/status-badge";
 import { PlanningView } from "@/features/planning/planning-view";
@@ -14,7 +15,7 @@ export default async function ProjectPlanningPage({ params }: { params: Promise<
   const { id } = await params;
   const session = await auth();
   if (!can(session?.user.role, "planning.view")) notFound();
-  const [project, data] = await Promise.all([getProject(id), getPlanningData(id)]);
+  const [project, data, materials] = await Promise.all([getProject(id), getPlanningData(id), getMaterialsData(id)]);
   if (!project) notFound();
 
   return (
@@ -35,6 +36,7 @@ export default async function ProjectPlanningPage({ params }: { params: Promise<
         projectId={project.id}
         projectLabel={`${project.number} — ${project.name}`}
         data={data}
+        materials={materials}
         canEdit={can(session?.user.role, "planning.edit")}
         canDelete={can(session?.user.role, "planning.delete")}
         defaultName={`${project.name} — Schedule`}

@@ -3,7 +3,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle, ArrowDown, ArrowUp, CalendarCheck, CalendarClock, CheckCircle2, ClipboardList, Download, FileSpreadsheet, FileText,
-  Flag, GanttChartSquare, Loader2, Plus, Settings2, Target, Upload, Zap, Circle,
+  Flag, GanttChartSquare, Loader2, Plus, Settings2, Target, Truck, Upload, Zap, Circle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,13 +16,16 @@ import { ChartLegend, ProgressRing, SCurveChart, WbsDonut } from "./charts";
 import { ActivityDialog, CreateScheduleDialog, ImportDialog, SettingsDialog, WbsDialog } from "./planning-dialogs";
 import { planApi } from "./api";
 import type { PlanActivityDTO, PlanningData } from "./dto";
+import { MaterialsView } from "./materials-view";
+import type { MaterialsData } from "@/server/services/materials.service";
 
-type View = "overview" | "gantt" | "scurve" | "table";
+type View = "overview" | "gantt" | "scurve" | "table" | "materials";
 const VIEWS: { id: View; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "gantt", label: "Gantt View" },
   { id: "scurve", label: "S-Curve" },
   { id: "table", label: "Table" },
+  { id: "materials", label: "Materials" },
 ];
 
 // Full class strings so Tailwind keeps them.
@@ -33,9 +36,9 @@ const ALERT_STYLES = {
 } as const;
 
 export function PlanningView({
-  projectId, projectLabel, data, canEdit, canDelete, defaultName, defaultStart,
+  projectId, projectLabel, data, materials, canEdit, canDelete, defaultName, defaultStart,
 }: {
-  projectId: string; projectLabel: string; data: PlanningData | null; canEdit: boolean; canDelete: boolean; defaultName: string; defaultStart: string | null;
+  projectId: string; projectLabel: string; data: PlanningData | null; materials: MaterialsData; canEdit: boolean; canDelete: boolean; defaultName: string; defaultStart: string | null;
 }) {
   const [view, setView] = React.useState<View>("gantt");
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -60,11 +63,11 @@ export function PlanningView({
       </>
     );
   }
-  return <Loaded {...{ projectId, projectLabel, data, canEdit, canDelete, view, setView }} />;
+  return <Loaded {...{ projectId, projectLabel, data, materials, canEdit, canDelete, view, setView }} />;
 }
 
-function Loaded({ projectId, projectLabel, data, canEdit, canDelete, view, setView }: {
-  projectId: string; projectLabel: string; data: PlanningData; canEdit: boolean; canDelete: boolean; view: View; setView: (v: View) => void;
+function Loaded({ projectId, projectLabel, data, materials, canEdit, canDelete, view, setView }: {
+  projectId: string; projectLabel: string; data: PlanningData; materials: MaterialsData; canEdit: boolean; canDelete: boolean; view: View; setView: (v: View) => void;
 }) {
   const [zoom, setZoom] = React.useState<GanttZoom>("month");
   const [showBaseline, setShowBaseline] = React.useState(true);
@@ -114,13 +117,13 @@ function Loaded({ projectId, projectLabel, data, canEdit, canDelete, view, setVi
               <label className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-card px-2 text-xs shadow-sm"><input type="checkbox" checked={showBaseline} disabled={!data.baseline} onChange={(e) => setShowBaseline(e.target.checked)} /> Baseline</label>
             </>
           )}
-          {canEdit && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" /> Import from P6</Button>}
-          {exportBtns}
-          {canEdit && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSettingsOpen(true)} title="Schedule settings"><Settings2 className="h-4 w-4" /></Button>}
+          {view !== "materials" && canEdit && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" /> Import from P6</Button>}
+          {view !== "materials" && exportBtns}
+          {view !== "materials" && canEdit && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSettingsOpen(true)} title="Schedule settings"><Settings2 className="h-4 w-4" /></Button>}
         </div>
       </div>
 
-      {view === "overview" && <Overview data={data} base={base} canEdit={canEdit} onImport={() => setImportOpen(true)} />}
+      {view === "overview" && <Overview data={data} base={base} canEdit={canEdit} onImport={() => setImportOpen(true)} materials={materials} onOpenMaterials={() => setView("materials")} />}
 
       {(view === "gantt" || view === "table") && canEdit && (
         <div className="flex flex-wrap gap-2">
@@ -154,6 +157,8 @@ function Loaded({ projectId, projectLabel, data, canEdit, canDelete, view, setVi
         </Card>
       )}
 
+      {view === "materials" && <MaterialsView projectId={projectId} data={materials} canEdit={canEdit} />}
+
       {view === "table" && <FollowUpTable data={data} projectId={projectId} canEdit={canEdit} onEdit={openActivity} />}
 
       <ActivityDialog open={activityDialog.open} onOpenChange={(o) => setActivityDialog((s) => ({ ...s, open: o }))} projectId={projectId} data={data} activity={activityDialog.activity} defaultWbsId={activityDialog.wbsId} />
@@ -175,7 +180,7 @@ function Kpi({ icon, tint, label, value, valueClass }: { icon: React.ReactNode; 
 }
 
 // ------------------------------------------------------------------------- overview
-function Overview({ data, base, canEdit, onImport }: { data: PlanningData; base: string; canEdit: boolean; onImport: () => void }) {
+function Overview({ data, base, canEdit, onImport, materials, onOpenMaterials }: { data: PlanningData; base: string; canEdit: boolean; onImport: () => void; materials: MaterialsData; onOpenMaterials: () => void }) {
   const k = data.kpis;
   const status = !k.hasBaseline ? { big: "No baseline", sub: "Save a baseline to track delay", tone: "slate" } : k.delayDays > 0 ? { big: `+${k.delayDays} Days`, sub: "Behind schedule", tone: "red" } : { big: k.delayDays < 0 ? `${k.delayDays} Days` : "On time", sub: "Ahead / on schedule", tone: "green" };
   return (
@@ -227,6 +232,19 @@ function Overview({ data, base, canEdit, onImport }: { data: PlanningData; base:
             <QuickAction icon={<FileSpreadsheet className="h-5 w-5 text-green-600" />} label="Export Excel" href={`${base}/export?format=xlsx`} />
           </CardContent></Card>
       </div>
+
+      {materials.summary.total > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0"><CardTitle className="flex items-center gap-2 text-sm"><Truck className="h-4 w-4 text-muted-foreground" /> Material follow-up</CardTitle><Button variant="outline" size="sm" onClick={onOpenMaterials}>Open materials</Button></CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div><p className="text-xs text-muted-foreground">Items tracked</p><p className="text-xl font-semibold">{materials.summary.total}</p></div>
+            <div><p className="text-xs text-muted-foreground">Not ordered</p><p className="text-xl font-semibold text-red-600">{materials.summary.byStatus.NOT_ORDERED}</p>{materials.summary.urgent > 0 && <p className="text-[11px] text-red-600">{materials.summary.urgent} needed within 14 days</p>}</div>
+            <div><p className="text-xs text-muted-foreground">Ordered / partial</p><p className="text-xl font-semibold text-blue-600">{materials.summary.byStatus.ORDERED + materials.summary.byStatus.PARTIAL}</p></div>
+            <div><p className="text-xs text-muted-foreground">Delivered</p><p className="text-xl font-semibold text-green-600">{materials.summary.byStatus.DELIVERED}</p></div>
+            <div><p className="text-xs text-muted-foreground">Late deliveries</p><p className={cn("text-xl font-semibold", materials.summary.byStatus.LATE > 0 && "text-red-600")}>{materials.summary.byStatus.LATE}</p></div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

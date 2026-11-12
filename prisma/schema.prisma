@@ -92,6 +92,7 @@ model User {
   nestingHistory     NestingHistory[]
   planSchedules      PlanSchedule[]   @relation("PlanScheduleCreatedBy")
   planBaselines      PlanBaseline[]   @relation("PlanBaselineCreatedBy")
+  planMaterials      PlanMaterial[]   @relation("PlanMaterialCreatedBy")
 
   @@map("users")
 }
@@ -142,6 +143,7 @@ model Project {
   nestingJobs       NestingJob[]
   nestingWorkspaces NestingWorkspace[]
   planSchedule      PlanSchedule?
+  planMaterials     PlanMaterial[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -901,6 +903,7 @@ model PlanWbs {
   children PlanWbs[] @relation("PlanWbsTree")
 
   activities PlanActivity[]
+  materials  PlanMaterial[]
 
   @@index([scheduleId])
   @@map("plan_wbs")
@@ -944,6 +947,7 @@ model PlanActivity {
 
   predecessors PlanRelationship[] @relation("PlanRelSuccessor")
   successors   PlanRelationship[] @relation("PlanRelPredecessor")
+  materials    PlanMaterial[]
 
   @@unique([scheduleId, code])
   @@index([scheduleId, sortOrder])
@@ -999,4 +1003,65 @@ model PlanProgressSnapshot {
 
   @@unique([scheduleId, dataDate])
   @@map("plan_progress_snapshots")
+}
+
+// ----------------------------------------------------------------------------
+// Material follow-up (procurement tracking) — project-wide.
+// A PlanMaterial is something the project needs (qty, phase, needed-by date);
+// each PlanMaterialOrder is a purchase against it (supplier, PO, expected and
+// received quantities). Status (not ordered / ordered / partial / delivered / late)
+// is derived from the orders, never stored. Linked to the schedule's WBS phase and
+// activity, but kept at project level so it survives re-importing a schedule.
+// ----------------------------------------------------------------------------
+
+model PlanMaterial {
+  id          String    @id @default(cuid())
+  code        String?
+  description String
+  spec        String? // grade / size, e.g. "ST37 · 6 mm plate"
+  unit        String    @default("kg")
+  requiredQty Float
+  neededBy    DateTime? // overrides the linked activity's start date
+  notes       String?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  wbsId String?
+  wbs   PlanWbs? @relation(fields: [wbsId], references: [id], onDelete: SetNull)
+
+  activityId String?
+  activity   PlanActivity? @relation(fields: [activityId], references: [id], onDelete: SetNull)
+
+  createdById String
+  createdBy   User   @relation("PlanMaterialCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  orders PlanMaterialOrder[]
+
+  @@index([projectId, sortOrder])
+  @@map("plan_materials")
+}
+
+model PlanMaterialOrder {
+  id           String    @id @default(cuid())
+  supplier     String
+  poNumber     String?
+  orderedQty   Float
+  unitPrice    Float?
+  orderDate    DateTime?
+  expectedDate DateTime?
+  receivedQty  Float     @default(0)
+  receivedDate DateTime?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  materialId String
+  material   PlanMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId])
+  @@map("plan_material_orders")
 }
