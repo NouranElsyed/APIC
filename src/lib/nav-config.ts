@@ -14,7 +14,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, hidden: true },
-  { label: "Projects", href: "/projects", icon: FolderKanban, hidden: true },
+  { label: "Projects", href: "/projects", icon: FolderKanban, roles: ["ADMIN"] },
   { label: "Clients", href: "/customers", icon: Users2, hidden: true },
   // { label: "Documents", href: "/documents", icon: FileText },
   { label: "Nesting & Costing", href: "/takeoff", icon: Ruler },
