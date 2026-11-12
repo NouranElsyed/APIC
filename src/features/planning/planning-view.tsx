@@ -2,8 +2,8 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
-  AlertTriangle, ArrowDown, ArrowUp, CalendarCheck, CalendarClock, CheckCircle2, ClipboardList, Download, FileSpreadsheet, FileText,
-  Flag, GanttChartSquare, Loader2, Plus, Settings2, Target, Truck, Upload, Zap, Circle,
+  AlertTriangle, ArrowDown, ArrowUp, CheckCircle2, ClipboardList, Download, FileSpreadsheet, FileText,
+  Flag, GanttChartSquare, CalendarRange, Loader2, Plus, Settings2, Target, Truck, Upload, Zap, Circle, Gauge, Clock3, CircleDollarSign, Hourglass,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,9 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "table", label: "Table" },
   { id: "materials", label: "Materials" },
 ];
+
+const selectCls = "h-9 rounded-lg border border-input bg-card pl-3 pr-8 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-ring";
+const softBtn = "h-9 border-transparent bg-secondary text-foreground shadow-none hover:bg-secondary/70";
 
 // Full class strings so Tailwind keeps them.
 const ALERT_STYLES = {
@@ -83,26 +86,18 @@ function Loaded({ projectId, projectLabel, data, materials, canEdit, canDelete, 
 
   const exportBtns = (
     <>
-      <Button variant="outline" size="sm" asChild><a href={`${base}/export?format=xer`}><Download className="h-4 w-4" /> Export to P6</a></Button>
-      <Button variant="outline" size="sm" asChild><a href={`${base}/export?format=xlsx`}><FileSpreadsheet className="h-4 w-4 text-green-600" /> Excel</a></Button>
-      <Button variant="outline" size="sm" asChild><a href={`/print/projects/${projectId}/planning`} target="_blank" rel="noreferrer"><FileText className="h-4 w-4 text-red-600" /> PDF</a></Button>
+      <Button variant="outline" size="sm" className={softBtn} asChild><a href={`${base}/export?format=xer`}><Download className="h-4 w-4 text-primary" /> Export to P6</a></Button>
+      <Button variant="outline" size="sm" className={softBtn} asChild><a href={`${base}/export?format=xlsx`}><FileSpreadsheet className="h-4 w-4 text-green-600" /> Export Excel</a></Button>
+      <Button variant="outline" size="sm" className={softBtn} asChild><a href={`/print/projects/${projectId}/planning`} target="_blank" rel="noreferrer"><FileText className="h-4 w-4 text-red-600" /> Export PDF</a></Button>
     </>
   );
 
   return (
     <div className="space-y-5">
-      {/* ------- KPI strip ------- */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi icon={<CalendarClock className="h-5 w-5 text-primary" />} tint="bg-primary/10" label={k.hasBaseline ? "Planned Finish (baseline)" : "Planned Finish"} value={fmtLong(k.plannedFinish)} />
-        <Kpi icon={<CalendarCheck className="h-5 w-5 text-green-600" />} tint="bg-green-500/10" label="Actual Finish" value={k.actualFinish ? fmtLong(k.actualFinish) : "—"} />
-        <Card><CardContent className="flex items-center gap-4 p-5"><div className="relative"><ProgressRing value={k.progress} /><span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold">{Math.round(k.progress)}%</span></div><div><p className="text-xs font-medium text-muted-foreground">Overall Progress</p><p className="text-xl font-semibold">{Math.round(k.progress)}%</p>{k.hasBaseline && <p className="text-[11px] text-muted-foreground">planned {Math.round(k.plannedPercent)}%</p>}</div></CardContent></Card>
-        <Kpi icon={<AlertTriangle className={cn("h-5 w-5", k.delayDays > 0 ? "text-red-600" : "text-green-600")} />} tint={k.delayDays > 0 ? "bg-red-500/10" : "bg-green-500/10"} label="Delay" value={!k.hasBaseline ? "No baseline" : k.delayDays > 0 ? `+${k.delayDays} Days` : k.delayDays < 0 ? `${k.delayDays} Days` : "On time"} valueClass={k.delayDays > 0 ? "text-red-600" : undefined} />
-      </div>
-
       {data.schedule.calcError && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{data.schedule.calcError}</div>}
 
       {/* ------- view switch + toolbar ------- */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-sm">
         <div className="inline-flex rounded-xl bg-secondary p-1">
           {VIEWS.map((v) => (
             <button key={v.id} type="button" onClick={() => setView(v.id)} className={cn("rounded-lg px-4 py-1.5 text-sm font-medium transition-colors", view === v.id ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{v.label}</button>
@@ -111,15 +106,24 @@ function Loaded({ projectId, projectLabel, data, materials, canEdit, canDelete, 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {view === "gantt" && (
             <>
-              <select value={zoom} onChange={(e) => setZoom(e.target.value as GanttZoom)} className="h-8 rounded-md border border-input bg-card px-2 text-xs shadow-sm">
-                <option value="week">Weekly</option><option value="month">Monthly</option><option value="quarter">Quarterly</option>
-              </select>
-              <label className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-card px-2 text-xs shadow-sm"><input type="checkbox" checked={showBaseline} disabled={!data.baseline} onChange={(e) => setShowBaseline(e.target.checked)} /> Baseline</label>
+              <label className="relative flex items-center">
+                <CalendarRange className="pointer-events-none absolute left-2.5 h-4 w-4 text-foreground/70" />
+                <select value={zoom} onChange={(e) => setZoom(e.target.value as GanttZoom)} className={cn(selectCls, "pl-8")}>
+                  <option value="week">Weekly</option><option value="month">Monthly</option><option value="quarter">Quarterly</option>
+                </select>
+              </label>
+              <label className="relative flex items-center">
+                <span className="pointer-events-none absolute left-3 h-2.5 w-2.5 rounded-full bg-foreground" />
+                <select value={showBaseline && data.baseline ? "show" : "hide"} disabled={!data.baseline} onChange={(e) => setShowBaseline(e.target.value === "show")} className={cn(selectCls, "pl-8 disabled:opacity-50")} title={data.baseline ? undefined : "Save a baseline first"}>
+                  <option value="show">Baseline</option><option value="hide">No baseline</option>
+                </select>
+              </label>
+              <span className="mx-1 hidden h-6 w-px bg-border sm:block" />
             </>
           )}
-          {view !== "materials" && canEdit && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" /> Import from P6</Button>}
+          {view !== "materials" && canEdit && <Button variant="outline" size="sm" className={softBtn} onClick={() => setImportOpen(true)}><Upload className="h-4 w-4 text-primary" /> Import from P6</Button>}
           {view !== "materials" && exportBtns}
-          {view !== "materials" && canEdit && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSettingsOpen(true)} title="Schedule settings"><Settings2 className="h-4 w-4" /></Button>}
+          {view !== "materials" && canEdit && <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setSettingsOpen(true)} title="Schedule settings"><Settings2 className="h-4 w-4" /></Button>}
         </div>
       </div>
 
@@ -139,9 +143,9 @@ function Loaded({ projectId, projectLabel, data, materials, canEdit, canDelete, 
             <GanttChart rows={data.rows} activities={data.activities} dataDate={data.schedule.dataDate} zoom={zoom} showBaseline={showBaseline && !!data.baseline} selectedId={selectedId} onSelect={setSelectedId} onOpen={openActivity} />
           )}
           {canEdit && data.rows.length > 0 && <p className="text-xs text-muted-foreground">Click a row to select it, double-click an activity (or its bar) to edit.</p>}
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr_1.3fr]">
             <Card><CardHeader className="flex-row items-center justify-between space-y-0"><CardTitle className="text-sm">Project Progress – S-Curve</CardTitle><ChartLegend hasBaseline={k.hasBaseline} /></CardHeader><CardContent><SCurveChart data={data.scurve} hasBaseline={k.hasBaseline} height={200} /></CardContent></Card>
-            <CriticalPathCard data={data} onOpen={openActivity} />
+            <CriticalPathCard data={data} onOpen={openActivity} selectedId={selectedId} />
             <IndicatorsCard data={data} />
           </div>
         </>
@@ -167,15 +171,6 @@ function Loaded({ projectId, projectLabel, data, materials, canEdit, canDelete, 
       <ImportDialog open={importOpen} onOpenChange={setImportOpen} projectId={projectId} hasSchedule />
       <span className="sr-only">{projectLabel}</span>
     </div>
-  );
-}
-
-function Kpi({ icon, tint, label, value, valueClass }: { icon: React.ReactNode; tint: string; label: string; value: string; valueClass?: string }) {
-  return (
-    <Card><CardContent className="flex items-center gap-4 p-5">
-      <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", tint)}>{icon}</div>
-      <div className="min-w-0"><p className="truncate text-xs font-medium text-muted-foreground">{label}</p><p className={cn("text-xl font-semibold tracking-tight", valueClass)}>{value}</p></div>
-    </CardContent></Card>
   );
 }
 
@@ -256,21 +251,21 @@ function QuickAction({ icon, label, href, onClick, newTab }: { icon: React.React
 }
 
 // --------------------------------------------------------------- gantt-view bottom cards
-function CriticalPathCard({ data, onOpen }: { data: PlanningData; onOpen: (id: string) => void }) {
+function CriticalPathCard({ data, onOpen, selectedId }: { data: PlanningData; onOpen: (id: string) => void; selectedId?: string | null }) {
   const list = data.criticalPath.slice(0, 6);
   return (
     <Card><CardHeader><CardTitle className="flex items-center gap-2 text-sm"><AlertTriangle className="h-4 w-4 text-red-500" /> Critical Path</CardTitle></CardHeader>
       <CardContent className="space-y-1">
         {list.length === 0 && <p className="py-6 text-center text-xs text-muted-foreground">No critical activities.</p>}
         {list.map((c) => (
-          <button key={c.id} type="button" onClick={() => onOpen(c.id)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-red-50">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+          <button key={c.id} type="button" onClick={() => onOpen(c.id)} className={cn("flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-red-50", c.id === selectedId && "bg-red-50")}>
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
             <span className="shrink-0 text-xs text-muted-foreground">{c.code}</span>
-            <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">({Math.round(c.duration)}d)</span>
+            <span className="min-w-0 flex-1 truncate font-semibold">{c.name}</span>
+            <span className="shrink-0 text-xs font-medium text-red-600">({Math.round(c.duration)}d)</span>
           </button>
         ))}
-        {data.criticalPath.length > list.length && <p className="px-2 pt-1 text-xs text-muted-foreground">+{data.criticalPath.length - list.length} more</p>}
+        {data.criticalPath.length > list.length && <p className="px-3 pt-1 text-xs text-muted-foreground">+{data.criticalPath.length - list.length} more</p>}
       </CardContent></Card>
   );
 }
@@ -278,16 +273,20 @@ function CriticalPathCard({ data, onOpen }: { data: PlanningData; onOpen: (id: s
 function IndicatorsCard({ data }: { data: PlanningData }) {
   const k = data.kpis;
   const spiPct = k.spi == null ? null : Math.round((k.spi - 1) * 100);
-  const cell = (label: string, value: React.ReactNode, sub?: React.ReactNode, tone?: string) => (
-    <div className="rounded-xl border border-border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className={cn("text-xl font-semibold", tone)}>{value}</p>{sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}</div>
+  const tile = (icon: React.ReactNode, label: string, value: React.ReactNode, sub?: React.ReactNode, tone?: string) => (
+    <div className="rounded-xl border border-border p-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-secondary">{icon}</span>{label}</div>
+      <p className={cn("text-2xl font-semibold tracking-tight", tone)}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p>}
+    </div>
   );
   return (
     <Card><CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Zap className="h-4 w-4 text-amber-500" /> Key Indicators</CardTitle></CardHeader>
-      <CardContent className="grid grid-cols-2 gap-3">
-        {cell("SPI", k.spi == null ? "—" : k.spi.toFixed(2), spiPct == null ? "needs progress" : <span className={cn("inline-flex items-center gap-0.5", spiPct < 0 ? "text-red-600" : "text-green-600")}>{spiPct < 0 ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}{Math.abs(spiPct)}%</span>, k.spi != null && k.spi < 1 ? "text-red-600" : undefined)}
-        {cell("Delay", !k.hasBaseline ? "—" : k.delayDays > 0 ? `+${k.delayDays} Days` : "On time", k.hasBaseline ? "vs baseline" : "no baseline", k.delayDays > 0 ? "text-red-600" : undefined)}
-        {cell("Total Float", k.minFloat == null ? "—" : `${Math.round(k.minFloat)} Days`, "lowest open activity", k.minFloat != null && k.minFloat <= 0 ? "text-red-600" : "text-primary")}
-        {cell("Critical", k.criticalCount, "activities")}
+      <CardContent className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        {tile(<Gauge className="h-4 w-4 text-primary" />, "SPI", k.spi == null ? "—" : k.spi.toFixed(2), spiPct == null ? "needs progress" : <span className={cn("inline-flex items-center gap-0.5 font-medium", spiPct < 0 ? "text-red-600" : "text-green-600")}>{spiPct < 0 ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}{Math.abs(spiPct)}%</span>, k.spi != null && k.spi < 1 ? "text-red-600" : undefined)}
+        {tile(<CircleDollarSign className="h-4 w-4 text-primary" />, "CPI", "—", "needs cost data")}
+        {tile(<Clock3 className="h-4 w-4 text-primary" />, "Delay", !k.hasBaseline ? "—" : k.delayDays > 0 ? `+${k.delayDays} Days` : "On time", k.hasBaseline ? "vs baseline" : "no baseline", k.delayDays > 0 ? "text-red-600" : undefined)}
+        {tile(<Hourglass className="h-4 w-4 text-primary" />, "Total Float", k.minFloat == null ? "—" : `${Math.round(k.minFloat)} Days`, "lowest open activity", k.minFloat != null && k.minFloat <= 0 ? "text-red-600" : "text-primary")}
       </CardContent></Card>
   );
 }

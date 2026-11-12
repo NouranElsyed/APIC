@@ -1,15 +1,14 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
 import { getProject } from "@/server/services/project.service";
 import { getPlanningData } from "@/server/services/planning.service";
 import { getMaterialsData } from "@/server/services/materials.service";
-import { Button } from "@/components/ui/button";
-import { ProjectStageBadge, ProjectStatusBadge } from "@/components/shared/status-badge";
 import { PlanningView } from "@/features/planning/planning-view";
 import { ProjectTabs } from "@/features/planning/project-tabs";
+import { ProjectHeader } from "@/features/planning/project-header";
 
 export default async function ProjectPlanningPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -20,17 +19,12 @@ export default async function ProjectPlanningPage({ params }: { params: Promise<
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" asChild><Link href="/projects"><ArrowLeft className="h-4 w-4" /></Link></Button>
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-semibold text-foreground">{project.name}</h2>
-            <ProjectStageBadge stage={project.stage} />
-            <ProjectStatusBadge status={project.status} />
-          </div>
-          <p className="text-xs text-muted-foreground">{project.number} · {project.revision}</p>
-        </div>
-      </div>
+      <nav className="flex items-center gap-1.5 text-sm text-muted-foreground" aria-label="Breadcrumb">
+        <Link href="/projects" className="hover:text-foreground">Projects</Link><ChevronRight className="h-3.5 w-3.5" />
+        <Link href={`/projects/${project.id}`} className="max-w-[240px] truncate hover:text-foreground">{project.name}</Link><ChevronRight className="h-3.5 w-3.5" />
+        <span className="font-medium text-foreground">Planning</span>
+      </nav>
+      <ProjectHeader name={project.name} number={project.number} kpis={data?.kpis ?? null} />
       <ProjectTabs projectId={project.id} />
       <PlanningView
         projectId={project.id}

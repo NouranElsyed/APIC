@@ -1,13 +1,10 @@
 "use client";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { visibleNavItems } from "@/lib/nav-config";
-import { cn } from "@/lib/utils";
+import { NavList } from "./nav-list";
 import type { Role } from "@prisma/client";
 
 export function MobileNav({ role, open, onOpenChange }: { role: Role; open: boolean; onOpenChange: (v: boolean) => void }) {
-  const pathname = usePathname();
   const items = visibleNavItems(role);
 
   return (
@@ -20,24 +17,7 @@ export function MobileNav({ role, open, onOpenChange }: { role: Role; open: bool
           <p className="text-sm font-semibold text-white">SteelFlow</p>
         </div>
         <nav className="space-y-1 p-3">
-          {items.map((item) => {
-            const active = pathname.startsWith(item.href);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => onOpenChange(false)}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium",
-                  active ? "bg-sidebar-active text-white" : "text-sidebar-foreground/80 hover:bg-sidebar-active/50"
-                )}
-              >
-                <Icon className="h-4.5 w-4.5" />
-                {item.label}
-              </Link>
-            );
-          })}
+          <NavList items={items} onNavigate={() => onOpenChange(false)} />
         </nav>
       </DialogContent>
     </Dialog>

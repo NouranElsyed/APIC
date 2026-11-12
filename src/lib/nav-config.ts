@@ -1,20 +1,41 @@
 import {
   LayoutDashboard, FolderKanban, Users2, UserCog, Settings, Ruler, BookOpen,
+  List, CalendarRange, FileText, Boxes, PieChart, BarChart3, Recycle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Role } from "@prisma/client";
+
+export interface NavChild {
+  key: string;
+  label: string;
+  icon: LucideIcon;
+  href?: string;
+  soon?: boolean; // shown greyed-out until its screen exists
+}
 
 export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
   roles?: Role[]; // omit = visible to all authenticated roles
+  children?: NavChild[]; // sub-menu shown under the item (e.g. Projects)
   hidden?: boolean; // kept (routes + page titles still work) but not shown in the sidebar / mobile menu for now
 }
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, hidden: true },
-  { label: "Projects", href: "/projects", icon: FolderKanban, roles: ["ADMIN"] },
+  {
+    label: "Projects", href: "/projects", icon: FolderKanban, roles: ["ADMIN"],
+    children: [
+      { key: "list", label: "Projects List", icon: List, href: "/projects" },
+      { key: "planning", label: "Planning", icon: CalendarRange, href: "/planning" },
+      { key: "quotations", label: "Quotations", icon: FileText, soon: true },
+      { key: "material", label: "Material & Usage", icon: Boxes, soon: true },
+      { key: "cost", label: "Cost & Summary", icon: PieChart, soon: true },
+      { key: "reports", label: "Reports", icon: BarChart3, soon: true },
+      { key: "scrap", label: "Scrap Management", icon: Recycle, soon: true },
+    ],
+  },
   { label: "Clients", href: "/customers", icon: Users2, hidden: true },
   // { label: "Documents", href: "/documents", icon: FileText },
   { label: "Nesting & Costing", href: "/takeoff", icon: Ruler },

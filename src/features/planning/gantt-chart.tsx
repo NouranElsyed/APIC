@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { CheckCircle2, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { dayToIso, isoToDay } from "./calendar";
 import type { PlanRow } from "./metrics";
@@ -9,17 +9,17 @@ import type { PlanActivityDTO } from "./dto";
 export type GanttZoom = "week" | "month" | "quarter";
 
 const ROW_H = 32;
-const HEAD_H = 44;
+const HEAD_H = 52;
 const PPD: Record<GanttZoom, number> = { week: 9, month: 3.6, quarter: 1.4 };
 const COLS = [
-  { key: "outline", label: "#", w: 52 },
-  { key: "code", label: "ID", w: 72 },
-  { key: "name", label: "Activity Name", w: 232 },
-  { key: "duration", label: "Dur", w: 52 },
-  { key: "start", label: "Start", w: 70 },
-  { key: "finish", label: "Finish", w: 70 },
-  { key: "percent", label: "%", w: 52 },
-  { key: "float", label: "Float", w: 54 },
+  { key: "outline", label: "#", w: 48 },
+  { key: "code", label: "ID", w: 68 },
+  { key: "name", label: "Activity Name", w: 236 },
+  { key: "duration", label: "Duration", w: 66 },
+  { key: "start", label: "Start", w: 66 },
+  { key: "finish", label: "Finish", w: 66 },
+  { key: "percent", label: "% Complete", w: 76 },
+  { key: "float", label: "Total Float", w: 66 },
 ] as const;
 const LEFT_W = COLS.reduce((s, c) => s + c.w, 0);
 
@@ -91,6 +91,7 @@ export function GanttChart({
     return { origin, totalDays: max - origin + 1 };
   }, [rows, dataDate, showBaseline]);
 
+  const todayIso = new Date().toISOString().slice(0, 10);
   const x = (day: number) => (day - origin) * ppd;
   const timelineW = Math.max(400, totalDays * ppd);
   const dataX = x(isoToDay(dataDate));
@@ -168,13 +169,13 @@ export function GanttChart({
   return (
     <div
       ref={scrollRef}
-      className="relative overflow-auto rounded-xl border border-border bg-card"
+      className="relative overflow-auto rounded-2xl border border-border bg-card shadow-sm"
       style={maxHeight ? { maxHeight } : undefined}
     >
       <div className="flex" style={{ width: LEFT_W + timelineW }}>
         {/* ---------------- left: activity table ---------------- */}
         <div className="sticky left-0 z-20 shrink-0 border-r border-border bg-card shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]" style={{ width: LEFT_W }}>
-          <div className="sticky top-0 z-30 flex items-center border-b border-border bg-secondary text-[11px] font-semibold text-muted-foreground" style={{ height: HEAD_H }}>
+          <div className="sticky top-0 z-30 flex items-center border-b border-border bg-card text-[11px] font-semibold leading-tight text-foreground/80" style={{ height: HEAD_H }}>
             {COLS.map((c) => (
               <div key={c.key} className={cn("px-2", c.key !== "name" && c.key !== "outline" && c.key !== "code" && "text-right")} style={{ width: c.w }}>{c.label}</div>
             ))}
@@ -187,17 +188,17 @@ export function GanttChart({
                 key={r.key}
                 onClick={() => r.kind === "activity" && onSelect?.(sel ? null : r.id)}
                 onDoubleClick={() => r.kind === "activity" && onOpen?.(r.id)}
-                className={cn("flex items-center border-b border-border/60 text-xs", isWbs ? "bg-secondary/60 font-semibold" : "cursor-pointer hover:bg-secondary/40", sel && "bg-primary/10 hover:bg-primary/10")}
+                className={cn("flex items-center border-b border-border/60 border-l-[3px] border-l-transparent text-xs", isWbs ? "bg-secondary/50 font-semibold" : "cursor-pointer hover:bg-secondary/40", sel && "border-l-primary bg-primary/10 hover:bg-primary/10")}
                 style={{ height: ROW_H }}
               >
                 <div className="truncate px-2 text-muted-foreground" style={{ width: COLS[0].w }}>{r.outline}</div>
                 <div className="truncate px-2 text-muted-foreground" style={{ width: COLS[1].w }}>{isWbs ? "" : r.code}</div>
                 <div className="flex min-w-0 items-center gap-1 px-2" style={{ width: COLS[2].w, paddingLeft: 8 + r.level * 14 }}>
                   {isWbs && r.hasChildren ? (
-                    <button type="button" onClick={(e) => { e.stopPropagation(); toggle(r.key); }} className="shrink-0 text-muted-foreground hover:text-foreground">
-                      {collapsed.has(r.key) ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    <button type="button" onClick={(e) => { e.stopPropagation(); toggle(r.key); }} className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-border bg-card text-muted-foreground hover:text-foreground" aria-label={collapsed.has(r.key) ? "Expand" : "Collapse"}>
+                      {collapsed.has(r.key) ? <Plus className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
                     </button>
-                  ) : <span className="w-3.5 shrink-0" />}
+                  ) : r.kind === "activity" && r.done ? <CheckCircle2 className="h-4 w-4 shrink-0 fill-green-600 text-white" /> : <span className="w-4 shrink-0" />}
                   <span className={cn("truncate", r.critical && !isWbs && "text-destructive")} title={r.name}>{r.name}</span>
                 </div>
                 <div className="px-2 text-right tabular-nums" style={{ width: COLS[3].w }}>{r.type && r.type !== "TASK" ? "0d" : r.start ? fmtDur(r.duration) : ""}</div>
@@ -212,17 +213,17 @@ export function GanttChart({
 
         {/* ---------------- right: timeline ---------------- */}
         <div className="relative shrink-0" style={{ width: timelineW }}>
-          <div className="sticky top-0 z-10 border-b border-border bg-secondary" style={{ height: HEAD_H }}>
+          <div className="sticky top-0 z-10 border-b border-border bg-card" style={{ height: HEAD_H }}>
             {header.top.map((t) => (
-              <div key={t.label + t.left} className="absolute top-0 flex h-[22px] items-center border-l border-border/70 px-2 text-[11px] font-semibold text-muted-foreground" style={{ left: t.left, width: t.width }}>
+              <div key={t.label + t.left} className={cn("absolute flex items-center border-l border-border/70 px-2 text-[11px] font-semibold text-foreground/80", zoom === "week" ? "top-[26px] h-[26px]" : "bottom-0 h-[26px] justify-center")} style={{ left: t.left, width: t.width }}>
                 <span className="truncate">{t.label}</span>
               </div>
             ))}
             {header.ticks.map((t) => (
-              <div key={t.left} className="absolute top-[22px] h-[22px] border-l border-border/50 pl-1 text-[10px] leading-[22px] text-muted-foreground" style={{ left: t.left }}>{t.label}</div>
+              <div key={t.left} className="absolute bottom-0 h-[26px] border-l border-border/50 pl-1 text-[10px] leading-[26px] text-muted-foreground" style={{ left: t.left }}>{t.label}</div>
             ))}
-            <div className="absolute top-[26px] z-20 -translate-x-1/2 whitespace-nowrap rounded bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground shadow" style={{ left: dataX }}>
-              Data date · {fmtLong(dataDate)}
+            <div className="absolute top-1 z-20 -translate-x-1/2 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[10px] font-semibold text-blue-700 shadow-sm" style={{ left: dataX }}>
+              {dataDate === todayIso ? "Today" : "Data date"} • {fmtLong(dataDate)}
             </div>
           </div>
 
@@ -291,6 +292,9 @@ export function GanttChart({
                     {width > 46 && <span className="absolute inset-0 flex items-center px-1.5 text-[10px] font-semibold text-white mix-blend-normal" style={{ textShadow: "0 0 2px rgba(0,0,0,.45)" }}>{r.percent > 0 ? `${r.percent}%` : ""}</span>}
                   </div>
                   {bl}
+                  {r.id === selectedId && r.percent > 0 && r.percent < 100 && (
+                    <div className="absolute z-10 -translate-x-1/2 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground shadow" style={{ top: top - 12, left: left + (width * r.percent) / 100 }}>{r.percent}%</div>
+                  )}
                 </React.Fragment>
               );
             })}
