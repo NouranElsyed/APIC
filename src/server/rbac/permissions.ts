@@ -46,6 +46,13 @@ export const PERMISSIONS = {
   "steelPricing.view": ["ADMIN"],
   "steelPricing.export": ["ADMIN"],
 
+  // Planning & follow-up (Primavera-style schedule). Anyone can view; editing the
+  // schedule / recording progress follows the project-edit tiers; deleting a whole
+  // schedule is limited to managers and admins.
+  "planning.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
+  "planning.edit": ["ADMIN", "MANAGER", "ENGINEER"],
+  "planning.delete": ["ADMIN", "MANAGER"],
+
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
 } as const;

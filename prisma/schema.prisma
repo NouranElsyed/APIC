@@ -80,16 +80,18 @@ model User {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  createdProjects  Project[]  @relation("ProjectCreatedBy")
-  uploadedDocs     Document[] @relation("DocumentUploadedBy")
-  activityLogs     ActivityLog[]
-  scopeItems       ScopeItem[]     @relation("ScopeItemCreatedBy")
-  notices          Notice[]        @relation("NoticeCreatedBy")
-  meetingMinutes   MeetingMinute[] @relation("MeetingMinuteCreatedBy")
-  uploadedDxfFiles PartDxf[]       @relation("PartDxfUploadedBy")
-  createdNestingJobs NestingJob[]  @relation("NestingJobCreatedBy")
-  createdNestingRuns NestingRun[]  @relation("NestingRunCreatedBy")
-  nestingHistory   NestingHistory[]
+  createdProjects    Project[]        @relation("ProjectCreatedBy")
+  uploadedDocs       Document[]       @relation("DocumentUploadedBy")
+  activityLogs       ActivityLog[]
+  scopeItems         ScopeItem[]      @relation("ScopeItemCreatedBy")
+  notices            Notice[]         @relation("NoticeCreatedBy")
+  meetingMinutes     MeetingMinute[]  @relation("MeetingMinuteCreatedBy")
+  uploadedDxfFiles   PartDxf[]        @relation("PartDxfUploadedBy")
+  createdNestingJobs NestingJob[]     @relation("NestingJobCreatedBy")
+  createdNestingRuns NestingRun[]     @relation("NestingRunCreatedBy")
+  nestingHistory     NestingHistory[]
+  planSchedules      PlanSchedule[]   @relation("PlanScheduleCreatedBy")
+  planBaselines      PlanBaseline[]   @relation("PlanBaselineCreatedBy")
 
   @@map("users")
 }
@@ -132,13 +134,14 @@ model Project {
   createdById String
   createdBy   User   @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
-  documents Document[]
-  takeoffDrawings TakeoffDrawing[]
-  scopeItems      ScopeItem[]
-  notices         Notice[]
-  meetingMinutes  MeetingMinute[]
-  nestingJobs     NestingJob[]
+  documents         Document[]
+  takeoffDrawings   TakeoffDrawing[]
+  scopeItems        ScopeItem[]
+  notices           Notice[]
+  meetingMinutes    MeetingMinute[]
+  nestingJobs       NestingJob[]
   nestingWorkspaces NestingWorkspace[]
+  planSchedule      PlanSchedule?
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -177,7 +180,7 @@ model TakeoffDrawing {
 }
 
 model TakeoffPart {
-  id          String  @id @default(cuid())
+  id          String @id @default(cuid())
   itemNo      Int
   description String // e.g. "PL 20 mm", "IPE 120", free text label
 
@@ -246,8 +249,8 @@ model TakeoffPart {
 
   // Optional DXF Nesting extension (Phase 1) — a TakeoffPart works exactly
   // as before whether or not these are ever populated.
-  dxf             PartDxf?
-  nestingJobItems NestingJobItem[]
+  dxf               PartDxf?
+  nestingJobItems   NestingJobItem[]
   // Phase 2A: historical placements referencing this part across nesting
   // runs. onDelete: Restrict on the placement side — see NestingPlacement.
   nestingPlacements NestingPlacement[] @relation("TakeoffPartNestingPlacements")
@@ -337,8 +340,8 @@ enum NestingJobStatus {
 // eventually run against. Phase 1 only supports creating the job and
 // assigning parts to it.
 model NestingJob {
-  id   String @id @default(cuid())
-  name String
+  id          String           @id @default(cuid())
+  name        String
   // ⚠️ Legacy, optional job-level metadata only — kept for backward
   // compatibility with old records. NOT the source of truth for any part's
   // material/thickness. Nesting Groups / Source Coverage always resolve
@@ -731,18 +734,18 @@ model ActivityLog {
 // ----------------------------------------------------------------------------
 
 model CompanySettings {
-  id      Int    @id @default(1)
-  name    String @default("SteelFlow Engineering Co.")
-  logoUrl String?
-  address String?
-  phone   String?
-  email   String?
-  timezone String @default("Africa/Cairo")
+  id       Int     @id @default(1)
+  name     String  @default("SteelFlow Engineering Co.")
+  logoUrl  String?
+  address  String?
+  phone    String?
+  email    String?
+  timezone String  @default("Africa/Cairo")
 
-  language           String  @default("en")
-  dateFormat         String  @default("DD/MM/YYYY")
-  currency           String  @default("EGP")
-  theme              String  @default("light")
+  language   String @default("en")
+  dateFormat String @default("DD/MM/YYYY")
+  currency   String @default("EGP")
+  theme      String @default("light")
 
   defaultRevisionFormat String  @default("Rev. 00")
   autoSave              Boolean @default(true)
@@ -762,7 +765,6 @@ model ProjectStatusConfig {
 
   @@map("project_status_config")
 }
-
 
 // ----------------------------------------------------------------------------
 // Nesting workspace (auto-save of the DXF / CSV Nesting tabs)
@@ -788,7 +790,6 @@ model NestingWorkspace {
   @@map("nesting_workspaces")
 }
 
-
 // ----------------------------------------------------------------------------
 // Nesting history (per user)
 //
@@ -812,4 +813,190 @@ model NestingHistory {
 
   @@index([userId, updatedAt])
   @@map("nesting_history")
+}
+
+// ----------------------------------------------------------------------------
+// Planning & Follow-up (Primavera P6 style schedule)
+// One schedule per project: WBS tree, activities, logic links, calendars,
+// baselines and progress snapshots. Dates are stored as UTC-midnight DateTimes;
+// durations are working days (Float, so 2.5d from P6 survives).
+// `p6Id` / `p6Raw` keep the original Primavera ids and unknown columns so an
+// imported XER can be exported again without losing them.
+// ----------------------------------------------------------------------------
+
+enum PlanActivityType {
+  TASK
+  MILESTONE_START
+  MILESTONE_FINISH
+}
+
+enum PlanRelType {
+  FS
+  SS
+  FF
+  SF
+}
+
+model PlanSchedule {
+  id                String    @id @default(cuid())
+  name              String
+  startDate         DateTime
+  dataDate          DateTime
+  finishDate        DateTime?
+  defaultCalendarId String?
+  source            String    @default("NATIVE") // NATIVE | XER
+  p6ProjectId       String?
+  calcError         String? // set when the logic has a loop, cleared on a clean recalculation
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  projectId String  @unique
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("PlanScheduleCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  calendars     PlanCalendar[]
+  wbs           PlanWbs[]
+  activities    PlanActivity[]
+  relationships PlanRelationship[]
+  baselines     PlanBaseline[]
+  snapshots     PlanProgressSnapshot[]
+
+  @@map("plan_schedules")
+}
+
+model PlanCalendar {
+  id             String   @id @default(cuid())
+  name           String
+  workDays       Json // boolean[7], index 0 = Sunday
+  holidays       Json // ISO dates (non-working)
+  workExceptions Json // ISO dates (working)
+  hoursPerDay    Float    @default(8)
+  isDefault      Boolean  @default(false)
+  p6Id           String?
+  createdAt      DateTime @default(now())
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  activities PlanActivity[]
+
+  @@index([scheduleId])
+  @@map("plan_calendars")
+}
+
+model PlanWbs {
+  id        String  @id @default(cuid())
+  code      String
+  name      String
+  sortOrder Int     @default(0)
+  p6Id      String?
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  parentId String?
+  parent   PlanWbs?  @relation("PlanWbsTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children PlanWbs[] @relation("PlanWbsTree")
+
+  activities PlanActivity[]
+
+  @@index([scheduleId])
+  @@map("plan_wbs")
+}
+
+model PlanActivity {
+  id              String           @id @default(cuid())
+  code            String
+  name            String
+  type            PlanActivityType @default(TASK)
+  durationDays    Float            @default(1)
+  remainingDays   Float?
+  percentComplete Float            @default(0)
+  actualStart     DateTime?
+  actualFinish    DateTime?
+  constraintType  String? // SNET | SNLT | FNET | FNLT
+  constraintDate  DateTime?
+  sortOrder       Int              @default(0)
+
+  // Calculated by the CPM engine on every change.
+  earlyStart  DateTime?
+  earlyFinish DateTime?
+  lateStart   DateTime?
+  lateFinish  DateTime?
+  totalFloat  Float?
+  isCritical  Boolean   @default(false)
+
+  p6Id      String?
+  p6Raw     Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  wbsId String?
+  wbs   PlanWbs? @relation(fields: [wbsId], references: [id], onDelete: SetNull)
+
+  calendarId String?
+  calendar   PlanCalendar? @relation(fields: [calendarId], references: [id], onDelete: SetNull)
+
+  predecessors PlanRelationship[] @relation("PlanRelSuccessor")
+  successors   PlanRelationship[] @relation("PlanRelPredecessor")
+
+  @@unique([scheduleId, code])
+  @@index([scheduleId, sortOrder])
+  @@map("plan_activities")
+}
+
+model PlanRelationship {
+  id      String      @id @default(cuid())
+  type    PlanRelType @default(FS)
+  lagDays Float       @default(0)
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  predecessorId String
+  predecessor   PlanActivity @relation("PlanRelPredecessor", fields: [predecessorId], references: [id], onDelete: Cascade)
+
+  successorId String
+  successor   PlanActivity @relation("PlanRelSuccessor", fields: [successorId], references: [id], onDelete: Cascade)
+
+  @@unique([predecessorId, successorId, type])
+  @@index([scheduleId])
+  @@map("plan_relationships")
+}
+
+// A frozen copy of every activity's dates, used to measure delay and draw the baseline bars.
+model PlanBaseline {
+  id        String   @id @default(cuid())
+  name      String
+  isPrimary Boolean  @default(true)
+  data      Json // { [activityId]: { start, finish } }
+  createdAt DateTime @default(now())
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  createdById String?
+  createdBy   User?   @relation("PlanBaselineCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([scheduleId])
+  @@map("plan_baselines")
+}
+
+// Overall % complete at each progress update — draws the "Actual" S-curve.
+model PlanProgressSnapshot {
+  id        String   @id @default(cuid())
+  dataDate  DateTime
+  percent   Float
+  createdAt DateTime @default(now())
+
+  scheduleId String
+  schedule   PlanSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, dataDate])
+  @@map("plan_progress_snapshots")
 }

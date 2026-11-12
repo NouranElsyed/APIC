@@ -18,6 +18,7 @@ import { ProjectCorrespondenceSection } from "@/features/projects/project-corres
 import { ProjectScopeSection } from "@/features/projects/project-scope-section";
 import { ProjectNoticesSection } from "@/features/projects/project-notices-section";
 import { ProjectMeetingMinutesSection } from "@/features/projects/project-meeting-minutes-section";
+import { ProjectTabs } from "@/features/planning/project-tabs";
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -43,6 +44,8 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           <p className="text-xs text-muted-foreground">{project.number} · {project.revision}</p>
         </div>
       </div>
+
+      <ProjectTabs projectId={project.id} showPlanning={can(session?.user.role, "planning.view")} />
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="md:col-span-2">
