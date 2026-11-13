@@ -1,15 +1,11 @@
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
-import { getProject } from "@/server/services/project.service";
-import { getPlanningData } from "@/server/services/planning.service";
-import { PrintSchedule } from "@/features/planning/print-schedule";
+import { TakeoffView } from "@/features/takeoff/takeoff-view";
 
-export default async function PrintPlanningPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default async function TakeoffPage() {
   const session = await auth();
-  if (!can(session?.user.role, "planning.view")) notFound();
-  const [project, data] = await Promise.all([getProject(id), getPlanningData(id)]);
-  if (!project || !data) notFound();
-  return <PrintSchedule data={data} title={`${project.number} — ${project.name}`} />;
+  const role = session?.user.role;
+  if (!can(role, "takeoff.view")) redirect("/dashboard");
+  return <TakeoffView canCreate={can(role, "takeoff.create")} canDelete={can(role, "takeoff.delete")} />;
 }
