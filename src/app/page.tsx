@@ -1,11 +1,14 @@
-import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
-import { TakeoffView } from "@/features/takeoff/takeoff-view";
+import { getQuotationDetail } from "@/server/services/quotations.service";
+import { QuotationPrint } from "@/features/quotations/quotation-print";
 
-export default async function TakeoffPage() {
+export default async function PrintQuotationPage({ params }: { params: Promise<{ id: string; qid: string }> }) {
+  const { id, qid } = await params;
   const session = await auth();
-  const role = session?.user.role;
-  if (!can(role, "takeoff.view")) redirect("/dashboard");
-  return <TakeoffView canCreate={can(role, "takeoff.create")} canDelete={can(role, "takeoff.delete")} />;
+  if (!can(session?.user.role, "quotations.view")) notFound();
+  const q = await getQuotationDetail(id, qid);
+  if (!q) notFound();
+  return <QuotationPrint q={q} />;
 }
