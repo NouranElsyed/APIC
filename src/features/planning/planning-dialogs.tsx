@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { cn } from "@/lib/utils";
 import { planApi } from "./api";
 import type { PlanActivityDTO, PlanningData } from "./dto";
+import type { ImportReport } from "@/server/services/planning.service";
 import type { RelType } from "./types";
 
 const selectCls = "flex h-9 w-full rounded-lg border border-input bg-card px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50";
@@ -343,50 +344,108 @@ export function SettingsDialog(props: Parameters<typeof SettingsForm>[0] & { ope
 }
 
 // ---------------------------------------------------------------------------- import
-interface ImportReport { activities: number; relationships: number; wbs: number; calendars: number; warnings: string[]; dateDifferences: number }
+function Summary({ r }: { r: ImportReport }) {
+  const c = r.changes;
+  if (r.mode === "update" && c) {
+    const rows: [string, number][] = [["New activities", c.created], ["Changed", c.updated], ["Unchanged", c.unchanged], ["Removed", c.removed], ["Kept (not in file)", c.keptNotInFile], ["WBS added / renamed", c.wbsCreated + c.wbsUpdated]];
+    return <dl className="grid grid-cols-3 gap-2">{rows.map(([k, v]) => <div key={k} className="rounded-lg bg-secondary px-3 py-2"><dt className="text-[11px] text-muted-foreground">{k}</dt><dd className="text-lg font-semibold">{v}</dd></div>)}</dl>;
+  }
+  return <p>{r.activities} activities, {r.relationships} links, {r.wbs} WBS elements and {r.calendars} calendars.</p>;
+}
 
 function ImportForm({ onOpenChange, projectId, hasSchedule }: { onOpenChange: (o: boolean) => void; projectId: string; hasSchedule: boolean }) {
   const router = useRouter();
   const [file, setFile] = React.useState<File | null>(null);
+  const [mode, setMode] = React.useState<"update" | "replace">("update");
+  const [keepProgress, setKeepProgress] = React.useState(false);
+  const [removeMissing, setRemoveMissing] = React.useState(false);
+  const [p6Project, setP6Project] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [preview, setPreview] = React.useState<ImportReport | null>(null);
   const [report, setReport] = React.useState<ImportReport | null>(null);
+  const resetPreview = () => setPreview(null);
 
-  async function submit() {
+  async function run(dryRun: boolean) {
     if (!file) return;
     setBusy(true);
     const form = new FormData();
     form.append("file", file);
+    form.append("mode", hasSchedule ? mode : "update");
+    if (keepProgress) form.append("keepProgress", "1");
+    if (removeMissing) form.append("removeMissing", "1");
+    if (p6Project) form.append("p6ProjectId", p6Project);
+    if (dryRun) form.append("dryRun", "1");
     try {
       const res = await fetch(`/api/projects/${projectId}/planning/import`, { method: "POST", body: form });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) toast.error(json?.error ?? "Import failed");
+      else if (dryRun) setPreview(json as ImportReport);
       else { setReport(json as ImportReport); router.refresh(); }
     } catch { toast.error("Network error — please try again."); }
     setBusy(false);
   }
+
+  const updating = hasSchedule && mode === "update";
+  const radio = (value: "update" | "replace", title: string, text: string, tone?: string) => (
+    <label className={cn("flex cursor-pointer gap-3 rounded-xl border p-3", mode === value ? "border-primary bg-primary/5" : "border-border hover:bg-secondary/40")}>
+      <input type="radio" name="mode" className="mt-1" checked={mode === value} onChange={() => { setMode(value); resetPreview(); }} />
+      <span className="text-sm"><b className={tone}>{title}</b><span className="block text-xs text-muted-foreground">{text}</span></span>
+    </label>
+  );
+  const check = (checked: boolean, on: (v: boolean) => void, label: string) => (
+    <label className="flex cursor-pointer items-center gap-2 pl-9 text-xs"><input type="checkbox" checked={checked} onChange={(e) => { on(e.target.checked); resetPreview(); }} /> {label}</label>
+  );
+
   return (
-    <DialogContent className="sm:max-w-lg">
-        <DialogHeader><DialogTitle>Import from Primavera P6 (XER)</DialogTitle><DialogDescription>In P6: File → Export → Primavera PM (XER), then choose the file here.</DialogDescription></DialogHeader>
-        {report ? (
-          <div className="space-y-3 text-sm">
-            <p className="font-medium text-green-700">Imported {report.activities} activities, {report.relationships} links, {report.wbs} WBS elements and {report.calendars} calendars.</p>
-            <p className="text-xs text-muted-foreground">Dates were recalculated with the schedule engine (like pressing F9 in P6).{report.dateDifferences > 0 ? ` ${report.dateDifferences} activities finish on a different date than stored in the file — compare them with P6 before relying on the result.` : " All finish dates match the file."}</p>
-            {report.warnings.length > 0 && <ul className="list-disc space-y-1 rounded-lg bg-amber-50 p-3 pl-6 text-xs text-amber-800">{report.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
-            <DialogFooter><Button onClick={() => onOpenChange(false)}>Done</Button></DialogFooter>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {hasSchedule && <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">This project already has a schedule. Importing <b>replaces</b> it (activities, links, baseline and progress history).</p>}
-            <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-border p-8 text-center hover:bg-secondary/50">
-              <Upload className="h-5 w-5 text-muted-foreground" />
-              <span className="text-sm font-medium">{file ? file.name : "Choose an .xer file"}</span>
-              <span className="text-xs text-muted-foreground">Up to 25 MB</span>
-              <input type="file" accept=".xer,.txt" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            </label>
-            <DialogFooter><Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={submit} disabled={!file || busy}>{busy && <Loader2 className="h-4 w-4 animate-spin" />} Import</Button></DialogFooter>
-          </div>
-        )}
-      </DialogContent>
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogHeader><DialogTitle>Import from Primavera P6 (XER)</DialogTitle><DialogDescription>In P6: File → Export → Primavera PM (XER), then choose the file here.</DialogDescription></DialogHeader>
+      {report ? (
+        <div className="space-y-3 text-sm">
+          <div className="font-medium text-green-700">{report.mode === "update" ? "Schedule updated." : "Imported."}</div>
+          <Summary r={report} />
+          <p className="text-xs text-muted-foreground">Dates were recalculated with the schedule engine (like pressing F9 in P6).{report.dateDifferences > 0 ? ` ${report.dateDifferences} activities finish on a different date than stored in the file — compare them with P6 before relying on the result.` : " All finish dates match the file."}</p>
+          {report.warnings.length > 0 && <ul className="list-disc space-y-1 rounded-lg bg-amber-50 p-3 pl-6 text-xs text-amber-800">{report.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+          <DialogFooter><Button onClick={() => onOpenChange(false)}>Done</Button></DialogFooter>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {hasSchedule && (
+            <div className="space-y-2">
+              {radio("update", "Update the existing schedule", "Matches activities by Activity ID. Baseline, progress history and material links are kept; new activities are added.")}
+              {mode === "update" && <>{check(keepProgress, setKeepProgress, "Keep the % complete and actual dates already entered here")}{check(removeMissing, setRemoveMissing, "Remove activities that are not in the file")}</>}
+              {radio("replace", "Replace it", "Deletes the current activities, links, baseline and progress history first.", "text-red-600")}
+            </div>
+          )}
+          <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-border p-6 text-center hover:bg-secondary/50">
+            <Upload className="h-5 w-5 text-muted-foreground" />
+            <span className="text-sm font-medium">{file ? file.name : "Choose an .xer file"}</span>
+            <span className="text-xs text-muted-foreground">Up to 25 MB</span>
+            <input type="file" accept=".xer,.txt" className="hidden" onChange={(e) => { setFile(e.target.files?.[0] ?? null); resetPreview(); setP6Project(""); }} />
+          </label>
+          {preview && preview.projects.length > 1 && (
+            <div>
+              <Label className="mb-1.5 block text-xs">This file has {preview.projects.length} projects — import:</Label>
+              <select className="flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm" value={p6Project || preview.projects[0].id} onChange={(e) => { setP6Project(e.target.value); resetPreview(); }}>
+                {preview.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
+          {preview && (
+            <div className="space-y-2 rounded-xl border border-border p-3 text-sm">
+              <p className="text-xs font-semibold text-muted-foreground">Preview — nothing has been changed yet</p>
+              <Summary r={preview} />
+              {preview.warnings.length > 0 && <ul className="list-disc space-y-1 rounded-lg bg-amber-50 p-3 pl-6 text-xs text-amber-800">{preview.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+            </div>
+          )}
+          {hasSchedule && mode === "replace" && <p className="rounded-lg bg-red-50 p-3 text-xs text-red-700">Replacing cannot be undone: the baseline, progress history and links from materials to activities are lost.</p>}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => run(true)} disabled={!file || busy}>{busy && <Loader2 className="h-4 w-4 animate-spin" />} Preview</Button>
+            <Button onClick={() => run(false)} disabled={!file || busy} className={hasSchedule && mode === "replace" ? "bg-red-600 text-white hover:bg-red-700" : undefined}>{busy && <Loader2 className="h-4 w-4 animate-spin" />} {updating ? "Update schedule" : hasSchedule ? "Replace schedule" : "Import"}</Button>
+          </DialogFooter>
+        </div>
+      )}
+    </DialogContent>
   );
 }
 

@@ -25,7 +25,7 @@ export default async function ProjectPlanningPage({ params }: { params: Promise<
         <span className="font-medium text-foreground">Planning</span>
       </nav>
       <ProjectHeader name={project.name} number={project.number} kpis={data?.kpis ?? null} />
-      <ProjectTabs projectId={project.id} />
+      <ProjectTabs projectId={project.id} showQuotations={can(session?.user.role, "quotations.view")} />
       <PlanningView
         projectId={project.id}
         projectLabel={`${project.number} — ${project.name}`}

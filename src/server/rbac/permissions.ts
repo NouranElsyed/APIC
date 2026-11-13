@@ -53,6 +53,13 @@ export const PERMISSIONS = {
   "planning.edit": ["ADMIN", "MANAGER", "ENGINEER"],
   "planning.delete": ["ADMIN", "MANAGER"],
 
+  // Quotations carry prices and margins, so they are limited to managers and admins;
+  // only an admin can approve / reject or delete one.
+  "quotations.view": ["ADMIN", "MANAGER"],
+  "quotations.edit": ["ADMIN", "MANAGER"],
+  "quotations.approve": ["ADMIN"],
+  "quotations.delete": ["ADMIN"],
+
   "users.manage": ["ADMIN"],
   "settings.manage": ["ADMIN"],
 } as const;

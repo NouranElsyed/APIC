@@ -13,7 +13,8 @@ import {
   buildAlerts, buildMilestones, buildRows, buildSCurve, computeKpis, wbsProgress, weightedProgress,
   type BaselineMap, type MetricActivity, type MetricInput,
 } from "@/features/planning/metrics";
-import { parseXer, writeXer, xerToSchedule, type ExportSchedule } from "@/features/planning/xer";
+import { parseXer, writeXer, xerToSchedule, type ExportSchedule, type ImportedSchedule } from "@/features/planning/xer";
+import { mergeRelationships, planMerge, type ActivityPatch } from "@/features/planning/merge";
 import type { PlanActivityDTO, PlanningData } from "@/features/planning/dto";
 import type { ActivityType, CalendarDef, RelType } from "@/features/planning/types";
 import type {
@@ -525,7 +526,17 @@ export async function setBaseline(projectId: string, name: string | undefined, u
 
 // ------------------------------------------------------------------ Primavera (XER)
 
+export type ImportMode = "create" | "replace" | "update";
+
+export interface ImportChanges {
+  created: number; updated: number; unchanged: number; removed: number; keptNotInFile: number;
+  wbsCreated: number; wbsUpdated: number; relationshipsFromFile: number; relationshipsKept: number;
+}
+
 export interface ImportReport {
+  mode: ImportMode;
+  /** True when nothing was written (a preview). */
+  dryRun: boolean;
   activities: number;
   relationships: number;
   wbs: number;
@@ -534,9 +545,138 @@ export interface ImportReport {
   /** Activities whose finish date, recalculated here, differs from the date stored in the XER. */
   dateDifferences: number;
   projects: { id: string; name: string; code: string }[];
+  /** Only for mode "update": what changed compared with the schedule that was already there. */
+  changes?: ImportChanges;
 }
 
-export async function importXer(projectId: string, text: string, opts: { projectId?: string }, userId: string): Promise<ImportReport> {
+export interface ImportOptions {
+  /** Which project of a multi-project XER to read. */
+  projectId?: string;
+  /** With an existing schedule: "update" (default) merges by Activity ID, "replace" wipes and re-creates. */
+  mode?: "update" | "replace";
+  /** update only: leave % complete, actual dates and remaining duration as they are here. */
+  keepProgress?: boolean;
+  /** update only: delete activities that are not in the file (otherwise they are kept). */
+  removeMissing?: boolean;
+  /** Work out and report the changes without writing anything. */
+  dryRun?: boolean;
+}
+
+async function countDateDifferences(scheduleId: string, imp: ImportedSchedule) {
+  const stored = await prisma.planActivity.findMany({ where: { scheduleId }, select: { p6Id: true, earlyFinish: true, actualFinish: true } });
+  const p6Finish = new Map(imp.activities.map((a) => [a.p6Id, a.actualFinish ?? a.plannedFinish]));
+  let n = 0;
+  for (const a of stored) {
+    const p6 = p6Finish.get(a.p6Id ?? "");
+    const mine = i2(a.actualFinish ?? a.earlyFinish);
+    if (p6 && mine && Math.abs(isoToDay(p6) - isoToDay(mine)) > 0) n++;
+  }
+  return n;
+}
+
+async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<unknown>) {
+  for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
+}
+
+const patchToDb = (p: ActivityPatch) => ({
+  name: p.name, type: p.type, durationDays: p.durationDays, constraintType: p.constraintType, constraintDate: d2(p.constraintDate),
+  wbsId: p.wbsId, calendarId: p.calendarId, sortOrder: p.sortOrder, p6Id: p.p6Id, p6Raw: p.raw as object,
+  ...("percentComplete" in p ? { remainingDays: p.remainingDays ?? null, percentComplete: p.percentComplete, actualStart: d2(p.actualStart), actualFinish: d2(p.actualFinish) } : {}),
+});
+
+type ExistingSchedule = NonNullable<Awaited<ReturnType<typeof loadExistingForMerge>>>;
+async function loadExistingForMerge(projectId: string) {
+  return prisma.planSchedule.findUnique({ where: { projectId }, include: { activities: true, wbs: true, calendars: true } });
+}
+
+/** Merge an XER into the schedule that is already there instead of replacing it. */
+async function mergeXer(existing: ExistingSchedule, imp: ImportedSchedule, opts: ImportOptions, userId: string): Promise<ImportReport> {
+  const keepProgress = !!opts.keepProgress, removeMissing = !!opts.removeMissing;
+  const plan = planMerge(
+    {
+      activities: existing.activities.map((a) => ({
+        id: a.id, code: a.code, name: a.name, type: a.type, durationDays: a.durationDays, remainingDays: a.remainingDays, percentComplete: a.percentComplete,
+        actualStart: i2(a.actualStart), actualFinish: i2(a.actualFinish), constraintType: a.constraintType, constraintDate: i2(a.constraintDate),
+        wbsId: a.wbsId, calendarId: a.calendarId, sortOrder: a.sortOrder, p6Id: a.p6Id, raw: a.p6Raw && typeof a.p6Raw === "object" ? (a.p6Raw as Record<string, string>) : null,
+      })),
+      wbs: existing.wbs.map((w) => ({ id: w.id, code: w.code, name: w.name, parentId: w.parentId, sortOrder: w.sortOrder, p6Id: w.p6Id })),
+      calendars: existing.calendars.map((c) => ({ id: c.id, name: c.name, p6Id: c.p6Id, workDays: c.workDays as boolean[], holidays: c.holidays as string[], workExceptions: c.workExceptions as string[], hoursPerDay: c.hoursPerDay })),
+    },
+    imp, { keepProgress, removeMissing }, randomUUID,
+  );
+  const oldRels = await prisma.planRelationship.findMany({ where: { scheduleId: existing.id }, select: { predecessorId: true, successorId: true, type: true, lagDays: true } });
+  const rels = mergeRelationships(oldRels.map((r) => ({ ...r, type: r.type as RelType })), imp.relationships, plan.activityIds, new Set(plan.keptOnly));
+
+  const updatedCount = plan.activitiesUpdate.filter((u) => u.businessChange).length;
+  const changes: ImportChanges = {
+    created: plan.activitiesCreate.length, updated: updatedCount, unchanged: imp.activities.length - plan.activitiesCreate.length - updatedCount,
+    removed: plan.activitiesRemove.length, keptNotInFile: plan.keptOnly.length, wbsCreated: plan.wbsCreate.length, wbsUpdated: plan.wbsUpdate.length,
+    relationshipsFromFile: rels.fromFile, relationshipsKept: rels.kept,
+  };
+  const report: ImportReport = {
+    mode: "update", dryRun: !!opts.dryRun, activities: imp.activities.length, relationships: imp.relationships.length, wbs: imp.wbs.length, calendars: imp.calendars.length,
+    warnings: [...imp.warnings], dateDifferences: 0, projects: imp.projects, changes,
+  };
+  if (plan.keptOnly.length) report.warnings.push(`${plan.keptOnly.length} activities in the web schedule are not in the file — they were kept. Tick “remove activities that are not in the file” to delete them.`);
+  if (opts.dryRun) return report;
+
+  const startDate = imp.startDate ?? dateToIso(existing.startDate);
+  const withActuals = imp.activities.flatMap((a) => [a.actualStart, a.actualFinish]).filter(Boolean) as string[];
+  const dataDate = keepProgress ? dateToIso(existing.dataDate) : imp.dataDate ?? (withActuals.length ? withActuals.sort().pop()! : dateToIso(existing.dataDate));
+  const defaultP6 = imp.defaultCalendarP6Id ?? imp.calendars[0]?.p6Id;
+  const defaultCalendarId = (defaultP6 && plan.calendarIds.get(defaultP6)) || existing.defaultCalendarId;
+  const scheduleId = existing.id;
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.planSchedule.update({ where: { id: scheduleId }, data: { startDate: d2(startDate)!, dataDate: d2(dataDate)!, source: "XER", p6ProjectId: imp.p6ProjectId, defaultCalendarId } });
+
+      const calData = (c: (typeof plan.calendarsCreate)[number]["cal"]) => ({ name: c.name, workDays: c.workDays, holidays: c.holidays, workExceptions: c.workExceptions, hoursPerDay: c.hoursPerDay, p6Id: c.p6Id });
+      if (plan.calendarsCreate.length) await tx.planCalendar.createMany({ data: plan.calendarsCreate.map((c) => ({ id: c.id, scheduleId, ...calData(c.cal) })) });
+      await inChunks(plan.calendarsUpdate, 20, (c) => tx.planCalendar.update({ where: { id: c.id }, data: calData(c.cal) }));
+      if (defaultCalendarId) {
+        await tx.planCalendar.updateMany({ where: { scheduleId }, data: { isDefault: false } });
+        await tx.planCalendar.update({ where: { id: defaultCalendarId }, data: { isDefault: true } });
+      }
+
+      if (plan.wbsCreate.length) {
+        await tx.planWbs.createMany({
+          data: plan.wbsCreate.map(({ id, w }) => ({ id, scheduleId, code: w.code.slice(0, 30), name: w.name, sortOrder: w.sortOrder, parentId: w.parentP6Id ? plan.wbsIds.get(w.parentP6Id) ?? null : null, p6Id: w.p6Id })),
+        });
+      }
+      await inChunks(plan.wbsUpdate, 30, (w) => tx.planWbs.update({ where: { id: w.id }, data: w.data }));
+
+      if (plan.activitiesRemove.length) await tx.planActivity.deleteMany({ where: { id: { in: plan.activitiesRemove } } });
+      if (plan.activitiesCreate.length) {
+        await tx.planActivity.createMany({
+          data: plan.activitiesCreate.map(({ id, a, code, sortOrder }) => ({
+            id, scheduleId, wbsId: a.wbsP6Id ? plan.wbsIds.get(a.wbsP6Id) ?? null : null, calendarId: a.calendarP6Id ? plan.calendarIds.get(a.calendarP6Id) ?? null : null,
+            code, name: a.name.slice(0, 200), type: a.type, durationDays: a.durationDays, remainingDays: a.remainingDays, percentComplete: a.percentComplete,
+            actualStart: d2(a.actualStart), actualFinish: d2(a.actualFinish), constraintType: a.constraintType, constraintDate: d2(a.constraintDate), sortOrder, p6Id: a.p6Id, p6Raw: a.raw as object,
+          })),
+        });
+      }
+      await inChunks(plan.activitiesUpdate, 40, (u) => tx.planActivity.update({ where: { id: u.id }, data: patchToDb(u.data) }));
+      await inChunks(plan.keptSort, 40, (k) => tx.planActivity.update({ where: { id: k.id }, data: { sortOrder: k.sortOrder } }));
+
+      await tx.planRelationship.deleteMany({ where: { scheduleId } });
+      if (rels.rows.length) await tx.planRelationship.createMany({ data: rels.rows.map((r) => ({ scheduleId, ...r })), skipDuplicates: true });
+    },
+    { timeout: 120_000, maxWait: 10_000 },
+  );
+
+  await recalculate(scheduleId);
+  report.dateDifferences = await countDateDifferences(scheduleId, imp);
+  const sch = await prisma.planSchedule.findUnique({ where: { id: scheduleId }, select: { calcError: true } });
+  if (sch?.calcError) report.warnings.push(sch.calcError);
+  await logActivity({
+    userId, action: "UPDATE", entity: "PLAN_SCHEDULE", entityId: scheduleId,
+    detail: `Updated schedule from XER "${imp.name}": ${changes.created} new, ${changes.updated} changed, ${changes.removed} removed`,
+  });
+  return report;
+}
+
+export async function importXer(projectId: string, text: string, opts: ImportOptions, userId: string): Promise<ImportReport> {
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
   if (!project) throw new PlanningError("Project not found", 404);
 
@@ -547,6 +687,13 @@ export async function importXer(projectId: string, text: string, opts: { project
     throw new PlanningError(e instanceof Error ? e.message : "Could not read this XER file.");
   }
   if (imp.activities.length === 0) throw new PlanningError("The XER file has no activities for the selected project.");
+
+  const existing = await loadExistingForMerge(projectId);
+  const mode: ImportMode = !existing ? "create" : opts.mode ?? "update";
+  if (existing && mode === "update") return mergeXer(existing, imp, opts, userId);
+  if (opts.dryRun) {
+    return { mode, dryRun: true, activities: imp.activities.length, relationships: imp.relationships.length, wbs: imp.wbs.length, calendars: imp.calendars.length, warnings: [...imp.warnings], dateDifferences: 0, projects: imp.projects };
+  }
 
   const calIds = new Map<string, string>();
   const calendars = imp.calendars.length
@@ -628,22 +775,14 @@ export async function importXer(projectId: string, text: string, opts: { project
 
   await recalculate(scheduleId);
 
-  // Trust check: how many finish dates moved compared with what P6 had stored?
-  const stored = await prisma.planActivity.findMany({ where: { scheduleId }, select: { p6Id: true, earlyFinish: true, actualFinish: true } });
-  const p6Finish = new Map(imp.activities.map((a) => [a.p6Id, a.actualFinish ?? a.plannedFinish]));
-  let dateDifferences = 0;
-  for (const a of stored) {
-    const p6 = p6Finish.get(a.p6Id ?? "");
-    const mine = i2(a.actualFinish ?? a.earlyFinish);
-    if (p6 && mine && Math.abs(isoToDay(p6) - isoToDay(mine)) > 0) dateDifferences++;
-  }
+  const dateDifferences = await countDateDifferences(scheduleId, imp);
   const sch = await prisma.planSchedule.findUnique({ where: { id: scheduleId }, select: { calcError: true } });
   const warnings = [...imp.warnings];
   if (sch?.calcError) warnings.push(sch.calcError);
 
   await logActivity({ userId, action: "CREATE", entity: "PLAN_SCHEDULE", entityId: scheduleId, detail: `Imported XER "${imp.name}" (${imp.activities.length} activities)` });
   return {
-    activities: imp.activities.length, relationships: imp.relationships.length, wbs: imp.wbs.length, calendars: calendars.length,
+    mode, dryRun: false, activities: imp.activities.length, relationships: imp.relationships.length, wbs: imp.wbs.length, calendars: calendars.length,
     warnings, dateDifferences, projects: imp.projects,
   };
 }

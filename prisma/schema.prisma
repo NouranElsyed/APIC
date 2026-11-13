@@ -93,6 +93,8 @@ model User {
   planSchedules      PlanSchedule[]   @relation("PlanScheduleCreatedBy")
   planBaselines      PlanBaseline[]   @relation("PlanBaselineCreatedBy")
   planMaterials      PlanMaterial[]   @relation("PlanMaterialCreatedBy")
+  quotations         Quotation[]      @relation("QuotationCreatedBy")
+  quotationEvents    QuotationEvent[] @relation("QuotationEventBy")
 
   @@map("users")
 }
@@ -144,6 +146,8 @@ model Project {
   nestingWorkspaces NestingWorkspace[]
   planSchedule      PlanSchedule?
   planMaterials     PlanMaterial[]
+  quotations        Quotation[]
+  documentFolders   DocumentFolder[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -651,6 +655,7 @@ model Document {
   title      String
   category   DocumentCategory @default(OTHER)
   revision   String           @default("Rev. 00")
+  folder     String? // path such as "Engineering/Drawings"; null = derived from the category
   filePath   String
   fileName   String
   fileSize   Int?
@@ -1064,4 +1069,100 @@ model PlanMaterialOrder {
 
   @@index([materialId])
   @@map("plan_material_orders")
+}
+
+// ---------------------------------------------------------------------------
+// Quotations (per project): BOQ lines split into supply vs dismantle & install,
+// a status workflow, revisions (same number, higher revision) and an event log.
+// ---------------------------------------------------------------------------
+enum QuotationStatus {
+  DRAFT
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum QuotationItemType {
+  SUPPLY
+  INSTALL
+}
+
+model Quotation {
+  id           String          @id @default(cuid())
+  number       String
+  revision     Int             @default(0)
+  section      String?
+  description  String
+  status       QuotationStatus @default(DRAFT)
+  currency     String          @default("EGP")
+  issueDate    DateTime
+  validUntil   DateTime?
+  profitMargin Float? // percent, entered by the estimator
+  preparedBy   String?
+  approvedBy   String?
+  decidedAt    DateTime?
+  terms        String?
+  notes        String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("QuotationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  items  QuotationItem[]
+  events QuotationEvent[]
+
+  @@unique([projectId, number, revision])
+  @@index([projectId, issueDate])
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id          String            @id @default(cuid())
+  sortOrder   Int               @default(0)
+  description String
+  material    String?
+  qty         Float
+  unit        String            @default("kg")
+  unitRate    Float
+  type        QuotationItemType @default(SUPPLY)
+
+  quotationId String
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([quotationId, sortOrder])
+  @@map("quotation_items")
+}
+
+model QuotationEvent {
+  id        String   @id @default(cuid())
+  kind      String // CREATED | UPDATED | SUBMITTED | REVIEW | APPROVED | REJECTED | REVISED
+  message   String
+  createdAt DateTime @default(now())
+
+  quotationId String
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  userId String?
+  user   User?   @relation("QuotationEventBy", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([quotationId, createdAt])
+  @@map("quotation_events")
+}
+
+// Folders a user created in a project's Documents screen (the standard tree is built in).
+model DocumentFolder {
+  id        String   @id @default(cuid())
+  path      String // e.g. "Engineering/Site Photos"
+  createdAt DateTime @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, path])
+  @@map("document_folders")
 }

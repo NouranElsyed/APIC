@@ -45,7 +45,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         </div>
       </div>
 
-      <ProjectTabs projectId={project.id} showPlanning={can(session?.user.role, "planning.view")} />
+      <ProjectTabs projectId={project.id} showPlanning={can(session?.user.role, "planning.view")} showQuotations={can(session?.user.role, "quotations.view")} />
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="md:col-span-2">

@@ -15,27 +15,34 @@ export function NavList({ items, collapsed, onNavigate }: { items: NavItem[]; co
   const pathname = usePathname();
   // Inside a project, "Planning" opens that project's schedule; elsewhere it opens the latest one.
   const projectId = pathname.match(/^\/projects\/([^/]+)/)?.[1];
-  const planningHref = projectId && projectId !== "new" ? `/projects/${projectId}/planning` : "/planning";
+  const inProject = projectId && projectId !== "new" ? projectId : null;
+  const hrefFor = (c: NavChild) =>
+    c.key === "planning" ? (inProject ? `/projects/${inProject}/planning` : "/planning")
+    : c.key === "quotations" ? (inProject ? `/projects/${inProject}/quotations` : "/quotations")
+    : c.key === "documents" ? (inProject ? `/projects/${inProject}/documents` : "/documents")
+    : c.href!;
 
   const childActive = (c: NavChild) =>
     c.key === "planning" ? pathname.includes("/planning")
-    : c.key === "list" ? pathname === "/projects" || (pathname.startsWith("/projects/") && !pathname.includes("/planning"))
+    : c.key === "quotations" ? pathname.includes("/quotations")
+    : c.key === "documents" ? pathname.includes("/documents")
+    : c.key === "list" ? pathname === "/projects" || (pathname.startsWith("/projects/") && !pathname.includes("/planning") && !pathname.includes("/quotations") && !pathname.includes("/documents"))
     : false;
 
   return (
     <>
       {items.map((item) => (
-        <Item key={item.href} item={item} collapsed={collapsed} pathname={pathname} planningHref={planningHref} childActive={childActive} onNavigate={onNavigate} />
+        <Item key={item.href} item={item} collapsed={collapsed} pathname={pathname} hrefFor={hrefFor} childActive={childActive} onNavigate={onNavigate} />
       ))}
     </>
   );
 }
 
-function Item({ item, collapsed, pathname, planningHref, childActive, onNavigate }: {
-  item: NavItem; collapsed?: boolean; pathname: string; planningHref: string; childActive: (c: NavChild) => boolean; onNavigate?: () => void;
+function Item({ item, collapsed, pathname, hrefFor, childActive, onNavigate }: {
+  item: NavItem; collapsed?: boolean; pathname: string; hrefFor: (c: NavChild) => string; childActive: (c: NavChild) => boolean; onNavigate?: () => void;
 }) {
   const Icon = item.icon;
-  const groupActive = pathname.startsWith(item.href) || (!!item.children && pathname.startsWith("/planning"));
+  const groupActive = pathname.startsWith(item.href) || (!!item.children && (pathname.startsWith("/planning") || pathname.startsWith("/quotations") || pathname.startsWith("/documents")));
   const [expanded, setExpanded] = React.useState(true);
 
   if (!item.children) {
@@ -65,7 +72,7 @@ function Item({ item, collapsed, pathname, planningHref, childActive, onNavigate
               );
             }
             return (
-              <Link key={c.key} href={c.key === "planning" ? planningHref : c.href!} onClick={onNavigate} className={cn(row, "py-1.5 text-[13px]", childActive(c) ? on : off)}>
+              <Link key={c.key} href={hrefFor(c)} onClick={onNavigate} className={cn(row, "py-1.5 text-[13px]", childActive(c) ? on : off)}>
                 <CIcon className="h-4 w-4 shrink-0" />{c.label}
               </Link>
             );

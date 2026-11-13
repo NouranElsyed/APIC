@@ -5,13 +5,17 @@ import { BarChart3, CalendarRange, FileText, FolderOpen, LayoutDashboard } from 
 import { cn } from "@/lib/utils";
 
 /** Section tabs under a project's header. Screens that do not exist yet are shown greyed-out. */
-export function ProjectTabs({ projectId, showPlanning = true }: { projectId: string; showPlanning?: boolean }) {
+export function ProjectTabs({ projectId, showPlanning = true, showQuotations = false, showDocuments = true }: { projectId: string; showPlanning?: boolean; showQuotations?: boolean; showDocuments?: boolean }) {
   const pathname = usePathname();
   const tabs = [
     { href: `/projects/${projectId}`, label: "Overview", icon: LayoutDashboard, active: pathname === `/projects/${projectId}` },
     ...(showPlanning ? [{ href: `/projects/${projectId}/planning`, label: "Planning", icon: CalendarRange, active: pathname.startsWith(`/projects/${projectId}/planning`) }] : []),
-    { label: "Quotations", icon: FileText },
-    { label: "Documents", icon: FolderOpen },
+    showQuotations
+      ? { href: `/projects/${projectId}/quotations`, label: "Quotations", icon: FileText, active: pathname.startsWith(`/projects/${projectId}/quotations`) }
+      : { label: "Quotations", icon: FileText },
+    showDocuments
+      ? { href: `/projects/${projectId}/documents`, label: "Documents", icon: FolderOpen, active: pathname.startsWith(`/projects/${projectId}/documents`) }
+      : { label: "Documents", icon: FolderOpen },
     { label: "Reports", icon: BarChart3 },
   ] as { href?: string; label: string; icon: typeof FileText; active?: boolean }[];
   const base = "-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium transition-colors";

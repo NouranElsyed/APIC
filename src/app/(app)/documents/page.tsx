@@ -1,9 +1,14 @@
+import { notFound, redirect } from "next/navigation";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
-import { DocumentsView } from "@/features/documents/documents-view";
+import { prisma } from "@/server/db/client";
 
-export default async function DocumentsPage() {
+/** Sidebar "Documents": open the most recently updated project's documents.
+ *  The flat list across all projects is still available at /documents/all. */
+export default async function DocumentsIndexPage() {
   const session = await auth();
-  const role = session?.user.role;
-  return <DocumentsView canCreate={can(role, "documents.create")} canDelete={can(role, "documents.delete")} />;
+  if (!can(session?.user.role, "documents.view")) notFound();
+  const withDocs = await prisma.project.findFirst({ where: { documents: { some: {} } }, orderBy: { updatedAt: "desc" }, select: { id: true } });
+  const target = withDocs ?? (await prisma.project.findFirst({ orderBy: { updatedAt: "desc" }, select: { id: true } }));
+  redirect(target ? `/projects/${target.id}/documents` : "/documents/all");
 }

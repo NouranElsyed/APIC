@@ -13,15 +13,7 @@ export function ProjectHeader({ name, number, kpis }: { name: string; number: st
   const late = !!k && k.hasBaseline && k.delayDays > 0;
   return (
     <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(300px,1.5fr)_repeat(4,minmax(0,1fr))]">
-      <Card className="lg:col-span-2 xl:col-span-1">
-        <CardContent className="flex items-center gap-4 p-4">
-          <div className="flex h-16 w-20 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-300 via-blue-500 to-slate-800 text-white shadow-sm"><Factory className="h-7 w-7" /></div>
-          <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold leading-tight text-foreground" title={name}>{name}</h2>
-            <span className="mt-1.5 inline-block rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">Project #{number}</span>
-          </div>
-        </CardContent>
-      </Card>
+      <ProjectIdentity name={name} number={number} />
       <Stat icon={<CalendarClock className="h-5 w-5 text-primary" />} tint="bg-primary/10" label="Planned Finish" value={k ? fmtLong(k.plannedFinish) : "—"} />
       <Stat icon={<CalendarCheck className="h-5 w-5 text-green-600" />} tint="bg-green-500/10" label="Actual Finish" value={k?.actualFinish ? fmtLong(k.actualFinish) : "—"} />
       <Card><CardContent className="flex items-center gap-3 p-4">
@@ -39,5 +31,19 @@ function Stat({ icon, tint, label, value, valueClass }: { icon: React.ReactNode;
       <div className={cn("flex h-12 w-12 shrink-0 items-center justify-center rounded-xl", tint)}>{icon}</div>
       <div className="min-w-0"><p className="truncate text-xs font-medium text-muted-foreground">{label}</p><p className={cn("truncate text-xl font-semibold tracking-tight", valueClass)}>{value}</p></div>
     </CardContent></Card>
+  );
+}
+
+export function ProjectIdentity({ name, number }: { name: string; number: string }) {
+  return (
+    <Card className="lg:col-span-2 xl:col-span-1">
+      <CardContent className="flex items-center gap-4 p-4">
+        <div className="flex h-16 w-20 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-300 via-blue-500 to-slate-800 text-white shadow-sm"><Factory className="h-7 w-7" /></div>
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold leading-tight text-foreground" title={name}>{name}</h2>
+          <span className="mt-1.5 inline-block rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">Project #{number}</span>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

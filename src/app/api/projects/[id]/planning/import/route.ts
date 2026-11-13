@@ -25,7 +25,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const text = decode(await file.arrayBuffer());
     if (!isXer(text)) throw new PlanningError("This does not look like a Primavera XER file (it should start with ERMHDR).");
     const pid = form?.get("p6ProjectId");
-    const report = await importXer(id, text, { projectId: typeof pid === "string" && pid ? pid : undefined }, session!.user.id);
+    const flag = (k: string) => form?.get(k) === "1";
+    const report = await importXer(
+      id, text,
+      {
+        projectId: typeof pid === "string" && pid ? pid : undefined,
+        mode: form?.get("mode") === "replace" ? "replace" : "update",
+        keepProgress: flag("keepProgress"), removeMissing: flag("removeMissing"), dryRun: flag("dryRun"),
+      },
+      session!.user.id,
+    );
     return NextResponse.json(report);
   });
 }

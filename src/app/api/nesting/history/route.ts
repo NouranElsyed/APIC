@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { createHistory, listHistory } from "@/server/services/nesting-history.service";
+import { saveHistoryAsProject } from "@/server/services/nesting-history.service";
 
-// The signed-in user's own nesting history (newest first).
-export async function GET() {
-  const { session, res } = await requirePermission("takeoff.view");
+// Turns a history entry into a real project with the name the user typed.
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { session, res } = await requirePermission("projects.create");
   if (res) return res;
-  return NextResponse.json(await listHistory(session!.user.id));
-}
-
-// Starts a new history entry (what the first import made with nothing open does).
-export async function POST(req: NextRequest) {
-  const { session, res } = await requirePermission("takeoff.edit");
-  if (res) return res;
-  const body = await req.json().catch(() => ({}));
-  const entry = await createHistory(
-    session!.user.id,
-    typeof body?.name === "string" ? body.name : undefined,
-    typeof body?.stamp === "string" ? body.stamp : undefined,
-    typeof body?.hint === "string" ? body.hint : undefined,
-  );
-  return NextResponse.json(entry, { status: 201 });
+  const { id } = await params;
+  const body = await req.json().catch(() => null);
+  if (typeof body?.name !== "string" || !body.name.trim()) return NextResponse.json({ error: "A project name is required" }, { status: 400 });
+  const user = session!.user;
+  const project = await saveHistoryAsProject(user.id, user.name || user.email || "User", id, body.name, typeof body?.stamp === "string" ? body.stamp : undefined);
+  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(project, { status: 201 });
 }

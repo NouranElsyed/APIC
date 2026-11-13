@@ -1,24 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { parseBody, planningHandler } from "@/server/api/planning-route";
-import { materialSchema } from "@/server/validators/materials";
-import { createMaterial, getMaterialsData } from "@/server/services/materials.service";
+import { planningHandler } from "@/server/api/planning-route";
+import { PlanningError } from "@/server/services/planning.service";
+import { importMaterialsFromExcel } from "@/server/services/materials.service";
 
-type Ctx = { params: Promise<{ id: string }> };
+export const maxDuration = 60;
 
-export async function GET(_req: NextRequest, { params }: Ctx) {
-  const { res } = await requirePermission("planning.view");
-  if (res) return res;
-  return planningHandler(async () => NextResponse.json(await getMaterialsData((await params).id)));
-}
-
-export async function POST(req: NextRequest, { params }: Ctx) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { session, res } = await requirePermission("planning.edit");
   if (res) return res;
-  const body = await parseBody(req, materialSchema);
-  if (body.res) return body.res;
   return planningHandler(async () => {
-    const m = await createMaterial((await params).id, body.data, session!.user.id);
-    return NextResponse.json({ id: m.id }, { status: 201 });
+    const { id } = await params;
+    const file = (await req.formData().catch(() => null))?.get("file");
+    if (!(file instanceof File)) throw new PlanningError("Choose an .xlsx file to import.");
+    if (file.size > 10 * 1024 * 1024) throw new PlanningError("The file is larger than 10 MB.");
+    return NextResponse.json(await importMaterialsFromExcel(id, await file.arrayBuffer(), session!.user.id));
   });
 }

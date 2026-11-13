@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, FolderKanban, Users2, UserCog, Settings, Ruler, BookOpen,
-  List, CalendarRange, FileText, Boxes, PieChart, BarChart3, Recycle,
+  List, CalendarRange, FileText, Boxes, PieChart, BarChart3, Recycle, FolderOpen,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -29,9 +29,10 @@ export const NAV_ITEMS: NavItem[] = [
     children: [
       { key: "list", label: "Projects List", icon: List, href: "/projects" },
       { key: "planning", label: "Planning", icon: CalendarRange, href: "/planning" },
-      { key: "quotations", label: "Quotations", icon: FileText, soon: true },
+      { key: "quotations", label: "Quotations", icon: FileText, href: "/quotations" },
       { key: "material", label: "Material & Usage", icon: Boxes, soon: true },
       { key: "cost", label: "Cost & Summary", icon: PieChart, soon: true },
+      { key: "documents", label: "Documents", icon: FolderOpen, href: "/documents" },
       { key: "reports", label: "Reports", icon: BarChart3, soon: true },
       { key: "scrap", label: "Scrap Management", icon: Recycle, soon: true },
     ],

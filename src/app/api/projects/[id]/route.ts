@@ -1,49 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { projectSchema } from "@/server/validators/project";
-import { getProject, updateProject, deleteProject, renameProject } from "@/server/services/project.service";
+import { parseBody, planningHandler } from "@/server/api/planning-route";
+import { quotationPatchSchema } from "@/server/validators/quotations";
+import { deleteQuotation, getQuotationDetail, updateQuotation, QuotationError } from "@/server/services/quotations.service";
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { res } = await requirePermission("projects.view");
+type Ctx = { params: Promise<{ id: string; qid: string }> };
+
+export async function GET(_req: NextRequest, { params }: Ctx) {
+  const { res } = await requirePermission("quotations.view");
   if (res) return res;
-  const { id } = await params;
-  const project = await getProject(id);
-  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(project);
+  return planningHandler(async () => {
+    const { id, qid } = await params;
+    const q = await getQuotationDetail(id, qid);
+    if (!q) throw new QuotationError("Quotation not found", 404);
+    return NextResponse.json(q);
+  });
 }
 
-export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("projects.edit");
+export async function PATCH(req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("quotations.edit");
   if (res) return res;
-  const { id } = await params;
-
-  const body = await req.json();
-  const parsed = projectSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  }
-
-  const project = await updateProject(id, parsed.data, session!.user.id);
-  return NextResponse.json(project);
+  const body = await parseBody(req, quotationPatchSchema);
+  if (body.res) return body.res;
+  return planningHandler(async () => {
+    const { id, qid } = await params;
+    await updateQuotation(id, qid, body.data, { id: session!.user.id, name: session!.user.name ?? "—" });
+    return NextResponse.json({ ok: true });
+  });
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("projects.delete");
+export async function DELETE(_req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("quotations.delete");
   if (res) return res;
-  const { id } = await params;
-  await deleteProject(id, session!.user.id);
-  return NextResponse.json({ ok: true });
-}
-
-// Quick rename (used by the Takeoff / Nesting project bar) — everything else is left untouched.
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { session, res } = await requirePermission("projects.edit");
-  if (res) return res;
-  const { id } = await params;
-  const body = await req.json().catch(() => null);
-  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 120) : "";
-  if (!name) return NextResponse.json({ error: "A name is required" }, { status: 400 });
-  const project = await renameProject(id, name, session!.user.id);
-  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(project);
+  return planningHandler(async () => {
+    const { id, qid } = await params;
+    await deleteQuotation(id, qid, session!.user.id);
+    return NextResponse.json({ ok: true });
+  });
 }

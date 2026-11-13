@@ -1,42 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put } from "@vercel/blob";
 import { requirePermission } from "@/server/api/guard";
-import { documentSchema } from "@/server/validators/document";
-import { listDocuments, createDocument } from "@/server/services/document.service";
+import { deleteDocument } from "@/server/services/document.service";
+import { documentPatchSchema } from "@/server/validators/document";
+import { parseBody, planningHandler } from "@/server/api/planning-route";
+import { updateDocument } from "@/server/services/project-documents.service";
 
-export async function GET() {
-  const { res } = await requirePermission("documents.view");
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { session, res } = await requirePermission("documents.delete");
   if (res) return res;
-  const documents = await listDocuments();
-  return NextResponse.json(documents);
+  const { id } = await params;
+  await deleteDocument(id, session!.user.id);
+  return NextResponse.json({ ok: true });
 }
 
-export async function POST(req: NextRequest) {
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { session, res } = await requirePermission("documents.create");
   if (res) return res;
-
-  const form = await req.formData();
-  const file = form.get("file") as File | null;
-  if (!file) return NextResponse.json({ error: "File is required" }, { status: 400 });
-
-  const parsed = documentSchema.safeParse({
-    title: form.get("title"),
-    category: form.get("category") || undefined,
-    projectId: form.get("projectId"),
-    revision: form.get("revision") || undefined,
-    fileName: file.name,
-    filePath: "",
-    fileSize: file.size,
+  const body = await parseBody(req, documentPatchSchema);
+  if (body.res) return body.res;
+  return planningHandler(async () => {
+    const { id } = await params;
+    await updateDocument(id, body.data, session!.user.id);
+    return NextResponse.json({ ok: true });
   });
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-
-  const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const blob = await put(`documents/${safeName}`, bytes, {
-    access: "public",
-    contentType: file.type || "application/octet-stream",
-  });
-
-  const document = await createDocument({ ...parsed.data, filePath: blob.url }, session!.user.id);
-  return NextResponse.json(document, { status: 201 });
 }
