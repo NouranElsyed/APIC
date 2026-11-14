@@ -565,3 +565,38 @@ describe("negative overlap = a gap between the pieces", () => {
     expect(c.plan.metrics.cutArea).toBeLessThan(c.plan.metrics.finishedArea);
   });
 });
+
+describe("radial candidates (Direction & pattern → Radial)", () => {
+  it("a Ø3781 circle on a 2000 × 1000 sheet is cut into equal sectors that all fit, smallest count first", () => {
+    const circle = circleRegion(1890.5, 1890.5, 1890.5);
+    const sheet = { sheets: [{ W: 2000, H: 1000 }], mg: 0, ro: 4 }; // 15° rotation steps: a sector can be turned to lie flat
+    const cands = generateCandidates(circle, gen({ directions: [], radial: true, sheet, allowSolo: false }));
+    expect(cands.length).toBeGreaterThan(0);
+    expect(cands.length).toBeLessThanOrEqual(3);
+    for (const c of cands) {
+      expect(c.plan.valid).toBe(true);
+      expect(c.plan.input.radial?.count).toBeGreaterThanOrEqual(2);
+      expect(c.plan.input.stripCuts).toHaveLength(0);
+      expect(c.plan.metrics.finishedArea).toBeCloseTo(Math.PI * 1890.5 * 1890.5, -1);
+      for (const s of c.plan.segments) expect(["READY", "READY_SOLO"]).toContain(s.fit.status);
+    }
+    const counts = cands.map((c) => c.plan.input.radial!.count);
+    expect(counts).toEqual([...counts].sort((a, b) => a - b));
+    expect(counts[0]).toBeGreaterThan(2); // two halves are far too big for the sheet
+  });
+
+  it("when no sector count fits (90° rotation only) the best attempt is still offered, marked invalid", () => {
+    const circle = circleRegion(1890.5, 1890.5, 1890.5);
+    const sheet = { sheets: [{ W: 2000, H: 1000 }], mg: 0, ro: 2 };
+    const cands = generateCandidates(circle, gen({ directions: [], radial: true, sheet, allowSolo: false }));
+    expect(cands).toHaveLength(1);
+    expect(cands[0].plan.valid).toBe(false);
+    expect(cands[0].plan.input.radial).toBeDefined();
+  });
+
+  it("without the radial flag no radial layout is proposed", () => {
+    const circle = circleRegion(0, 0, 3760);
+    const cands = generateCandidates(circle, gen({ directions: ["H"] }));
+    expect(cands.every((c) => !c.plan.input.radial)).toBe(true);
+  });
+});

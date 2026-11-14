@@ -880,12 +880,13 @@ export function SegmentationPanel({
 
         <div className="space-y-2 rounded-lg border border-border p-3">
           <div className="font-semibold">Direction &amp; pattern</div>
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className="grid grid-cols-4 gap-1.5">
             {(
               [
                 ["H", "Horizontal"],
                 ["V", "Vertical"],
                 ["auto", "Auto"],
+                ["R", "Radial"],
               ] as const
             ).map(([v, label]) => (
               <Button key={v} size="sm" variant={form.direction === v ? "default" : "outline"} onClick={() => set("direction", v)}>

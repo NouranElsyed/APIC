@@ -660,6 +660,8 @@ export function buildPlan(regionIn: Region, input: PlanInput): Plan {
 export interface GenSettings {
   /** ["H"], ["V"] or both for automatic direction selection. */
   directions: Direction[];
+  /** Also propose radial (pie-slice) layouts: equal sectors around the centre of the part's bounding box. */
+  radial?: boolean;
   sheet: SheetCtx;
   overlap: OverlapSpec;
   holePolicy: HolePolicy;
@@ -777,6 +779,58 @@ function placeSeamCuts(region: Region, gs: GenSettings, direction: Direction, st
 }
 
 /**
+ * Radial (pie-slice) layouts: the part is cut into `count` equal sectors around the centre of its bounding box.
+ * Tries 2, 3, 4 … sectors (two start angles each: a cut line along +x, or half a sector turned) and keeps the first
+ * few counts whose pieces all fit the sheet — the smallest count that works is the first one listed.
+ */
+function radialCandidates(region: Region, gs: GenSettings): Candidate[] {
+  const [bx0, by0, bx1, by1] = regionBBox(region);
+  const center: Pt = [(bx0 + bx1) / 2, (by0 + by1) / 2];
+  const out: Candidate[] = [];
+  const MAX_KEPT = 3;
+  const MAX_SECTORS = 24; // more slices than this is not a practical layout (and slow to try)
+  // when no count works, the attempt with the fewest problems is still offered, so it can be seen and edited
+  let fallback: { cand: Candidate; errors: number } | null = null;
+  for (let count = 2; count <= MAX_SECTORS && out.length < MAX_KEPT; count++) {
+    let best: Candidate | null = null;
+    for (const startDeg of [0, 180 / count]) {
+      const plan = buildPlan(region, {
+        direction: "H",
+        stripCuts: [],
+        seamCuts: [],
+        radial: { center, count, startDeg },
+        overlap: gs.overlap,
+        sheet: gs.sheet,
+        holePolicy: gs.holePolicy,
+        confirmedHoleCuts: gs.confirmedHoleCuts,
+        constraints: gs.constraints,
+        tol: gs.tol,
+      });
+      const lbOf = (c: Candidate) => c.plan.metrics.sheetsLowerBound ?? Infinity;
+      const cand: Candidate = {
+        id: `R0-usable-asis-${count}-${Math.round(startDeg * 100) / 100}`,
+        label: `Radial · ${count} sectors · ${plan.segments.length} segments`,
+        direction: "H",
+        sheetIndex: 0,
+        limits: "usable",
+        swapped: false,
+        pattern: `radial${count}`,
+        plan,
+      };
+      if (!plan.valid) {
+        const errors = plan.issues.filter((i) => i.severity === "error").length;
+        if (!fallback || errors < fallback.errors) fallback = { cand, errors };
+        continue;
+      }
+      if (!best || lbOf(cand) < lbOf(best) || (lbOf(cand) === lbOf(best) && plan.metrics.cutLength < best.plan.metrics.cutLength)) best = cand;
+    }
+    if (best) out.push(best);
+  }
+  if (!out.length && fallback) out.push(fallback.cand);
+  return out;
+}
+
+/**
  * Proposes segmentations. For each direction × source sheet × limit mode (usable area, or the
  * raw sheet for margin-free solo segments) × orientation (90° only if the nest allows it) it
  * tries equal strips and several offsets of the first cut, then places staggered, hole-avoiding
@@ -858,6 +912,8 @@ export function generateCandidates(regionIn: Region, gs: GenSettings): Candidate
       }
     }
   });
+
+  if (gs.radial) out.push(...radialCandidates(region, gs));
 
   const lb = (c: Candidate) => c.plan.metrics.sheetsLowerBound ?? Infinity;
   return out.sort(

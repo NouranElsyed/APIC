@@ -18,7 +18,7 @@ export interface SourceForm {
 
 export interface SegForm {
   sources: SourceForm[];
-  direction: "H" | "V" | "auto";
+  direction: "H" | "V" | "auto" | "R";
   pattern: "equal" | "optimized";
   staggered: boolean;
   allowSolo: boolean;
@@ -107,7 +107,8 @@ export function parseForm(f: SegForm, nest: Pick<NestCtx, "mg" | "ro" | "gp" | "
   return {
     ok: true,
     settings: {
-      directions: f.direction === "auto" ? ["H", "V"] : [f.direction],
+      directions: f.direction === "auto" ? ["H", "V"] : f.direction === "R" ? [] : [f.direction],
+      ...(f.direction === "R" ? { radial: true } : {}),
       sheet: { sheets: sheets.map(({ W, H }) => ({ W, H })), mg: nest.mg, ro: nest.ro, gp: nest.gp, cell: nest.cell },
       overlap: { enabled: f.overlapOn, mm: f.overlapOn ? overlapMm : 0, side: f.overlapSide },
       holePolicy: f.holePolicy,
@@ -173,7 +174,7 @@ export function formFromInput(input: PlanInput): SegForm {
   return {
     ...defaultForm({ W: first.W, H: first.H }),
     sources: (input.sheet.sheets.length ? input.sheet.sheets : [first]).map((s, i) => ({ id: i + 1, length: String(s.W), width: String(s.H) })),
-    direction: input.direction,
+    direction: input.radial && !input.stripCuts.length && !input.seamCuts.length ? "R" : input.direction,
     overlapOn: input.overlap.enabled,
     overlapMm: input.overlap.enabled ? String(input.overlap.mm) : "",
     overlapSide: input.overlap.side,
