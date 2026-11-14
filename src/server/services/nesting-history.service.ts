@@ -89,3 +89,28 @@ export async function saveHistoryAsProject(userId: string, userName: string, id:
   await logActivity({ userId, action: "CREATE", entity: "PROJECT", entityId: project.id, detail: `${project.number} (saved from nesting history)` });
   return project;
 }
+
+/**
+ * "Assign to project": copies the whole working state (2D + 1D) of a standalone nest into an EXISTING project,
+ * replacing what that project had in its nesting tabs. The history entry stays (marked with the project).
+ * Returns null when the entry or the project does not exist.
+ */
+export async function assignHistoryToProject(userId: string, id: string, projectId: string) {
+  const entry = await prisma.nestingHistory.findFirst({ where: { id, userId }, select: { id: true, data2D: true, data1D: true } });
+  if (!entry) return null;
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, number: true, name: true } });
+  if (!project) return null;
+  const copies: { kind: WorkspaceKind; data: object }[] = [];
+  if (entry.data2D != null) copies.push({ kind: "2D", data: entry.data2D as object });
+  if (entry.data1D != null) copies.push({ kind: "1D", data: entry.data1D as object });
+  for (const c of copies) {
+    await prisma.nestingWorkspace.upsert({
+      where: { projectId_kind: { projectId: project.id, kind: c.kind } },
+      update: { dataJson: c.data, updatedById: userId },
+      create: { projectId: project.id, kind: c.kind, dataJson: c.data, updatedById: userId },
+    });
+  }
+  await prisma.nestingHistory.updateMany({ where: { id, userId }, data: { savedProjectId: project.id } });
+  await logActivity({ userId, action: "UPDATE", entity: "PROJECT", entityId: project.id, detail: `${project.number} (nest assigned from nesting history)` });
+  return project;
+}

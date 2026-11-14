@@ -107,9 +107,9 @@ export function ScrapPricingView({ canExport }: { canExport: boolean }) {
       {resolving ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">Loading…</div>
       ) : !hasNesting ? (
-        <EmptyState icon={<Boxes className="h-5 w-5" />} title="No nesting yet" description="Start a nesting for this project in DXF Nesting first — Scrap & Material uses its current result automatically." />
+        <EmptyState icon={<Boxes className="h-5 w-5" />} title="No nesting yet" description="Start a nesting for this project in 2D Nesting first — Scrap & Material uses its current result automatically." />
       ) : !runId ? (
-        <EmptyState icon={<Boxes className="h-5 w-5" />} title="Nesting not run yet" description="Run the nesting in DXF Nesting first, then come back here — this always reflects the project's current nesting result." />
+        <EmptyState icon={<Boxes className="h-5 w-5" />} title="Nesting not run yet" description="Run the nesting in 2D Nesting first, then come back here — this always reflects the project's current nesting result." />
       ) : (
         <div className="space-y-4 rounded-xl border border-border bg-card p-4">
           <p className="text-xs font-medium text-muted-foreground">Pricing inputs — the only manually-entered values; everything else is calculated from the project's current nesting result.</p>

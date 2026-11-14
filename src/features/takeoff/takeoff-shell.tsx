@@ -12,14 +12,14 @@ function activeTabClass(isActive: boolean) {
     : "px-1 pb-2 text-sm font-medium text-muted-foreground transition hover:text-foreground";
 }
 
-/** "DXF Nesting" (2D) and "1D Nesting" are two views of the same page: `?view=1d` opens the 1D one. */
+/** "2D Nesting" (2D) and "1D Nesting" are two views of the same page: `?view=1d` opens the 1D one. */
 function NestingTabLinks({ isNesting }: { isNesting: boolean }) {
   const view = useSearchParams().get("view");
   const is1D = isNesting && view === "1d";
   return (
     <>
       <Link href="/takeoff/nesting" scroll={false} className={activeTabClass(isNesting && !is1D)}>
-        DXF Nesting
+        2D Nesting
       </Link>
       <Link href="/takeoff/nesting?view=1d" scroll={false} className={activeTabClass(is1D)}>
         1D Nesting
@@ -47,7 +47,7 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
         <React.Suspense
           fallback={
             <>
-              <Link href="/takeoff/nesting" scroll={false} className={activeTabClass(isNesting)}>DXF Nesting</Link>
+              <Link href="/takeoff/nesting" scroll={false} className={activeTabClass(isNesting)}>2D Nesting</Link>
               <Link href="/takeoff/nesting?view=1d" scroll={false} className={activeTabClass(false)}>1D Nesting</Link>
             </>
           }

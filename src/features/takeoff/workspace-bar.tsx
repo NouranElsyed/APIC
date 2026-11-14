@@ -91,6 +91,62 @@ function NameDialog({
   );
 }
 
+/** "Assign to project": pick an existing project to receive this standalone nest. */
+function AssignDialog({
+  target, projects, onClose, onAssign,
+}: {
+  target: { id: string; name: string } | null;
+  projects: { id: string; name: string; number: string }[];
+  onClose: () => void;
+  onAssign: (id: string, projectId: string) => Promise<void>;
+}) {
+  const [projectId, setProjectId] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => { if (target) setProjectId(""); }, [target]);
+
+  async function submit() {
+    if (!target || !projectId || busy) return;
+    setBusy(true);
+    try {
+      await onAssign(target.id, projectId);
+      onClose();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!target} onOpenChange={(v) => { if (!v && !busy) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Assign to project</DialogTitle>
+          <DialogDescription>
+            Links “{target?.name}” to an existing project: its parts, settings and results are copied into that project&apos;s nesting tabs.
+            Anything that project already has there is replaced.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label>Project</Label>
+          <Select value={projectId} onValueChange={setProjectId}>
+            <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
+            <SelectContent>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void submit()} disabled={busy || !projectId}>{busy ? "Please wait…" : "Assign"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 type Prompt =
   | { kind: "newProject" }
   | { kind: "renameProject"; id: string; name: string }
@@ -121,8 +177,8 @@ function HistoryDialog({
         <DialogHeader>
           <DialogTitle>My nesting history</DialogTitle>
           <DialogDescription>
-            Every import you make without a project open is saved here automatically, with its name and date. Open one to continue
-            working, or save it as a project when you are done.
+            Every nest you start without a project is saved here automatically, with its name and date. Open one to continue
+            working, then assign it to a project (or save it as a new one) when you are ready.
           </DialogDescription>
         </DialogHeader>
         {sorted.length === 0 ? (
@@ -173,12 +229,13 @@ function HistoryDialog({
 export function WorkspaceBar() {
   const {
     projects, projectId, setProjectId, history, historyId, startNewImport,
-    createProject, renameProject, deleteProject, renameHistory, deleteHistory, saveHistoryAsProject,
+    createProject, renameProject, deleteProject, renameHistory, deleteHistory, saveHistoryAsProject, assignHistoryToProject,
   } = useTakeoffProject();
   const [prompt, setPrompt] = React.useState<Prompt>(null);
   const [confirm, setConfirm] = React.useState<Confirm>(null);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const [assignFor, setAssignFor] = React.useState<{ id: string; name: string } | null>(null);
 
   // the empty page shown when no project is open has its own "New project" button
   React.useEffect(() => {
@@ -244,7 +301,7 @@ export function WorkspaceBar() {
           <div className="min-w-64">
             <label className="mb-0.5 block text-[11px] font-medium text-muted-foreground">Project</label>
             <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger><SelectValue placeholder={entry ? "— working in history —" : "Select a project"} /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder={entry ? "No project (standalone nest)" : "No project — or select one"} /></SelectTrigger>
               <SelectContent>
                 {projects.map((p) => (
                   <SelectItem key={p.id} value={p.id}>{p.number} — {p.name}</SelectItem>
@@ -281,11 +338,14 @@ export function WorkspaceBar() {
               Working on: {entry.name}
               {entry.savedProjectId && projects.some((p) => p.id === entry.savedProjectId) && <Badge variant="success" className="ml-2">already saved as a project once</Badge>}
             </p>
-            <p className="text-xs text-muted-foreground">Saved automatically to your history. Press “Save as project” when you are finished.</p>
+            <p className="text-xs text-muted-foreground">Standalone nest — not linked to any project. It is saved automatically to your history; assign it to a project whenever you want.</p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => setPrompt({ kind: "saveHistory", id: entry.id, name: entry.name })}>
-              <FolderPlus /> Save as project
+            <Button size="sm" onClick={() => setAssignFor({ id: entry.id, name: entry.name })} disabled={!projects.length} title="Link this nest to an existing project">
+              <FolderKanban /> Assign to project
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setPrompt({ kind: "saveHistory", id: entry.id, name: entry.name })} title="Create a new project from this nest">
+              <FolderPlus /> Save as new project
             </Button>
             <Button size="sm" variant="outline" title="Rename" onClick={() => setPrompt({ kind: "renameHistory", id: entry.id, name: entry.name })}>
               <Pencil /> Rename
@@ -312,6 +372,15 @@ export function WorkspaceBar() {
           onSubmit={submitPrompt}
         />
       )}
+      <AssignDialog
+        target={assignFor}
+        projects={projects}
+        onClose={() => setAssignFor(null)}
+        onAssign={async (id, projectId) => {
+          const p = await assignHistoryToProject(id, projectId);
+          toast.success(`Nest assigned to “${p.name}”`);
+        }}
+      />
       <HistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} onPrompt={setPrompt} onConfirm={setConfirm} />
       <ConfirmDialog
         open={!!confirm}

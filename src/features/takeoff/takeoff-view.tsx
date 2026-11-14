@@ -57,7 +57,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [filters, setFilters] = React.useState<Filters>(emptyFilters);
 
   const [drawingFormOpen, setDrawingFormOpen] = React.useState(false);
-  // "Take parts from DXF Nesting": `key` changes on every opening so the popup always starts fresh
+  // "Take parts from 2D Nesting": `key` changes on every opening so the popup always starts fresh
   const [nestImport, setNestImport] = React.useState({ open: false, key: 0 });
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
@@ -115,7 +115,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
             disabled={!projectId}
             title="Turn the parts of a nest (this project's, or one from your history) into plates of this project"
           >
-            <PackagePlus className="h-4 w-4" /> Take parts from DXF Nesting
+            <PackagePlus className="h-4 w-4" /> Take parts from 2D Nesting
           </Button>
           <Button onClick={() => setDrawingFormOpen(true)} disabled={!projectId}>
             <Plus className="h-4 w-4" /> Add Drawing

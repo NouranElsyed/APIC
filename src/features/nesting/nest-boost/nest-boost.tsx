@@ -66,6 +66,7 @@ import {
   problemMessages,
   resizeSheet,
   rotate,
+  regap,
   rotBox,
   runOptimize,
   canContinueOn,
@@ -1099,6 +1100,32 @@ type ImportPreview = {
   rows: ImportPreviewRow[];
 };
 
+/** Edge margin + part spacing fields of the manual nesting bar. Applied with Enter, on leaving the field, or with the button. */
+function GapInputs({ mg, gp, disabled, onApply }: { mg: string; gp: string; disabled?: boolean; onApply: (mg: string, gp: string) => void }) {
+  const [m, setM] = React.useState(mg);
+  const [g, setG] = React.useState(gp);
+  React.useEffect(() => setM(mg), [mg]);
+  React.useEffect(() => setG(gp), [gp]);
+  const dirty = m !== mg || g !== gp;
+  const key = (e: React.KeyboardEvent) => { if (e.key === "Enter") onApply(m, g); };
+  return (
+    <span className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-0.5" title="Gaps used by manual nesting: parts can't be placed closer than these">
+      <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        Edge margin
+        <Input type="number" min={0} disabled={disabled} className="h-7 w-16 px-1.5 text-xs" value={m} onChange={(e) => setM(e.target.value)} onKeyDown={key} />
+      </label>
+      <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        Gap
+        <Input type="number" min={0} disabled={disabled} className="h-7 w-16 px-1.5 text-xs" value={g} onChange={(e) => setG(e.target.value)} onKeyDown={key} />
+      </label>
+      <span className="text-[11px] text-muted-foreground">mm</span>
+      {dirty && (
+        <Button size="sm" className="h-7" disabled={disabled} onClick={() => onApply(m, g)}>Apply</Button>
+      )}
+    </span>
+  );
+}
+
 export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const { projectId, nestingQueue, clearNestingQueue, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
@@ -1829,6 +1856,38 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     setResS(S);
     setResult(fresh);
     return fresh;
+  }
+
+  /**
+   * Manual nesting: change the edge margin / part spacing without leaving the preview. With a nest on screen every
+   * placed part is re-checked against the new values; if any would break them nothing changes.
+   */
+  function applyGaps(mgText: string, gpText: string) {
+    const mg = Number(mgText);
+    const gp = Number(gpText);
+    if (!(mgText.trim() !== "" && gpText.trim() !== "" && mg >= 0 && gp >= 0)) {
+      toast.error("Edge margin and part spacing must be 0 or more.");
+      return;
+    }
+    const r = resultRef.current;
+    if (!r || !resS) {
+      setCfg((c) => ({ ...c, mg: String(mg), gp: String(gp) })); // no nest yet: the first placement uses these
+      return;
+    }
+    if (selRef.current || multiRef.current?.drag || multiRef.current?.carry) {
+      toast.warning("Place the part you are holding first (or press Esc)");
+      return;
+    }
+    const out = regap(r, resS, mg, gp);
+    if ("bad" in out) {
+      toast.error(`${out.bad} part(s) would be too close to each other or to the edge with these values. Move them first, or use smaller values.`);
+      return;
+    }
+    setResS(out.S);
+    setCfg((c) => ({ ...c, mg: String(mg), gp: String(gp) }));
+    histRef.current = resetHistory(r); // earlier undo steps belong to the old grid
+    bump();
+    toast.success(`Edge margin ${mg} mm, part spacing ${gp} mm applied`);
   }
 
   /** Adds an empty sheet for the chosen material / thickness. */
@@ -2675,7 +2734,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     <div className="space-y-4">
       <WorkspaceHeader
         icon={<Layers className="h-5 w-5" />}
-        title="DXF Nesting"
+        title="2D Nesting"
         subtitle="Optimize your parts layout on sheets, save material and reduce waste."
         actions={
           <>
@@ -2716,7 +2775,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                   content: (
                     <div>
           {!workspaceId && (
-            <p className="mb-3 rounded-lg bg-muted/40 p-2 text-xs text-muted-foreground">No project selected — importing a DXF saves it to your history (name + date) and auto-saves into it. Use “Save as project” above when you are done.</p>
+            <p className="mb-3 rounded-lg bg-muted/40 p-2 text-xs text-muted-foreground">No project needed — importing a DXF starts a standalone nest, saved to your history (name + date) and auto-saved. Use “Assign to project” above whenever you want to link it to a project.</p>
           )}
           <label
             className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-5 text-center text-sm text-muted-foreground hover:bg-secondary"
@@ -2826,6 +2885,12 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
               <Button variant="secondary" size="sm" onClick={addSheet} disabled={running || !lots.length}>
                 <Plus /> Add empty sheet
               </Button>
+              <GapInputs
+                mg={resS ? String(resS.mg) : cfg.mg}
+                gp={resS ? String(resS.gp) : cfg.gp}
+                disabled={running || !!held || carrying}
+                onApply={applyGaps}
+              />
               <Button
                 variant="outline" size="sm"
                 onClick={() => stepHistory("undo")}

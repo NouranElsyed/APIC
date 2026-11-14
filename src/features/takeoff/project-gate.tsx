@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { usePathname } from "next/navigation";
 import { FolderKanban, FolderPlus, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,8 +16,11 @@ export const NEW_PROJECT_EVENT = "takeoff:new-project";
  */
 export function ProjectGate({ children }: { children: React.ReactNode }) {
   const { workspaceId, loadingProjects, projects, setProjectId } = useTakeoffProject();
+  const pathname = usePathname();
 
-  if (workspaceId) return <>{children}</>;
+  // 2D / 1D Nesting can be used on its own: the first import starts a standalone nest (saved in History),
+  // which can be assigned to a project at any time.
+  if (workspaceId || pathname?.startsWith("/takeoff/nesting")) return <>{children}</>;
 
   if (loadingProjects) {
     return (

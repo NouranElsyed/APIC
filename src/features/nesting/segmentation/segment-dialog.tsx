@@ -125,6 +125,55 @@ type Drag =
   | { id: string; kind: "radial-ray"; index: number }
   | { id: string; kind: "radial-ray-solo"; index: number };
 
+const ORIGIN_COLOR = "hsl(8 85% 52%)";
+
+/**
+ * The point every cut position is measured from: (0, 0) of the part's own coordinates (the bottom-left corner of its
+ * bounding box), drawn with its X / Y axes. With a cut selected, a dimension line shows the distance from the origin
+ * to that cut, so the number in "Position of …" can be checked on the drawing. Drawn in screen orientation (y is flipped).
+ */
+function OriginMarker({ size, handle, show }: { size: number; handle?: { x1: number; y1: number; x2: number; y2: number }; show: boolean }) {
+  if (!show) return null;
+  const L = size / 11; // axis length
+  const a = size / 90; // arrow head
+  const sw = size / 330;
+  const fs = size / 55;
+  const vertical = handle ? Math.abs(handle.x1 - handle.x2) < 1e-6 : false;
+  const horizontal = handle ? Math.abs(handle.y1 - handle.y2) < 1e-6 : false;
+  const off = -size * 0.035; // the dimension line sits just outside the part
+  const fmt = (n: number) => String(Math.round(n * 100) / 100);
+  return (
+    <g pointerEvents="none" aria-label="Origin (0, 0)">
+      {handle && vertical && (
+        <g stroke={ORIGIN_COLOR} strokeWidth={sw} opacity={0.85}>
+          <line x1={0} y1={-off} x2={handle.x1} y2={-off} strokeDasharray={`${size / 120} ${size / 160}`} />
+          <line x1={0} y1={-off - a} x2={0} y2={-off + a} />
+          <line x1={handle.x1} y1={-off - a} x2={handle.x1} y2={-off + a} />
+          <text x={handle.x1 / 2} y={-off + fs * 1.1} fontSize={fs} textAnchor="middle" fill={ORIGIN_COLOR} stroke="none" fontWeight={600}>{fmt(handle.x1)} mm</text>
+        </g>
+      )}
+      {handle && horizontal && (
+        <g stroke={ORIGIN_COLOR} strokeWidth={sw} opacity={0.85}>
+          <line x1={off} y1={0} x2={off} y2={-handle.y1} strokeDasharray={`${size / 120} ${size / 160}`} />
+          <line x1={off - a} y1={0} x2={off + a} y2={0} />
+          <line x1={off - a} y1={-handle.y1} x2={off + a} y2={-handle.y1} />
+          <text x={off - a} y={-handle.y1 / 2} fontSize={fs} textAnchor="end" dominantBaseline="middle" fill={ORIGIN_COLOR} stroke="none" fontWeight={600}>{fmt(handle.y1)} mm</text>
+        </g>
+      )}
+      <g stroke={ORIGIN_COLOR} strokeWidth={size / 230} strokeLinecap="round" strokeLinejoin="round" fill="none">
+        <line x1={0} y1={0} x2={L} y2={0} />
+        <polyline points={`${L - a},${-a * 0.6} ${L},0 ${L - a},${a * 0.6}`} />
+        <line x1={0} y1={0} x2={0} y2={-L} />
+        <polyline points={`${-a * 0.6},${-L + a} 0,${-L} ${a * 0.6},${-L + a}`} />
+        <circle cx={0} cy={0} r={size / 100} fill="white" />
+      </g>
+      <text x={L + a} y={fs * 0.35} fontSize={fs} fill={ORIGIN_COLOR} fontWeight={700}>X</text>
+      <text x={-fs * 0.35} y={-L - a * 1.3} fontSize={fs} fill={ORIGIN_COLOR} fontWeight={700}>Y</text>
+      <text x={size / 70} y={fs * 1.25} fontSize={fs} fill={ORIGIN_COLOR} fontWeight={600}>Origin (0, 0)</text>
+    </g>
+  );
+}
+
 /** Exact-geometry drawing of a plan: original outline, numbered segments, seams, overlap zones; cut lines are draggable when `edit` is given. */
 export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan; edit?: PreviewEdit }) {
   const { box, size } = React.useMemo(() => svgViewBox(region), [region]);
@@ -396,6 +445,7 @@ export function PlanPreview({ region, plan, edit }: { region: Region; plan: Plan
           </text>
         ) : null,
       )}
+      <OriginMarker size={size} handle={handles.find((h) => h.id === edit?.selected)} show={!!edit} />
       {handles.map((h) => (
         <text key={`${h.id}-label`} x={h.label[0]} y={-h.label[1]} fontSize={size / 50} fill={h.kind === "strip" ? STRIP_COLOR : SEAM_COLOR} fontWeight={edit?.selected === h.id ? 700 : 500} pointerEvents="none">
           {h.id}

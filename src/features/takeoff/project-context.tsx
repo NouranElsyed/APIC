@@ -45,6 +45,8 @@ interface TakeoffProjectContextValue {
   deleteHistory: (id: string) => Promise<void>;
   /** Saves a history entry as a project with the given name, then opens that project. */
   saveHistoryAsProject: (id: string, name: string) => Promise<ProjectOption>;
+  /** Links a standalone nest to an EXISTING project (its nesting data replaces the project's), then opens that project. */
+  assignHistoryToProject: (id: string, projectId: string) => Promise<ProjectOption>;
 
   /** Creates an empty project with the given name and opens it. */
   createProject: (name: string) => Promise<ProjectOption>;
@@ -180,6 +182,20 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
     [select],
   );
 
+  const assignHistoryToProject = React.useCallback(
+    async (id: string, targetId: string) => {
+      if (historyIdRef.current === id) await Promise.all([...flushers.current].map((f) => f().catch(() => undefined)));
+      const proj = await api<ProjectOption>(`/api/nesting/history/${id}/assign-project`, json("POST", { projectId: targetId }), {
+        403: "You are not allowed to change this project",
+        404: "Project not found",
+      });
+      setHistory((prev) => prev.map((h) => (h.id === id ? { ...h, savedProjectId: proj.id } : h)));
+      select(proj.id, ""); // continue working inside the project
+      return proj;
+    },
+    [select],
+  );
+
   const createProject = React.useCallback(
     async (name: string) => {
       const proj = await api<ProjectOption>("/api/nesting/auto-project", json("POST", { name, stamp: localStamp() }), {
@@ -230,7 +246,7 @@ export function TakeoffProjectProvider({ children }: { children: React.ReactNode
       value={{
         projects, projectId, setProjectId, loadingProjects, nestingQueue, nestingQueue1D, queueForNesting, clearNestingQueue, clearNestingQueue1D,
         history, historyId, workspaceId, workspaceLabel, ensureWorkspace, consumeFresh,
-        refreshHistory, openHistory, startNewImport, renameHistory, deleteHistory, saveHistoryAsProject,
+        refreshHistory, openHistory, startNewImport, renameHistory, deleteHistory, saveHistoryAsProject, assignHistoryToProject,
         createProject, renameProject, deleteProject, registerFlusher,
       }}
     >

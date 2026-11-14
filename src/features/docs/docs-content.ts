@@ -21,7 +21,7 @@ export interface DocSection {
 
 const ALL_TABS: { id: TabId; label: string; blurb: string }[] = [
   { id: "standard", label: "Standard Calculations", blurb: "Drawings, parts, areas and weights" },
-  { id: "nesting", label: "DXF Nesting", blurb: "2D sheet nesting and 1D bar cutting" },
+  { id: "nesting", label: "2D Nesting", blurb: "2D sheet nesting and 1D bar cutting" },
   { id: "scrap", label: "Scrap & Material", blurb: "Purchased material, scrap and its value" },
   { id: "pricing", label: "Steel Pricing", blurb: "BOQ pricing from rates and profiles" },
 ];
@@ -43,7 +43,7 @@ const ALL_SECTIONS: DocSection[] = [
         head: ["Tab", "What it does"],
         rows: [
           ["Standard Calculations", "Take-off: drawings and their parts (plates, hot-rolled sections, cones, pipes) with area, weight and paint area."],
-          ["DXF Nesting", "Lays plates out on sheets (2D) and cuts bars, pipes and profiles from stock lengths (1D). Exports DXF and Excel reports."],
+          ["2D Nesting", "Lays plates out on sheets (2D) and cuts bars, pipes and profiles from stock lengths (1D). Exports DXF and Excel reports."],
         ],
       },
       {
@@ -51,7 +51,7 @@ const ALL_SECTIONS: DocSection[] = [
         items: [
           "Choose the project, then add a drawing in **Standard Calculations**.",
           "Add its parts: one by one, by importing DXF files (plates) or by importing a CSV (hot-rolled sections and pipes).",
-          "Send the parts to **DXF Nesting**, optimise or nest by hand, and create the Excel report.",
+          "Send the parts to **2D Nesting**, optimise or nest by hand, and create the Excel report.",
         ],
       },
     ],
@@ -226,7 +226,7 @@ const ALL_SECTIONS: DocSection[] = [
           ["Green file ✓", "Valid file. Hover to see area, size and hole count. Click it to **remove** the file."],
           ["Red file ✗", "The file is invalid (hover for the reason). Click to upload a new one."],
           ["Download arrow", "Download the stored file."],
-          ["Layers icon", "Send this part to DXF Nesting."],
+          ["Layers icon", "Send this part to 2D Nesting."],
           ["Amber triangle", "Units warning — check that the drawing units are right."],
         ],
       },
@@ -244,7 +244,7 @@ const ALL_SECTIONS: DocSection[] = [
           "Tick the checkbox of items (or the header checkbox for all). A bar appears with **Send selected to Nesting**, **Delete selected** and **Clear**.",
           "**Send all to Nesting (n)** at the bottom of a drawing sends every nestable part of that drawing.",
           "Routing is automatic: **plates with a valid DXF go to 2D**, every other type goes to **1D**. Items without a usable DXF (plates) or with qty 0 are skipped.",
-          "You are taken to the **DXF Nesting** tab and the parts are queued there.",
+          "You are taken to the **2D Nesting** tab and the parts are queued there.",
         ],
       },
     ],
@@ -297,7 +297,7 @@ const ALL_SECTIONS: DocSection[] = [
     blocks: [
       {
         t: "p",
-        text: "The **DXF Nesting** tab has a **2D** tool (plates laid out on sheets) and, below it, a **1D** tool (bars, pipes and profiles cut from stock lengths), followed by a **combined report** button.",
+        text: "The **2D Nesting** tab has a **2D** tool (plates laid out on sheets) and, below it, a **1D** tool (bars, pipes and profiles cut from stock lengths), followed by a **combined report** button.",
       },
       {
         t: "warn",

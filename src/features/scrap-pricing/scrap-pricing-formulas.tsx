@@ -133,8 +133,8 @@ const FORMULAS: FormulaDef[] = [
     key: "usedMaterial",
     label: "Used Material (Area & Weight)",
     excelCol: "B, C",
-    symbolic: "Taken directly from the project's current DXF Nesting result — the real nested polygon area/weight, never a bounding box.",
-    substituted: () => "— (comes from DXF Nesting, not a formula)",
+    symbolic: "Taken directly from the project's current 2D Nesting result — the real nested polygon area/weight, never a bounding box.",
+    substituted: () => "— (comes from 2D Nesting, not a formula)",
     result: (v) => `${fmt(v.usedAreaSqm, 3)} m² · ${fmt(v.usedWeightKg, 1)} kg`,
   },
   {
@@ -360,8 +360,8 @@ export function RowFormulaButton({ row }: { row: ScrapPricingRow }) {
 // headers in scrap-pricing-view.tsx, for quick native-tooltip (title=) hints
 // without opening the full dialog.
 export const QUICK_TOOLTIPS: Record<string, string> = {
-  usedArea: "Straight from the current DXF Nesting result (real nested area, not a bounding box)",
-  usedWeight: "Straight from the current DXF Nesting result",
+  usedArea: "Straight from the current 2D Nesting result (real nested area, not a bounding box)",
+  usedWeight: "Straight from the current 2D Nesting result",
   buyWeight: "From the number of sheets the Nesting Engine says had to be purchased",
   usedLater: "= (Buy Wt − Used Wt) × %Used Later",
   actualScrap: "= Buy Wt − Used Wt − Used Later Wt",

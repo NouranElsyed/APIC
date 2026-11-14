@@ -39,7 +39,7 @@ function Thumb({ p }: { p: NestPart }) {
 }
 
 /**
- * "Take parts from DXF Nesting": the parts of a nest (this project's saved nest, or one of the user's history entries)
+ * "Take parts from 2D Nesting": the parts of a nest (this project's saved nest, or one of the user's history entries)
  * become plates of a drawing in Standard Calculations. Each plate keeps its exact shape — a one-part DXF is built from
  * the nest part and goes through the same importer as an uploaded DXF, so area, cut-outs and download all work.
  */
@@ -57,7 +57,7 @@ export function NestingImportDialog({
   const [loaded, setLoaded] = React.useState<{ key: string; rows: Row[] } | null>(null);
   const [target, setTarget] = React.useState<string | null>(null); // null = not touched: use the default
   const [newNo, setNewNo] = React.useState("NESTING");
-  const [newTitle, setNewTitle] = React.useState("Parts from DXF Nesting");
+  const [newTitle, setNewTitle] = React.useState("Parts from 2D Nesting");
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -151,7 +151,7 @@ export function NestingImportDialog({
     }
     setBusy(false);
     if (ok) {
-      toast.success(`${ok} part(s) taken from DXF Nesting`);
+      toast.success(`${ok} part(s) taken from 2D Nesting`);
       onImported();
     }
     if (failed) toast.error(`${failed} part(s) could not be added — see the list`);
@@ -162,7 +162,7 @@ export function NestingImportDialog({
     <Dialog open={open} onOpenChange={(v) => !busy && onOpenChange(v)}>
       <DialogContent className="max-h-[92vh] w-[calc(100vw-1rem)] overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
         <DialogHeader>
-          <DialogTitle>Take parts from DXF Nesting</DialogTitle>
+          <DialogTitle>Take parts from 2D Nesting</DialogTitle>
           <DialogDescription>
             The parts of a nest become plates of this project. Size, area and cut-outs come from the shape, and each plate keeps its own DXF.
           </DialogDescription>
@@ -212,7 +212,7 @@ export function NestingImportDialog({
         ) : rows.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-muted-foreground">
             {source === "project"
-              ? "This project has no nest saved yet. Pick a history entry above, or add parts in the DXF Nesting tab first."
+              ? "This project has no nest saved yet. Pick a history entry above, or add parts in the 2D Nesting tab first."
               : "This history entry has no parts."}
           </div>
         ) : (

@@ -278,7 +278,7 @@ export function PartsGrid({
                           {part.dxf.valid && part.qty > 0 ? (
                             <button
                               type="button"
-                              title="Send this part to DXF Nesting"
+                              title="Send this part to 2D Nesting"
                               className="flex items-center justify-center text-muted-foreground hover:text-primary"
                               onClick={() => sendToNesting([part.id])}
                             >

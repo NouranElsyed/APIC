@@ -2162,6 +2162,41 @@ export function othersOf(sh: Sheet, f: Item): Other[] {
     });
 }
 
+/**
+ * Changes the edge margin / part spacing of a nest that is already on screen (manual nesting).
+ * Every placed part is re-snapped to the new grid and every sheet is re-checked against the new margin and
+ * spacing. If any part would break the new values nothing changes (positions are restored) and the number of
+ * offending parts is returned, so the person can move them first.
+ */
+export function regap(res: OptResult, S: Settings, mg: number, gp: number): { S: Settings } | { bad: number } {
+  const nS = makeSettings({ W: S.W, H: S.H, mg, gp, cell: S.cell, ro: S.ro });
+  const saved = new Map<Item, { x: number; y: number }>();
+  for (const sh of res.sheets) for (const it of sh.items) saved.set(it, { x: it.x, y: it.y });
+  let bad = 0;
+  for (const sh of res.sheets) {
+    if (sh.solo) continue; // a solo sheet has no margin / spacing grid
+    for (const it of sh.items) {
+      it.x = snapV(nS, it.x);
+      it.y = snapV(nS, it.y);
+    }
+  }
+  for (const sh of res.sheets) {
+    if (sh.solo) continue;
+    sh.items.forEach((it, idx) => {
+      const sel: Sel = { sh, origSh: sh, idx, it, oth: othersOf(sh, it), off: [0, 0], pm: [0, 0], orig: { x: it.x, y: it.y, rot: it.rot } };
+      if (isBad(sel, nS)) bad++;
+    });
+  }
+  if (bad) {
+    saved.forEach((p, it) => {
+      it.x = p.x;
+      it.y = p.y;
+    });
+    return { bad };
+  }
+  return { S: nS };
+}
+
 export function startPick(sh: Sheet, idx: number, it: Item, m: Pt): Sel {
   return {
     sh,
