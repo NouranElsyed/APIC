@@ -20,13 +20,17 @@ export function NavList({ items, collapsed, onNavigate }: { items: NavItem[]; co
     c.key === "planning" ? (inProject ? `/projects/${inProject}/planning` : "/planning")
     : c.key === "quotations" ? (inProject ? `/projects/${inProject}/quotations` : "/quotations")
     : c.key === "documents" ? (inProject ? `/projects/${inProject}/documents` : "/documents")
+    : c.key === "material" ? (inProject ? `/projects/${inProject}/material-usage` : "/material-usage")
+    : c.key === "reports" ? (inProject ? `/projects/${inProject}/reports` : "/reports")
     : c.href!;
 
   const childActive = (c: NavChild) =>
     c.key === "planning" ? pathname.includes("/planning")
     : c.key === "quotations" ? pathname.includes("/quotations")
     : c.key === "documents" ? pathname.includes("/documents")
-    : c.key === "list" ? pathname === "/projects" || (pathname.startsWith("/projects/") && !pathname.includes("/planning") && !pathname.includes("/quotations") && !pathname.includes("/documents"))
+    : c.key === "material" ? pathname.includes("/material-usage")
+    : c.key === "reports" ? pathname.includes("/reports")
+    : c.key === "list" ? pathname === "/projects" || (pathname.startsWith("/projects/") && !["/planning", "/quotations", "/documents", "/material-usage", "/reports"].some((x) => pathname.includes(x)))
     : false;
 
   return (
@@ -42,7 +46,7 @@ function Item({ item, collapsed, pathname, hrefFor, childActive, onNavigate }: {
   item: NavItem; collapsed?: boolean; pathname: string; hrefFor: (c: NavChild) => string; childActive: (c: NavChild) => boolean; onNavigate?: () => void;
 }) {
   const Icon = item.icon;
-  const groupActive = pathname.startsWith(item.href) || (!!item.children && (pathname.startsWith("/planning") || pathname.startsWith("/quotations") || pathname.startsWith("/documents")));
+  const groupActive = pathname.startsWith(item.href) || (!!item.children && (pathname.startsWith("/planning") || pathname.startsWith("/quotations") || pathname.startsWith("/documents") || pathname.startsWith("/material-usage") || pathname.startsWith("/reports")));
   const [expanded, setExpanded] = React.useState(true);
 
   if (!item.children) {
