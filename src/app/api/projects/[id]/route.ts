@@ -1,27 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { requirePermission } from "@/server/api/guard";
-import { parseBody, planningHandler } from "@/server/api/planning-route";
-import { createFolder, deleteFolder } from "@/server/services/project-documents.service";
+import { projectSchema } from "@/server/validators/project";
+import { deleteProject, getProject, renameProject, updateProject } from "@/server/services/project.service";
 
-const schema = z.object({ path: z.string().min(1).max(130) });
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function POST(req: NextRequest, { params }: Ctx) {
-  const { session, res } = await requirePermission("documents.create");
+export async function GET(_req: NextRequest, { params }: Ctx) {
+  const { res } = await requirePermission("projects.view");
   if (res) return res;
-  const body = await parseBody(req, schema);
-  if (body.res) return body.res;
-  return planningHandler(async () => NextResponse.json({ path: await createFolder((await params).id, body.data.path, session!.user.id) }, { status: 201 }));
+  const { id } = await params;
+  const project = await getProject(id);
+  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(project);
 }
 
-export async function DELETE(req: NextRequest, { params }: Ctx) {
-  const { session, res } = await requirePermission("documents.delete");
+// Full edit from the project form.
+export async function PUT(req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("projects.edit");
   if (res) return res;
-  const path = req.nextUrl.searchParams.get("path");
-  if (!path) return NextResponse.json({ error: "path is required" }, { status: 400 });
-  return planningHandler(async () => {
-    await deleteFolder((await params).id, path, session!.user.id);
-    return NextResponse.json({ ok: true });
-  });
+  const { id } = await params;
+
+  const body = await req.json();
+  const parsed = projectSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+
+  const project = await updateProject(id, parsed.data, session!.user.id);
+  return NextResponse.json(project);
+}
+
+// Rename only (Nesting tabs' project picker).
+export async function PATCH(req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("projects.edit");
+  if (res) return res;
+  const { id } = await params;
+
+  const body = await req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 120) : "";
+  if (!name) return NextResponse.json({ error: "A project name is required" }, { status: 400 });
+
+  const project = await renameProject(id, name, session!.user.id);
+  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(project);
+}
+
+export async function DELETE(_req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("projects.delete");
+  if (res) return res;
+  const { id } = await params;
+  await deleteProject(id, session!.user.id);
+  return NextResponse.json({ ok: true });
 }

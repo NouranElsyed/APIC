@@ -1,23 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
 import { parseBody, planningHandler } from "@/server/api/planning-route";
-import { statusSchema } from "@/server/validators/quotations";
-import { needsApprover } from "@/features/quotations/quotation";
-import { can } from "@/server/rbac/permissions";
-import { setQuotationStatus } from "@/server/services/quotations.service";
+import { quotationPatchSchema } from "@/server/validators/quotations";
+import { deleteQuotation, updateQuotation } from "@/server/services/quotations.service";
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string; qid: string }> }) {
+type Ctx = { params: Promise<{ id: string; qid: string }> };
+
+export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { session, res } = await requirePermission("quotations.edit");
   if (res) return res;
-  const body = await parseBody(req, statusSchema);
+  const body = await parseBody(req, quotationPatchSchema);
   if (body.res) return body.res;
-  // Approving or rejecting is a separate, stricter permission.
-  if (needsApprover(body.data.status) && !can(session!.user.role, "quotations.approve")) {
-    return NextResponse.json({ error: "Only an admin can approve or reject a quotation." }, { status: 403 });
-  }
   return planningHandler(async () => {
     const { id, qid } = await params;
-    await setQuotationStatus(id, qid, body.data.status, { id: session!.user.id, name: session!.user.name ?? "—" }, body.data.note);
+    await updateQuotation(id, qid, body.data, { id: session!.user.id, name: session!.user.name ?? "—" });
+    return NextResponse.json({ ok: true });
+  });
+}
+
+export async function DELETE(_req: NextRequest, { params }: Ctx) {
+  const { session, res } = await requirePermission("quotations.delete");
+  if (res) return res;
+  return planningHandler(async () => {
+    const { id, qid } = await params;
+    await deleteQuotation(id, qid, session!.user.id);
     return NextResponse.json({ ok: true });
   });
 }
