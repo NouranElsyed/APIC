@@ -1,11 +1,11 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, CalendarRange, FileText, FolderOpen, LayoutDashboard } from "lucide-react";
+import { BarChart3, Boxes, CalendarRange, FileText, FolderOpen, LayoutDashboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Section tabs under a project's header. Screens that do not exist yet are shown greyed-out. */
-export function ProjectTabs({ projectId, showPlanning = true, showQuotations = false, showDocuments = true }: { projectId: string; showPlanning?: boolean; showQuotations?: boolean; showDocuments?: boolean }) {
+export function ProjectTabs({ projectId, showPlanning = true, showQuotations = false, showDocuments = true, showReports = true, showMaterials = true }: { projectId: string; showPlanning?: boolean; showQuotations?: boolean; showDocuments?: boolean; showReports?: boolean; showMaterials?: boolean }) {
   const pathname = usePathname();
   const tabs = [
     { href: `/projects/${projectId}`, label: "Overview", icon: LayoutDashboard, active: pathname === `/projects/${projectId}` },
@@ -16,7 +16,12 @@ export function ProjectTabs({ projectId, showPlanning = true, showQuotations = f
     showDocuments
       ? { href: `/projects/${projectId}/documents`, label: "Documents", icon: FolderOpen, active: pathname.startsWith(`/projects/${projectId}/documents`) }
       : { label: "Documents", icon: FolderOpen },
-    { label: "Reports", icon: BarChart3 },
+    showReports
+      ? { href: `/projects/${projectId}/reports`, label: "Reports", icon: BarChart3, active: pathname.startsWith(`/projects/${projectId}/reports`) }
+      : { label: "Reports", icon: BarChart3 },
+    showMaterials
+      ? { href: `/projects/${projectId}/material-usage`, label: "Material & Usage", icon: Boxes, active: pathname.startsWith(`/projects/${projectId}/material-usage`) }
+      : { label: "Material & Usage", icon: Boxes },
   ] as { href?: string; label: string; icon: typeof FileText; active?: boolean }[];
   const base = "-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium transition-colors";
   return (
