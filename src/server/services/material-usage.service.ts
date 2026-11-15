@@ -1,6 +1,7 @@
 // Data behind a project's Material & Usage tab: takeoff parts (used / purchase / scrap weights)
 // plus the purchase-order history from the materials module.
 
+import { ensureNestInSync } from "./nest-sync-guard";
 import { prisma } from "@/server/db/client";
 import { getProject } from "./project.service";
 import { getPlanningData } from "./planning.service";
@@ -21,6 +22,7 @@ export interface MaterialUsageData {
 const iso = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
 
 export async function getMaterialUsage(projectId: string, access: { planning: boolean }): Promise<MaterialUsageData | null> {
+  await ensureNestInSync(projectId);
   const project = await getProject(projectId);
   if (!project) return null;
 

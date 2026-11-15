@@ -10,6 +10,7 @@ import { DrawingForm } from "./drawing-form";
 import { NestingImportDialog } from "./nesting-import-dialog";
 import { PartsGrid } from "./parts-grid";
 import { BoqPanel } from "./boq-panel";
+import { sideAreas } from "./side-areas";
 import { autoImportNestParts } from "./nest-auto-import";
 import { useTakeoffProject } from "./project-context";
 import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
@@ -167,8 +168,7 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   const grandTotalWeight = allVisibleParts.reduce((s, p) => s + num(p.weightKg), 0);
   const grandTotalArea = allVisibleParts.reduce((s, p) => s + num(p.totalArea), 0);
-  const grandExternalWeight = allVisibleParts.filter((p) => p.side === "EXTERNAL").reduce((s, p) => s + num(p.weightKg), 0);
-  const grandInternalWeight = allVisibleParts.filter((p) => p.side === "INTERNAL").reduce((s, p) => s + num(p.weightKg), 0);
+  const { internalSqm: grandInternalArea, externalSqm: grandExternalArea } = sideAreas(allVisibleParts);
 
   return (
     <div className="space-y-6">
@@ -222,9 +222,10 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
               <Select value={filters.side} onValueChange={(v) => setFilters((f) => ({ ...f, side: v as Filters["side"] }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ALL">Both sides</SelectItem>
+                  <SelectItem value="ALL">All sides</SelectItem>
                   <SelectItem value="EXTERNAL">External</SelectItem>
                   <SelectItem value="INTERNAL">Internal</SelectItem>
+                  <SelectItem value="BOTH">Both</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -238,8 +239,8 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
           <div className="flex flex-wrap gap-x-8 gap-y-1 border-t border-border pt-3 text-sm">
             <span>Total Weight: <span className="font-semibold text-primary">{fmt(grandTotalWeight, 1)} kg</span></span>
             <span>Total Area: <span className="font-semibold text-foreground">{fmt(grandTotalArea, 3)} m²</span></span>
-            <span>Total External: <span className="font-semibold text-foreground">{fmt(grandExternalWeight, 1)} kg</span></span>
-            <span>Total Internal: <span className="font-semibold text-foreground">{fmt(grandInternalWeight, 1)} kg</span></span>
+            <span>Total External: <span className="font-semibold text-foreground">{fmt(grandExternalArea, 3)} m²</span></span>
+            <span>Total Internal: <span className="font-semibold text-foreground">{fmt(grandInternalArea, 3)} m²</span></span>
           </div>
         </div>
       )}

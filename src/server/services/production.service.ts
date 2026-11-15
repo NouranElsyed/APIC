@@ -1,6 +1,7 @@
 // Production tracking: work orders per takeoff part, pieces followed through cutting → assembly → welding → painting,
 // and the progress by weight that drives the schedule's fabrication activities (so the S-curve "actual" is fed by the shop).
 
+import { ensureNestInSync } from "./nest-sync-guard";
 import { prisma } from "@/server/db/client";
 import { logActivity } from "./activity-log.service";
 import { PlanningError, applyProgress } from "./planning.service";
@@ -38,6 +39,7 @@ async function projectTotalKg(projectId: string) {
 }
 
 export async function getProduction(projectId: string): Promise<ProductionData | null> {
+  await ensureNestInSync(projectId);
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, number: true, name: true, productionWbsId: true } });
   if (!project) return null;
 
@@ -93,6 +95,7 @@ async function createOne(projectId: string, part: { id: string; itemNo: number; 
 
 /** One work order per takeoff part that has none yet (all of them, or the given ones). */
 export async function createWorkOrders(projectId: string, opts: { partIds?: string[]; dueDate?: string | null }, by: Actor) {
+  await ensureNestInSync(projectId);
   const parts = await prisma.takeoffPart.findMany({ where: { drawing: { projectId }, partType: { not: "ACCESSORY" }, ...(opts.partIds ? { id: { in: opts.partIds } } : {}) }, select: { id: true, itemNo: true, description: true, qty: true, weightKg: true, material: true }, orderBy: { itemNo: "asc" } });
   const existing = await prisma.workOrder.findMany({ where: { projectId, partId: { in: parts.map((p) => p.id) } }, select: { partId: true } });
   const have = new Set(existing.map((e) => e.partId));

@@ -17,7 +17,7 @@ export interface CsvPartRow {
   od: string; // mm (pipe)
   thickness: string; // mm (pipe)
   material: string;
-  side: "INTERNAL" | "EXTERNAL";
+  side: "INTERNAL" | "EXTERNAL" | "BOTH";
   paintSides: "1" | "2";
 }
 
@@ -92,7 +92,7 @@ export function parseTakeoffCsv(text: string): TakeoffCsvResult {
       od: clean(get("od")),
       thickness: clean(get("thickness")),
       material: get("material"),
-      side: sideCell === "internal" || sideCell === "int" || sideCell === "in" ? "INTERNAL" : "EXTERNAL",
+      side: sideCell === "both" ? "BOTH" : sideCell === "internal" || sideCell === "int" || sideCell === "in" ? "INTERNAL" : "EXTERNAL",
       paintSides: norm(get("paintSides")) === "1" ? "1" : "2",
     });
   }

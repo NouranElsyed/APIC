@@ -257,7 +257,7 @@ export function PartsGrid({
                     <td className="px-2 py-1.5">{part.description}</td>
                     <td className="border-l border-border px-2 py-1.5">{PART_TYPE_LABEL[part.partType]}</td>
                     <td className="px-2 py-1.5 text-xs text-muted-foreground">{geometrySummary(part)}</td>
-                    <td className="border-l border-border px-2 py-1.5 text-xs">{part.side === "INTERNAL" ? "Internal" : "External"}</td>
+                    <td className="border-l border-border px-2 py-1.5 text-xs">{part.side === "INTERNAL" ? "Internal" : part.side === "BOTH" ? "Both" : "External"}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{part.qty}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{part.thicknessMm ?? "—"}</td>
                     <td className="px-2 py-1.5 text-center text-xs">{part.paintSides === 1 ? "1 side" : "2 sides"}</td>

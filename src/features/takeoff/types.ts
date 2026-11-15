@@ -1,5 +1,5 @@
 export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE" | "ACCESSORY";
-export type PartSide = "INTERNAL" | "EXTERNAL";
+export type PartSide = "INTERNAL" | "EXTERNAL" | "BOTH";
 
 export interface PartDxfInfo {
   id: string;

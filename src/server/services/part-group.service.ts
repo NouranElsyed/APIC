@@ -2,6 +2,7 @@
 // weight) in step with its group, and report weights split into fabricated steel and purchased accessories.
 // The rules themselves (quantity cascade, roll-up) are pure and live in src/server/calc/boq-groups.ts.
 
+import { ensureNestInSync } from "./nest-sync-guard";
 import { prisma } from "@/server/db/client";
 import { buildDefaultAreaFormula, computeTakeoffPart, type PartType } from "@/server/calc/takeoff";
 import {
@@ -76,6 +77,7 @@ export interface BoqData {
 }
 
 export async function getBoq(projectId: string): Promise<BoqData> {
+  await ensureNestInSync(projectId);
   const [groups, parts] = await Promise.all([
     prisma.partGroup.findMany({ where: { projectId }, orderBy: [{ sortOrder: "asc" }, { code: "asc" }] }),
     prisma.takeoffPart.findMany({ where: { drawing: { projectId } }, select: { id: true, groupId: true, partType: true, qty: true, qtyPerAssembly: true, weightKg: true } }),

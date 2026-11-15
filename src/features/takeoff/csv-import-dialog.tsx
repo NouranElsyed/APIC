@@ -157,7 +157,7 @@ export function CsvImportDialog({
             <Label className="text-xs">Side (all)</Label>
             <Select value={all.side} onValueChange={(v) => applyAll({ side: v as Row["side"] })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="EXTERNAL">External</SelectItem><SelectItem value="INTERNAL">Internal</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="EXTERNAL">External</SelectItem><SelectItem value="INTERNAL">Internal</SelectItem><SelectItem value="BOTH">Both</SelectItem></SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
@@ -227,7 +227,7 @@ export function CsvImportDialog({
                         <td className="px-2 py-1.5">
                           <Select disabled={locked} value={r.side} onValueChange={(v) => patch(r.key, { side: v as Row["side"] })}>
                             <SelectTrigger className="h-8 w-[105px]"><SelectValue /></SelectTrigger>
-                            <SelectContent><SelectItem value="EXTERNAL">External</SelectItem><SelectItem value="INTERNAL">Internal</SelectItem></SelectContent>
+                            <SelectContent><SelectItem value="EXTERNAL">External</SelectItem><SelectItem value="INTERNAL">Internal</SelectItem><SelectItem value="BOTH">Both</SelectItem></SelectContent>
                           </Select>
                         </td>
                         <td className="px-2 py-1.5">

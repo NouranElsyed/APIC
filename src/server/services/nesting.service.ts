@@ -1,3 +1,4 @@
+import { ensureNestInSync } from "./nest-sync-guard";
 import { prisma } from "@/server/db/client";
 import type { NestingJobInput, NestingSourceInput } from "@/server/validators/nesting";
 import { logActivity } from "./activity-log.service";
@@ -68,6 +69,7 @@ export interface EligibleNestingParts {
 }
 
 export async function getEligibleNestingParts(projectId: string): Promise<EligibleNestingParts> {
+  await ensureNestInSync(projectId);
   const parts = await prisma.takeoffPart.findMany({
     where: { drawing: { projectId }, partType: { not: "ACCESSORY" } },
     include: { dxf: true, drawing: { select: { id: true, drawingNumber: true, title: true } } },

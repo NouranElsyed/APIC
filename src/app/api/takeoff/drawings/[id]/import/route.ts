@@ -7,7 +7,7 @@ import { importDxfParts } from "@/server/services/dxf-import.service";
 const itemSchema = z.object({
   partIndex: z.number().int().nonnegative(),
   description: z.string().min(1),
-  side: z.enum(["INTERNAL", "EXTERNAL"]),
+  side: z.enum(["INTERNAL", "EXTERNAL", "BOTH"]),
   qty: z.number().int().positive(),
   thicknessMm: z.number().positive().nullable(),
   paintSides: z.union([z.literal(1), z.literal(2)]),

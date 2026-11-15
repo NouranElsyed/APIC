@@ -7,7 +7,7 @@
 import { prisma } from "@/server/db/client";
 import { effectiveQtyMap } from "@/server/calc/boq-groups";
 import { reconcileNestParts, summarizePlan, type LinkedPartLite, type SyncItem, type SyncPlan } from "@/server/calc/nest-sync";
-import { parseNestParts } from "@/features/takeoff/nest-parts";
+import { nestPartDescription, nestPartFileName, nestPartToDxf, parseNestParts } from "@/features/takeoff/nest-parts";
 import { getWorkspace, pushQuantitiesToNest } from "./nesting-workspace.service";
 import { recomputeFor } from "./part-group.service";
 import { logActivity } from "./activity-log.service";
@@ -123,4 +123,50 @@ export async function autoSyncAfterBoqChange(projectId: string, userId: string):
   } catch (e) {
     console.error("[nest-sync] automatic sync failed", e);
   }
+}
+
+const NESTING_DRAWING = "NESTING";
+
+/**
+ * Takes every part of the project's saved 2D nest that is not in the Part List yet (same rules as the screen's
+ * automatic import: linked by nest part id, plus name+thickness inside the NESTING drawing). Returns how many were added.
+ */
+export async function importMissingNestParts(projectId: string, userId: string): Promise<number> {
+  const ws = await getWorkspace(projectId, "2D");
+  const nestParts = ws ? parseNestParts(ws.dataJson) : [];
+  if (!nestParts.length) return 0;
+
+  const drawings = await prisma.takeoffDrawing.findMany({
+    where: { projectId },
+    select: { id: true, drawingNumber: true, parts: { select: { description: true, thicknessMm: true, nestKind: true, nestPartId: true } } },
+  });
+  const linked = new Set(drawings.flatMap((d) => d.parts).filter((p) => p.nestKind === "2D" && p.nestPartId !== null).map((p) => p.nestPartId));
+  const target = drawings.find((d) => d.drawingNumber === NESTING_DRAWING);
+  const taken = new Set((target?.parts ?? []).map((p) => `${p.description.trim().toLowerCase()}|${p.thicknessMm ?? 0}`));
+  const missing = nestParts.filter((r) => !linked.has(r.id) && !taken.has(`${nestPartDescription(r).toLowerCase()}|${r.th || 0}`));
+  if (!missing.length) return 0;
+
+  // lazy: these import this file back (cycle)
+  const { createDrawing } = await import("./takeoff.service");
+  const { importDxfParts } = await import("./dxf-import.service");
+  const drawingId = target?.id ?? (await createDrawing({ projectId, drawingNumber: NESTING_DRAWING, title: "Parts from 2D Nesting", weightFromDwg: null }, userId)).id;
+
+  let added = 0;
+  for (const r of missing) {
+    const file = new File([nestPartToDxf(r)], nestPartFileName(r), { type: "application/dxf" });
+    const res = await importDxfParts(drawingId, file, [{
+      partIndex: 0, description: nestPartDescription(r), side: "EXTERNAL", qty: r.qty, thicknessMm: r.th > 0 ? r.th : null,
+      paintSides: 2, material: r.material || "Steel", partType: "PLATE", nestPartId: r.id,
+    }], userId).catch(() => null);
+    if (res?.[0]?.ok && !res[0].skipped) added++;
+  }
+  if (added) await logActivity({ userId, action: "CREATE", entity: "NESTING_RUN", entityId: projectId, detail: `${added} parts taken from the 2D nest into the Part List` });
+  return added;
+}
+
+/** Everything that must happen before the Part List is READ by something else (materials, production, nesting jobs). */
+export async function syncBeforeUse(projectId: string, userId: string): Promise<void> {
+  const added = await importMissingNestParts(projectId, userId);
+  const linked = await prisma.takeoffPart.count({ where: { drawing: { projectId }, nestKind: "2D", nestPartId: { not: null } } });
+  if (linked > 0 || added > 0) await applyNestSync(projectId, userId);
 }

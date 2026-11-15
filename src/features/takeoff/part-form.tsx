@@ -420,6 +420,7 @@ export function PartForm({
                 <SelectContent>
                   <SelectItem value="EXTERNAL">External</SelectItem>
                   <SelectItem value="INTERNAL">Internal</SelectItem>
+                  <SelectItem value="BOTH">Both</SelectItem>
                 </SelectContent>
               </Select>
             </div>

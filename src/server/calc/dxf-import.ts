@@ -34,7 +34,7 @@ export type ImportPartType = "PLATE" | "HOT_ROLLED";
 export interface ImportRowConfig {
   description: string;
   partType: ImportPartType;
-  side: "INTERNAL" | "EXTERNAL";
+  side: "INTERNAL" | "EXTERNAL" | "BOTH";
   qty: number;
   thicknessMm: number | null;
   paintSides: 1 | 2;

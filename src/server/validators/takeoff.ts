@@ -17,7 +17,7 @@ const commonFields = {
   // treated as "Missing material" by the nesting grouping logic, never
   // silently inherited from anything else.
   material: z.string().trim().min(1).optional().nullable(),
-  side: z.enum(["INTERNAL", "EXTERNAL"]).default("EXTERNAL"),
+  side: z.enum(["INTERNAL", "EXTERNAL", "BOTH"]).default("EXTERNAL"),
   qty: z.number().int().positive(),
   paintSides: z.union([z.literal(1), z.literal(2)]).default(2),
   buyWeightKg: z.number().nonnegative().optional().nullable(),
