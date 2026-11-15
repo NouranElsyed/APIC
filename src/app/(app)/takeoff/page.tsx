@@ -1,11 +1,13 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/server/auth/config";
 import { can } from "@/server/rbac/permissions";
-import { ScrapPricingView } from "@/features/scrap-pricing/scrap-pricing-view";
+import { TakeoffView } from "@/features/takeoff/takeoff-view";
 
-export default async function ScrapMaterialPage() {
+// Part List: the project's parts (plates, hot rolled, cones, pipes, accessories) grouped into BOQ assemblies.
+// The project gate (choose a project first) is applied by the takeoff layout.
+export default async function PartListPage() {
   const session = await auth();
   const role = session?.user.role;
-  if (!can(role, "scrapPricing.view")) redirect("/takeoff");
-  return <ScrapPricingView canExport={can(role, "scrapPricing.export")} />;
+  if (!can(role, "takeoff.view")) redirect("/");
+  return <TakeoffView canCreate={can(role, "takeoff.create")} canDelete={can(role, "takeoff.delete")} />;
 }
