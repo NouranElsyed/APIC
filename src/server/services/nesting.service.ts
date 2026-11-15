@@ -10,7 +10,7 @@ import { logActivity } from "./activity-log.service";
 // a human-readable reason so nothing is ever silently dropped from the list.
 //
 // Material and thickness are resolved PER PART from TakeoffPart.material /
-// TakeoffPart.thicknessMm — the existing Standard Calculations data model —
+// TakeoffPart.thicknessMm — the existing Part List data model —
 // never from NestingJob.material / NestingJob.thicknessMm. A project's parts
 // can span multiple materials/thicknesses, so Nesting Groups and Source
 // Coverage are always computed per (material, thickness) pair. See the
@@ -128,9 +128,9 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
     }
 
     // Material and thickness are resolved PER PART, straight from the
-    // Standard Calculations / TakeoffPart record — never from the
+    // Part List / TakeoffPart record — never from the
     // NestingJob. A part missing either is excluded (not silently
-    // defaulted) until the user fixes it in Standard Calculations.
+    // defaulted) until the user fixes it in Part List.
     const material = part.material?.trim() || null;
     if (!material) {
       excluded.push({
@@ -139,7 +139,7 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
         description: part.description,
         qty: part.qty,
         reason: "Missing material",
-        detail: "Set a material for this part in Standard Calculations.",
+        detail: "Set a material for this part in Part List.",
         drawing: part.drawing,
       });
       continue;
@@ -151,7 +151,7 @@ export async function getEligibleNestingParts(projectId: string): Promise<Eligib
         description: part.description,
         qty: part.qty,
         reason: "Missing thickness",
-        detail: "Set a thickness for this part in Standard Calculations.",
+        detail: "Set a thickness for this part in Part List.",
         drawing: part.drawing,
       });
       continue;
@@ -278,7 +278,7 @@ export async function getNestingJob(id: string) {
 
 export async function createNestingJob(data: NestingJobInput, userId: string) {
   // Only one Nesting Job per project — it's a single, ongoing workspace that
-  // always reflects whatever is currently in Standard Calculations, not a
+  // always reflects whatever is currently in Part List, not a
   // series of one-off jobs. If one already exists, return it unchanged
   // instead of creating a duplicate.
   const existing = await prisma.nestingJob.findFirst({

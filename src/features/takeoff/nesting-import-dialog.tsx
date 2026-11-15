@@ -40,7 +40,7 @@ function Thumb({ p }: { p: NestPart }) {
 
 /**
  * "Take parts from 2D Nesting": the parts of a nest (this project's saved nest, or one of the user's history entries)
- * become plates of a drawing in Standard Calculations. Each plate keeps its exact shape — a one-part DXF is built from
+ * become plates of a drawing in Part List. Each plate keeps its exact shape — a one-part DXF is built from
  * the nest part and goes through the same importer as an uploaded DXF, so area, cut-outs and download all work.
  */
 export function NestingImportDialog({

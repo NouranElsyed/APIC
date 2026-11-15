@@ -390,7 +390,7 @@ export function NestBoost1D() {
 
   /**
    * Pulls every non-plate part (hot rolled, pipe, ...) of the selected project
-   * from Standard Calculations. `onlyIds` = parts sent one by one; omitted = all.
+   * from Part List. `onlyIds` = parts sent one by one; omitted = all.
    */
   const importFromProject = React.useCallback(
     async (onlyIds?: string[]) => {
@@ -427,7 +427,7 @@ export function NestBoost1D() {
           setPieces(next);
           ensureSourcesFor(next);
           setResult(null);
-          toast.success(`Imported ${ok} part(s) from Standard Calculations`);
+          toast.success(`Imported ${ok} part(s) from Part List`);
         } else toast.warning("No parts were imported");
         setImportMsg((done.join("\n") + (skipped.length ? `\nSkipped:\n${skipped.join("\n")}` : "")).trim() || "Nothing to import.");
       } catch (err) {
@@ -439,7 +439,7 @@ export function NestBoost1D() {
     [projectId],
   );
 
-  // Parts sent one-by-one from the Standard Calculations tab.
+  // Parts sent one-by-one from the Part List tab.
   React.useEffect(() => {
     if (!nestingQueue1D.length || !projectId) return;
     const ids = nestingQueue1D;
@@ -678,7 +678,7 @@ export function NestBoost1D() {
             onClick={() => importFromProject()}
             title="Import every non-plate part (hot rolled, pipe...) of the selected project with its length and quantity"
           >
-            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import bars/pipes from Standard Calculations
+            {importing ? <Loader2 className="animate-spin" /> : <FolderInput />} Import bars/pipes from Part List
           </Button>
           {!projectId && <p className="mt-1 text-xs text-muted-foreground">Select a project above to enable this.</p>}
           {importMsg && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{importMsg}</pre>}

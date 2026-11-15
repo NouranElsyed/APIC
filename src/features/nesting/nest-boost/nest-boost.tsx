@@ -1633,7 +1633,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
         setG(gs);
         if (ok) clearResults();
         setMsg((text + (skipped.length ? `\nSkipped:\n${skipped.join("\n")}` : "")).trim() || "Nothing to import.");
-        if (ok) toast.success(`Imported ${ok} part(s) from Standard Calculations`);
+        if (ok) toast.success(`Imported ${ok} part(s) from Part List`);
         else toast.warning("No parts were imported");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Import failed");
@@ -1645,7 +1645,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     [projectId, units],
   );
 
-  // Parts sent one-by-one from the Standard Calculations tab.
+  // Parts sent one-by-one from the Part List tab.
   React.useEffect(() => {
     if (!nestingQueue.length || !projectId) return;
     const ids = nestingQueue;
@@ -2942,7 +2942,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
               <ImportRowBody
                 tone="violet"
                 icon={importing ? <Loader2 className="h-5 w-5 animate-spin" /> : <FolderInput className="h-5 w-5" />}
-                title="Import plates from Standard Calculations"
+                title="Import plates from Part List"
                 hint={projectId ? "Every plate of the selected project" : "Select a project above to enable this"}
               />
             </button>

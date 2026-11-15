@@ -1,7 +1,7 @@
 import type { TakeoffPartRow } from "@/features/takeoff/types";
 
 /**
- * Which nesting tool a Standard Calculations part belongs to.
+ * Which nesting tool a Part List part belongs to.
  *   PLATE                       -> 2D (sheet nesting, needs a DXF)
  *   HOT_ROLLED / PIPE (anything else linear) -> 1D (cut from stock bars)
  *   ACCESSORY                   -> not nested at all
@@ -37,7 +37,7 @@ const fmt = (x: number) => String(Math.round(x * 100) / 100);
 
 /**
  * Converts a non-plate takeoff part into a 1D piece (geometry lengths are
- * stored in metres in Standard Calculations, the 1D tool works in mm).
+ * stored in metres in Part List, the 1D tool works in mm).
  * Returns { error } when the part cannot be cut from a bar.
  */
 export function partTo1DPiece(part: TakeoffPartRow): { piece: Piece1DInput } | { error: string } {

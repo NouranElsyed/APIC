@@ -10,7 +10,7 @@ import { useTakeoffProject } from "./project-context";
 export const NEW_PROJECT_EVENT = "takeoff:new-project";
 
 /**
- * Every tab of Nesting & Costing (Standard Calculations, DXF / 1D Nesting, Nozzles, ... and later tanks, platforms,
+ * Every tab of Nesting & Costing (Part List, DXF / 1D Nesting, Nozzles, ... and later tanks, platforms,
  * ladders, handrails) belongs to ONE project. With no project (and no history entry) open, none of them shows its
  * content: the person is asked to choose a project or create a new one first.
  */

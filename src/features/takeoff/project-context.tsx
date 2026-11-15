@@ -8,7 +8,7 @@ interface TakeoffProjectContextValue {
   projectId: string;
   setProjectId: (id: string) => void;
   loadingProjects: boolean;
-  /** Part ids the user sent from Standard Calculations, waiting to be imported by the DXF Nesting tab. */
+  /** Part ids the user sent from Part List, waiting to be imported by the DXF Nesting tab. */
   nestingQueue: string[];
   /** Same, for the 1D tool (non-plate parts: hot rolled, pipe, ...). */
   nestingQueue1D: string[];
@@ -77,7 +77,7 @@ function localStamp() {
 }
 
 /**
- * Holds the single "active workspace" for the whole Takeoff section (Standard Calculations + DXF
+ * Holds the single "active workspace" for the whole Takeoff section (Part List + DXF
  * Nesting tabs): either a project or an entry of the user's nesting history. Intentionally does NOT
  * auto-select anything — the user lands on the page with nothing chosen.
  */

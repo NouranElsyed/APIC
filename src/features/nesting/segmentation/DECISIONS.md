@@ -24,7 +24,7 @@ Status: Phases 1-8 implemented. Not verified: behaviour in a real browser, a rea
 
 ## Parent / children
 - The original part stays as a row with status **Segmented**; child rows (`PART-001-S01`, …) sit under it.
-- Parent is excluded from nesting; each child has quantity Q (the parent's quantity). Standard Calculations is never written to, so takeoff weight/area stays on the parent.
+- Parent is excluded from nesting; each child has quantity Q (the parent's quantity). Part List is never written to, so takeoff weight/area stays on the parent.
 - Disconnected pieces of one strip get a letter suffix (`S02a`, `S02b`).
 
 ## Out of scope for this phase
@@ -61,7 +61,7 @@ Welding procedures, weld/cost calculations, inventory, rolling/grain direction.
 - The ORIGINAL stays in the parts list as "SEGMENTED · N parts". It keeps its own quantity, size, thickness and material, so the takeoff still sees one original (100 kg × 3 stays 300 kg). It is excluded from nesting (`leftOf` = 0, `runOptimize` skips it, merges never fold a new part into it).
 - The plan (cuts + settings) is stored on the original in `Group.seg.plan`, so it travels with snapshots, saved nests and history without any change to `persist.ts`. "Edit segmentation" re-opens the saved cuts; "Undo segmentation" removes the pieces and restores a plain part.
 - Editing the original's quantity / thickness / material updates its pieces; a piece's own quantity / thickness / material are read-only. The size of a segmented part cannot be changed (undo first). Segmented parts and pieces cannot be duplicated; deleting an original deletes its pieces; a piece cannot be deleted on its own.
-- Standard Calculations: `parseNestParts` skips pieces (the original is the takeoff item); the 2D report lists the pieces, not the original.
+- Part List: `parseNestParts` skips pieces (the original is the takeoff item); the 2D report lists the pieces, not the original.
 - If pieces of an earlier version were already on sheets, replacing or undoing a segmentation clears the nesting result (same as deleting a part does).
 
 ## What the optimiser can really place (important)

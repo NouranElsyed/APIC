@@ -1,7 +1,7 @@
 import type { Group } from "./engine";
 import { holeLines, shapeFormula, type HoleLine, type ShapeFormula } from "./part-formula";
 
-/** Steel density: kg per (m² · mm) — same constant the nesting report and Standard Calculations use (7850 kg/m³). */
+/** Steel density: kg per (m² · mm) — same constant the nesting report and Part List use (7850 kg/m³). */
 export const STEEL_KG_PER_M2_MM = 7.85;
 
 export interface PartDetails {

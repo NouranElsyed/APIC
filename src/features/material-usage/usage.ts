@@ -1,6 +1,6 @@
 // Pure maths for a project's Material & Usage tab (no Prisma / React) so it can be unit-tested.
 //
-// Source: the project's Standard Calculations (takeoff parts).
+// Source: the project's Part List (takeoff parts).
 //   used     = weightKg      (net weight of the finished parts)
 //   purchase = buyWeightKg   (stock bought for the row; when it was not entered we assume no scrap, i.e. purchase = used)
 //   scrap    = buyWeightKg - weightKg

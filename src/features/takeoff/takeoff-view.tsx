@@ -10,6 +10,7 @@ import { DrawingForm } from "./drawing-form";
 import { NestingImportDialog } from "./nesting-import-dialog";
 import { PartsGrid } from "./parts-grid";
 import { BoqPanel } from "./boq-panel";
+import { autoImportNestParts } from "./nest-auto-import";
 import { useTakeoffProject } from "./project-context";
 import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
 import { toast } from "sonner";
@@ -64,15 +65,30 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
   const [deletingDrawing, setDeletingDrawing] = React.useState<TakeoffDrawingRow | null>(null);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
 
-  const loadDrawings = React.useCallback(async (pid: string) => {
-    if (!pid) return;
+  const loadDrawings = React.useCallback(async (pid: string): Promise<TakeoffDrawingRow[]> => {
+    if (!pid) return [];
     setLoading(true);
     const res = await fetch(`/api/takeoff/drawings?projectId=${pid}`);
-    setDrawings(res.ok ? await res.json() : []);
+    const list: TakeoffDrawingRow[] = res.ok ? await res.json() : [];
+    setDrawings(list);
     setLoading(false);
+    return list;
   }, []);
 
-  React.useEffect(() => { loadDrawings(projectId); }, [projectId, loadDrawings]);
+  // Opening the Part List brings in every part of the project's 2D nest that is not in it yet (once per project).
+  const autoRan = React.useRef<string>("");
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await loadDrawings(projectId);
+      if (cancelled || !projectId || !canCreate || autoRan.current === projectId) return;
+      autoRan.current = projectId;
+      const r = await autoImportNestParts(projectId, list);
+      if (r.imported) { toast.success(`${r.imported} part(s) added from the 2D nest`); await loadDrawings(projectId); }
+      if (r.failed) toast.error(`${r.failed} nest part(s) could not be added — use "Take parts from 2D Nesting" to see why`);
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, loadDrawings, canCreate]);
 
   const selectedProject = projects.find((p) => p.id === projectId);
 

@@ -64,14 +64,14 @@ export function MaterialUsageView({ data, tabs, canCost }: { data: MaterialUsage
           <Field label={`Material price (${currency}/kg)`} value={cost} onChange={setCost} />
           <Field label={`Scrap resale (${currency}/kg)`} value={scrap} onChange={setScrap} />
           <Field label="Scrap target (%)" value={target} onChange={setTarget} />
-          <p className="min-w-[220px] flex-1 text-xs text-muted-foreground">Costs are calculated from these rates and the weights in Standard Calculations. They are saved in this browser only.</p>
+          <p className="min-w-[220px] flex-1 text-xs text-muted-foreground">Costs are calculated from these rates and the weights in Part List. They are saved in this browser only.</p>
         </CardContent>
       </Card>
 
       {!hasData ? (
         <Card><CardContent className="flex flex-col items-center gap-2 p-10 text-center text-sm text-muted-foreground">
           <AlertCircle className="h-5 w-5" />
-          <p>No parts in Standard Calculations for this project yet.</p>
+          <p>No parts in Part List for this project yet.</p>
           <Link href="/takeoff" className="font-medium text-primary hover:underline">Open Nesting &amp; Costing</Link>
         </CardContent></Card>
       ) : (

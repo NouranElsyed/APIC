@@ -716,7 +716,7 @@ export function addFileParts(
   name: string,
   scale: number,
   counters: Counters,
-  /** Override the thickness / material / per-contour quantity (used when importing from Standard Calculations). */
+  /** Override the thickness / material / per-contour quantity (used when importing from Part List). */
   opts: { th?: number; material?: string; qty?: number; labels?: DxfLabel[] } = {},
 ): { groups: Group[]; count: number; labelled: number } {
   const fileTh = opts.th && opts.th > 0 ? opts.th : thicknessFromName(name);

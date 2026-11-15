@@ -4,7 +4,7 @@
 // preview table AND by the server when the parts are actually created (the
 // server re-parses the file, it never trusts numbers sent by the client).
 //
-// Units: the DXF parser already returns mm / m². Standard Calculations stores
+// Units: the DXF parser already returns mm / m². Part List stores
 // geometry lengths in metres, so bbox mm -> m here.
 //
 // PLATE      width x length = DXF bounding box, and the area removed

@@ -1,7 +1,7 @@
-// Parts of a saved DXF Nesting workspace -> plates of Standard Calculations.
+// Parts of a saved DXF Nesting workspace -> plates of Part List.
 //
 // The nesting tool stores every part as an outline + holes in mm (see Snapshot2D in nesting/nest-boost/persist.ts).
-// Standard Calculations creates a plate from a DXF file, reading its size, net area and cut-outs, and keeps that file
+// Part List creates a plate from a DXF file, reading its size, net area and cut-outs, and keeps that file
 // with the part — so a nest part is turned into a one-part DXF and goes through the same importer as any other DXF.
 // Pure functions only (no React, no fetch), so they are easy to test.
 

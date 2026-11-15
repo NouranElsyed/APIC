@@ -1,4 +1,4 @@
-// Two-way link between the project's 2D nest and the BOQ (Standard Calculations). Pure functions only.
+// Two-way link between the project's 2D nest and the BOQ (Part List). Pure functions only.
 //
 // Each linked takeoff part remembers `syncedQty`: the quantity both sides had at the last sync. Comparing it with
 // the nest's current quantity and the BOQ's current quantity tells WHO changed:

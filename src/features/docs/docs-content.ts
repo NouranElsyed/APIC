@@ -20,7 +20,7 @@ export interface DocSection {
 }
 
 const ALL_TABS: { id: TabId; label: string; blurb: string }[] = [
-  { id: "standard", label: "Standard Calculations", blurb: "Drawings, parts, areas and weights" },
+  { id: "standard", label: "Part List", blurb: "Drawings, parts, areas and weights" },
   { id: "nesting", label: "2D Nesting", blurb: "2D sheet nesting and 1D bar cutting" },
   { id: "scrap", label: "Scrap & Material", blurb: "Purchased material, scrap and its value" },
   { id: "pricing", label: "Steel Pricing", blurb: "BOQ pricing from rates and profiles" },
@@ -42,14 +42,14 @@ const ALL_SECTIONS: DocSection[] = [
         t: "table",
         head: ["Tab", "What it does"],
         rows: [
-          ["Standard Calculations", "Take-off: drawings and their parts (plates, hot-rolled sections, cones, pipes) with area, weight and paint area."],
+          ["Part List", "Take-off: drawings and their parts (plates, hot-rolled sections, cones, pipes) with area, weight and paint area."],
           ["2D Nesting", "Lays plates out on sheets (2D) and cuts bars, pipes and profiles from stock lengths (1D). Exports DXF and Excel reports."],
         ],
       },
       {
         t: "steps",
         items: [
-          "Choose the project, then add a drawing in **Standard Calculations**.",
+          "Choose the project, then add a drawing in **Part List**.",
           "Add its parts: one by one, by importing DXF files (plates) or by importing a CSV (hot-rolled sections and pipes).",
           "Send the parts to **2D Nesting**, optimise or nest by hand, and create the Excel report.",
         ],
@@ -305,7 +305,7 @@ const ALL_SECTIONS: DocSection[] = [
       },
       {
         t: "p",
-        text: "You can use either tool with **manual uploads**, or feed it from **Standard Calculations** (Send to Nesting, or the “Import from Standard Calculations” button).",
+        text: "You can use either tool with **manual uploads**, or feed it from **Part List** (Send to Nesting, or the “Import from Part List” button).",
       },
     ],
   },
@@ -319,9 +319,9 @@ const ALL_SECTIONS: DocSection[] = [
         t: "list",
         items: [
           "**Drop DXF files here or click** — one or many files. Each closed outline becomes a part; inner outlines become holes.",
-          "**Import plates from Standard Calculations** — imports every plate of the selected project that has a valid DXF, with its quantity and thickness.",
-          "**Drawing units (manual uploads only)** — set the units of the files you upload (mm by default). Plates from Standard Calculations already know their units.",
-          "Parts sent from Standard Calculations with **Send to Nesting** are queued here automatically.",
+          "**Import plates from Part List** — imports every plate of the selected project that has a valid DXF, with its quantity and thickness.",
+          "**Drawing units (manual uploads only)** — set the units of the files you upload (mm by default). Plates from Part List already know their units.",
+          "Parts sent from Part List with **Send to Nesting** are queued here automatically.",
         ],
       },
     ],
@@ -548,7 +548,7 @@ const ALL_SECTIONS: DocSection[] = [
         items: [
           "**DXF files** — one part per file, with its cut length filled in. Choose the drawing units first. Then set profile, material and qty in the list.",
           "**CSV** — columns `name, profile, material, length_mm, qty`. **Download the template** from the button below the drop area.",
-          "**Import from Standard Calculations** — imports every non-plate part (hot rolled, pipe…) of the selected project with its length and quantity.",
+          "**Import from Part List** — imports every non-plate part (hot rolled, pipe…) of the selected project with its length and quantity.",
           "**Add a part by hand** in the row at the bottom of the parts table: name, profile (e.g. IPE120), material (e.g. S235), length and qty. Identical parts merge into one row with a higher quantity.",
         ],
       },

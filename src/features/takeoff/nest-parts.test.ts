@@ -18,7 +18,7 @@ const snapshot = {
   ],
 };
 
-describe("nest parts -> Standard Calculations", () => {
+describe("nest parts -> Part List", () => {
   it("reads usable 2D parts and recomputes size and net area from the outline", () => {
     const parts = parseNestParts(snapshot);
     expect(parts.map((p) => p.id)).toEqual([1, 2]); // paired copy, qty 0 and broken outline are skipped
@@ -41,7 +41,7 @@ describe("nest parts -> Standard Calculations", () => {
     expect(nestPartFileName({ name: "a/b:c", w: 10, h: 20 })).toBe("a-b-c 10×20.dxf");
   });
 
-  it("the generated DXF is read back by the Standard Calculations importer with the same size, area and holes", () => {
+  it("the generated DXF is read back by the Part List importer with the same size, area and holes", () => {
     for (const p of parseNestParts(snapshot)) {
       const parsed = parseDxf(nestPartToDxf(p));
       expect(parsed.valid).toBe(true);

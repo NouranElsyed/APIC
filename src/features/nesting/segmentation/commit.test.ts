@@ -301,7 +301,7 @@ describe("persistence", () => {
   });
 });
 
-/* ---------------- Standard Calculations / takeoff safety ---------------- */
+/* ---------------- Part List / takeoff safety ---------------- */
 
 describe("takeoff: the original stays the only item (no double counting)", () => {
   it("parseNestParts lists the original and not its pieces; weight basis stays qty × original", () => {

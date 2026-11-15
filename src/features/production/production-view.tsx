@@ -119,7 +119,7 @@ export function ProductionView({ data, canEdit, canUpdate }: { data: ProductionD
         <CardContent>
           {orders.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-              {unreleased.length ? "No work orders yet. Release the project's parts to the shop to start tracking." : "This project has no parts in Standard Calculations yet."}
+              {unreleased.length ? "No work orders yet. Release the project's parts to the shop to start tracking." : "This project has no parts in Part List yet."}
             </div>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-border">

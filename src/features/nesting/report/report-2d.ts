@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import { isExact, snText, type Group, type OptResult, type Settings } from "../nest-boost/engine";
 import { addImageAt, addKeyValues, addTable, addTitle, pct, round, sheetName, stamp, workbookToBlob, type Cell, type OverviewRow } from "./excel-common";
 
-/** Steel plate weight factor: kg per (m² · mm) — same constant as Standard Calculations. */
+/** Steel plate weight factor: kg per (m² · mm) — same constant as Part List. */
 const DENSITY = 7.85;
 
 export interface Report2DInput {

@@ -42,7 +42,7 @@ function TakeoffTopBar({ showScrap, showSteelPricing }: { showScrap: boolean; sh
 
       <div className="flex gap-5 overflow-x-auto border-b border-border">
         <Link href="/takeoff" className={activeTabClass(isStandard)}>
-          Standard Calculations
+          Part List
         </Link>
         <React.Suspense
           fallback={

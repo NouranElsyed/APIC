@@ -8,7 +8,7 @@ import { CombinedReportButton } from "./combined-report-button";
 /**
  * The two nesting workspaces, one at a time: `?view=1d` shows 1D (bars, pipes, profiles), anything else shows 2D (DXF on sheets).
  * BOTH stay mounted — the inactive one is only hidden — so state, results, auto-save and parts sent from
- * Standard Calculations all survive switching.
+ * Part List all survive switching.
  */
 export function NestingWorkspaces() {
   const view = useSearchParams().get("view") === "1d" ? "1d" : "2d";
