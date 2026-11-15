@@ -27,5 +27,23 @@ export const orderSchema = z.object({
   notes: z.string().trim().max(1000).nullable().optional(),
 });
 
+// Material requests created from a nesting result (one line per stock sheet size / thickness / material).
+export const nestMaterialsSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        code: z.string().trim().min(1).max(40),
+        description: z.string().trim().min(1).max(200),
+        spec: z.string().trim().max(200).nullable().optional(),
+        unit: z.enum(["sheet", "kg"]),
+        requiredQty: z.number().finite().min(0).max(1e12),
+        notes: z.string().trim().max(1000).nullable().optional(),
+      }),
+    )
+    .min(1, "Nothing to send")
+    .max(60),
+});
+
 export type MaterialInput = z.infer<typeof materialSchema>;
+export type NestMaterialLine = z.infer<typeof nestMaterialsSchema>["lines"][number];
 export type OrderInput = z.infer<typeof orderSchema>;

@@ -52,7 +52,16 @@ export interface Group {
   seg?: SegInfo;
   /** The dimensions it was typed in with ("Add part by dimensions"), so the Details popup can show the exact formula. */
   shape?: ManualShape;
+  /**
+   * true  = the part is drawn exactly as it will be cut (real DXF outline) — safe to release to production.
+   * false = an approximation used for pricing only (typed-in dimensions, a stand-in shape).
+   * undefined = not decided yet: see `isExact` for the default.
+   */
+  exact?: boolean;
 }
+
+/** Whether a part counts as exact. Parts nobody marked yet default to: typed-in shapes = approximate, everything else (DXF) = exact. */
+export const isExact = (g: Pick<Group, "exact" | "shape">): boolean => g.exact ?? !g.shape;
 
 /** The part number as shown to the user: "3" for a normal part, "1-2" for the 2nd piece of segmented part #1. */
 export const snText = (g: Pick<Group, "sn" | "seg">): string => g.seg?.label ?? String(g.sn);
@@ -1094,6 +1103,7 @@ export function resizeGroup(g: Group, w: number, h: number): Group {
   const { shape, ...rest } = g; // stretched: the typed-in dimensions no longer describe it
   return {
     ...rest,
+    exact: isExact(g), // dropping `shape` must not silently flip an approximate part to exact
     outer,
     holes,
     extra: g.extra?.map(m),

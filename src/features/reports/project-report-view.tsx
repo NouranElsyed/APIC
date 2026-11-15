@@ -43,7 +43,7 @@ export function ProjectReportView({ data, tabs, canCost, canEditPlan }: { data: 
         {canCost && (
           <>
             <Kpi icon={<Coins className="h-5 w-5 text-violet-600" />} tint="bg-violet-500/10" label={`Total Cost (${cost?.currency ?? "EGP"})`} value={hasCost ? money(cost!.total) : "—"}>
-              <p className="mt-1 text-xs text-muted-foreground">{!cost || cost.basis === "none" ? "No quotation yet" : cost.basis === "approved" ? `${cost.quotations} approved quotation${cost.quotations > 1 ? "s" : ""}` : "Estimate — nothing approved yet"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{!cost || cost.basis === "none" ? "No quotation yet" : cost.frozen ? "Budget frozen at execution start" : cost.basis === "approved" ? `${cost.quotations} approved quotation${cost.quotations > 1 ? "s" : ""}` : "Estimate — nothing approved yet"}</p>
             </Kpi>
             <Kpi icon={<BadgeCheck className="h-5 w-5 text-green-600" />} tint="bg-green-500/10" label={`Earned Value (${cost?.currency ?? "EGP"})`} value={cost?.earnedValue != null ? money(cost.earnedValue) : "—"}>
               <p className="mt-1 text-xs text-muted-foreground">{cost?.earnedValue != null ? `${progress}% of Budget` : "Needs a schedule and a quotation"}</p>

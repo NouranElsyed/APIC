@@ -9,7 +9,7 @@ import { PlanningError } from "./planning.service";
 import { dateToIso, isoToDate } from "@/features/planning/calendar";
 import { parseMaterialSheet, norm } from "@/features/planning/materials-sheet";
 import { byPhase, bySupplier, deriveMaterial, summarize, type MaterialDTO, type MaterialIn, type MaterialSummary, type PhaseRow, type SupplierRow } from "@/features/planning/materials";
-import type { MaterialInput, OrderInput } from "@/server/validators/materials";
+import type { NestMaterialLine, MaterialInput, OrderInput } from "@/server/validators/materials";
 
 export interface MaterialsData {
   today: string;
@@ -214,4 +214,22 @@ export async function importMaterialsFromExcel(projectId: string, buffer: ArrayB
   if (badDate) warnings.push(`${badDate} rows have an unreadable 'Needed by' date (use YYYY-MM-DD).`);
   await logActivity({ userId, action: "CREATE", entity: "PLAN_MATERIAL", entityId: projectId, detail: `Imported ${rows.length} materials from Excel` });
   return { created: rows.length, skipped, warnings };
+}
+
+
+/**
+ * Creates / updates material requests coming from a nest. A line is identified by its code, so sending the same
+ * nest again (or an edited one) updates the quantities instead of duplicating the material; orders already placed
+ * against it are kept.
+ */
+export async function syncNestMaterials(projectId: string, lines: NestMaterialLine[], userId: string) {
+  let created = 0;
+  let updated = 0;
+  for (const l of lines) {
+    const existing = await prisma.planMaterial.findFirst({ where: { projectId, code: l.code }, select: { id: true } });
+    const input: MaterialInput = { code: l.code, description: l.description, spec: l.spec ?? null, unit: l.unit, requiredQty: l.requiredQty, notes: l.notes ?? null };
+    if (existing) { await updateMaterial(projectId, existing.id, input, userId); updated++; }
+    else { await createMaterial(projectId, input, userId); created++; }
+  }
+  return { created, updated };
 }

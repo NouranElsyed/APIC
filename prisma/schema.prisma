@@ -131,6 +131,14 @@ model Project {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
+  // Set when the project is converted to execution: the budget frozen from the approved quotations
+  // ({ currency, total, supply, install, quotations[], frozenAt }) and the moment of the conversion.
+  executionBudget    Json?
+  executionStartedAt DateTime?
+
+  // Production: the schedule WBS whose activities are driven by the production progress (tons made ÷ total tons).
+  productionWbsId String?
+
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
@@ -148,6 +156,8 @@ model Project {
   planMaterials     PlanMaterial[]
   quotations        Quotation[]
   documentFolders   DocumentFolder[]
+  purchaseOrders    PurchaseOrder[]
+  workOrders        WorkOrder[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -1067,7 +1077,14 @@ model PlanMaterialOrder {
   materialId String
   material   PlanMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
 
+  // Set when the order line was created from a purchase order (Procurement); `supplier` / `poNumber` keep a readable copy.
+  purchaseOrderId String?
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  receiptLines GoodsReceiptLine[]
+
   @@index([materialId])
+  @@index([purchaseOrderId])
   @@map("plan_material_orders")
 }
 
@@ -1165,4 +1182,193 @@ model DocumentFolder {
 
   @@unique([projectId, path])
   @@map("document_folders")
+}
+
+
+// ----------------------------------------------------------------------------
+// Procurement: suppliers, purchase orders, goods receipts (with heat number / mill
+// certificate reference) and the remnant stock.
+//
+// A purchase order's lines ARE the existing PlanMaterialOrder rows (so the Materials
+// follow-up, its status and the project reports keep working); the order only groups them
+// per supplier and gives them one document number. A goods receipt adds to the received
+// quantity of those lines and records which heat / certificate the steel came with.
+// ----------------------------------------------------------------------------
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  contactName String?
+  phone       String?
+  email       String?
+  address     String?
+  notes       String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+enum PurchaseOrderStatus {
+  ISSUED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id            String              @id @default(cuid())
+  number        String              @unique // PO-2026-0001
+  status        PurchaseOrderStatus @default(ISSUED) // received / partial is derived from the lines
+  currency      String              @default("EGP")
+  orderDate     DateTime
+  expectedDate  DateTime?
+  paymentTerms  String?
+  notes         String?
+  createdById   String
+  createdByName String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  lines    PlanMaterialOrder[]
+  receipts GoodsReceipt[]
+
+  @@index([projectId, orderDate])
+  @@map("purchase_orders")
+}
+
+model GoodsReceipt {
+  id             String   @id @default(cuid())
+  number         String   @unique // GR-2026-0001
+  receivedDate   DateTime
+  deliveryNote   String? // the supplier's delivery note number
+  notes          String?
+  receivedByName String
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  lines GoodsReceiptLine[]
+
+  @@index([purchaseOrderId])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptLine {
+  id             String  @id @default(cuid())
+  qty            Float
+  accepted       Boolean @default(true) // a rejected line is recorded but does not count as received
+  heatNo         String? // heat / lot number of the steel
+  certificateRef String? // mill test certificate (MTC) number
+  notes          String?
+
+  receiptId String
+  receipt   GoodsReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  orderId String
+  order   PlanMaterialOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([receiptId])
+  @@index([orderId])
+  @@index([heatNo])
+  @@map("goods_receipt_lines")
+}
+
+enum StockKind {
+  SHEET
+  REMNANT
+}
+
+// Sheets and remnants (usable offcuts) the company holds, by thickness, material and size.
+model StockItem {
+  id              String    @id @default(cuid())
+  kind            StockKind @default(REMNANT)
+  material        String    @default("") // "" = unspecified
+  thicknessMm     Float
+  widthMm         Float
+  heightMm        Float
+  qty             Int       @default(1)
+  location        String?
+  heatNo          String?
+  notes           String?
+  origin          String    @default("MANUAL") // MANUAL | NEST | RECEIPT
+  originProjectId String?
+  createdById     String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  movements StockMovement[]
+
+  @@index([thicknessMm, material])
+  @@map("stock_items")
+}
+
+model StockMovement {
+  id        String   @id @default(cuid())
+  delta     Int // + added, − taken
+  reason    String // ADDED | REMNANT | USED | SCRAPPED | ADJUSTED
+  projectId String?
+  note      String?
+  userName  String?
+  createdAt DateTime @default(now())
+
+  stockItemId String
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Cascade)
+
+  @@index([stockItemId, createdAt])
+  @@map("stock_movements")
+}
+
+
+// ----------------------------------------------------------------------------
+// Production tracking. A work order covers one takeoff part (qty pieces); every piece is
+// followed through cutting → assembly → welding → painting by the time each stage was
+// finished. Progress by weight (tons made ÷ total tons of the project) then drives the
+// schedule's fabrication activities, so the S-curve "actual" is fed by the shop floor.
+// ----------------------------------------------------------------------------
+model WorkOrder {
+  id            String   @id @default(cuid())
+  number        String   @unique // WO-2026-0001
+  description   String // copied from the part, so the order stays readable if the part is edited
+  partNo        Int? // the part's item no.
+  partId        String? // takeoff part it was made from (no foreign key: the order outlives the part)
+  material      String?
+  qty           Int
+  unitWeightKg  Float
+  dueDate       DateTime?
+  notes         String?
+  createdById   String
+  createdByName String
+  createdAt     DateTime @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  pieces WorkOrderPiece[]
+
+  @@index([projectId])
+  @@map("work_orders")
+}
+
+model WorkOrderPiece {
+  id          String    @id @default(cuid())
+  seq         Int // 1..qty; the QR code is <work order number>-<seq>
+  cutAt       DateTime?
+  assembledAt DateTime?
+  weldedAt    DateTime?
+  paintedAt   DateTime?
+
+  workOrderId String
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+
+  @@unique([workOrderId, seq])
+  @@map("work_order_pieces")
 }

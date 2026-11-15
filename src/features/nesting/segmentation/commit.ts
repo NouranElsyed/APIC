@@ -124,7 +124,7 @@ export function commitSegmentation(a: CommitArgs): CommitResult {
 }
 
 /** Fields a piece inherits from its original. */
-const SHARED = ["qty", "th", "material"] as const;
+const SHARED = ["qty", "th", "material", "exact"] as const;
 
 /**
  * `patch` applied to one part, keeping originals and pieces consistent:

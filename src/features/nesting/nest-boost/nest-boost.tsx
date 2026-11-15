@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, Eye, FileSpreadsheet, FolderInput, Gauge, Info, Layers, Loader2, Maximize2, Minimize2, MoreVertical, PackageCheck, Plus, Recycle, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, Circle as CircleIcon, Copy, Download, Eye, FileSpreadsheet, FolderInput, Gauge, Info, Layers, Loader2, Maximize2, Minimize2, MoreVertical, PackageCheck, Plus, Recycle, Redo2, RotateCcw, Save, Scissors, Search, Shapes, Square, SlidersHorizontal, Trash2, Triangle as TriangleIcon, TriangleAlert, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 import type { TakeoffDrawingRow } from "@/features/takeoff/types";
@@ -19,6 +19,8 @@ import { canRedo, canUndo, record, redo, resetHistory, undo, type NestHistory } 
 import { cloneResult, SavedNestsCard, type NestCfg, type SavedNest } from "./saved-nests";
 import { SheetStrip } from "./sheet-strip";
 import { PartDetailsDialog } from "./part-details-dialog";
+import { remnantLines } from "./remnants";
+import { buildMaterialRequests, toMaterialPayload, type MaterialRequestLine, type RequestUnit } from "./material-requests";
 import { EmptyPanel, KpiTile, PaneTabs, Panel, stepStates, WorkflowStepper, WorkspaceHeader, type WorkflowStep } from "../ui/workspace-ui";
 import { classifyAll, type FitResult } from "../segmentation/fit";
 import { SegmentDialog } from "../segmentation/segment-dialog";
@@ -82,6 +84,7 @@ import {
   type Group,
   type Item,
   type ManualShape,
+  isExact,
   type MultiSel,
   type OptResult,
   type Pt,
@@ -119,6 +122,7 @@ function SheetSourcesPanel({
   const sources = cfg.sources ?? [];
   const [form, setForm] = React.useState({ th: "", material: "", sizes: "", qty: "" });
   const [msg, setMsg] = React.useState("");
+  const [stockBusy, setStockBusy] = React.useState(false);
   const set = (next: SheetSource2D[]) => setCfg({ ...cfg, sources: next });
   const update = (id: number, patch: Partial<SheetSource2D>) => set(sources.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const add = () => {
@@ -146,6 +150,29 @@ function SheetSourcesPanel({
   };
   const ths = [...new Set(lots.map((l) => l.th).filter((t) => t > 0))];
   const mats = [...new Set(lots.map((l) => l.material).filter(Boolean))];
+  /** The sheets and remnants of the company stock (thicknesses of this nest only) become sheet sources with their quantity. */
+  const fromStock = async () => {
+    setStockBusy(true);
+    try {
+      const res = await fetch("/api/stock");
+      if (!res.ok) throw new Error(res.status === 403 ? "You do not have access to the stock." : "Could not load the stock.");
+      const rows = (await res.json()) as { thicknessMm: number; material: string; widthMm: number; heightMm: number; qty: number }[];
+      const wanted = rows.filter((r) => r.qty > 0 && (!ths.length || ths.includes(r.thicknessMm)));
+      let next = sources.slice();
+      let id = Math.max(0, ...next.map((x) => x.id));
+      for (const r of wanted) {
+        const same = next.findIndex((x) => x.th === r.thicknessMm && x.material.trim().toLowerCase() === r.material.trim().toLowerCase() && x.W === r.widthMm && x.H === r.heightMm);
+        if (same >= 0) next[same] = { ...next[same], qty: next[same].qty === null ? null : next[same].qty! + r.qty };
+        else next = [...next, { id: ++id, th: r.thicknessMm, material: r.material, W: r.widthMm, H: r.heightMm, qty: r.qty }];
+      }
+      set(next);
+      setMsg(wanted.length ? `Added ${wanted.length} size${wanted.length === 1 ? "" : "s"} from the stock. Quantities are not reserved: take them in Procurement › Stock once the nest is cut.` : "No sheets or remnants in stock for these thicknesses.");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Could not load the stock.");
+    } finally {
+      setStockBusy(false);
+    }
+  };
   return (
     <div className="col-span-2 space-y-2 rounded-md border border-dashed border-border p-3">
       <div className="text-xs font-medium">Sheets you have (optional)</div>
@@ -204,6 +231,9 @@ function SheetSourcesPanel({
           <Input type="number" min={1} className="h-8 w-16" placeholder="∞" value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} />
         </label>
         <Button size="sm" onClick={add}><Plus /> Add</Button>
+        <Button size="sm" variant="outline" onClick={() => void fromStock()} disabled={stockBusy} title="Use the sheets and remnants you hold in stock">
+          {stockBusy ? <Loader2 className="animate-spin" /> : <Boxes />} Add from stock
+        </Button>
       </div>
       <datalist id="sheet-src-th">{ths.map((t) => <option key={t} value={t} />)}</datalist>
       <datalist id="sheet-src-mat">{mats.map((m) => <option key={m} value={m} />)}</datalist>
@@ -1171,6 +1201,14 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const [pendingRemove, setPendingRemove] = React.useState<number[] | null>(null);
   // "Details" popup of a part row (size / area / weight and how they are calculated)
   const [detailsId, setDetailsId] = React.useState<number | null>(null);
+  // "Send to Materials": the sheets this nest needs (scrap included), shown for review before they are sent
+  const [matLines, setMatLines] = React.useState<MaterialRequestLine[] | null>(null);
+  const [matUnit, setMatUnit] = React.useState<RequestUnit>("sheet");
+  const [matSending, setMatSending] = React.useState(false);
+  // "Register remnants": the usable offcuts of this nest, added to the company stock
+  const [remLines, setRemLines] = React.useState<ReturnType<typeof remnantLines> | null>(null);
+  const [remLocation, setRemLocation] = React.useState("");
+  const [remSending, setRemSending] = React.useState(false);
   // Editing a part's length / width: with "keep proportions" on, changing one changes the other too.
   const [keepRatio, setKeepRatio] = React.useState(true);
   const [pendingResize, setPendingResize] = React.useState<{ id: number; w: number; h: number } | null>(null);
@@ -1617,6 +1655,67 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     // a segmented original passes quantity / thickness / material on to its pieces; a piece follows its original
     setG(patchGroup(groupsRef.current, id, patch));
     if (resultRef.current?.manual) bump(); // quantity changed: what is left to place changes too
+  };
+
+  /** Marks parts as exact (drawn exactly as they will be cut) or approximate (pricing stand-ins). Pieces follow their original. */
+  const setExact = (ids: number[], v: boolean) => {
+    let gs = groupsRef.current;
+    for (const id of ids) gs = patchGroup(gs, id, { exact: v });
+    setG(gs);
+  };
+
+  const openMaterials = () => {
+    const r = resultRef.current;
+    if (!r || !resS || !r.sheets.length) { toast.warning("Run or open a nest first"); return; }
+    setMatLines(buildMaterialRequests(r, resS));
+  };
+
+  const openRemnants = () => {
+    const r = resultRef.current;
+    if (!r || !resS || !r.sheets.length) { toast.warning("Run or open a nest first"); return; }
+    const lines = remnantLines(r.sheets, resS);
+    if (!lines.length) { toast.info("No usable remnants on these sheets (smaller than 300 mm or too small an area)."); return; }
+    setRemLines(lines);
+  };
+
+  const sendRemnants = async () => {
+    if (!remLines?.length) return;
+    setRemSending(true);
+    try {
+      const res = await fetch("/api/stock/from-nest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: projectId ?? null, location: remLocation || null, items: remLines }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof body?.error === "string" ? body.error : "Could not register the remnants");
+      toast.success(`${body.pieces} remnant${body.pieces === 1 ? "" : "s"} added to the stock`);
+      setRemLines(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not register the remnants");
+    } finally {
+      setRemSending(false);
+    }
+  };
+
+  const sendMaterials = async () => {
+    if (!projectId || !matLines?.length) return;
+    setMatSending(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/materials/from-nest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lines: matLines.map((l) => toMaterialPayload(l, matUnit)) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof body?.error === "string" ? body.error : "Could not send to Materials");
+      toast.success(`Sent to Materials: ${body.created} added, ${body.updated} updated`);
+      setMatLines(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send to Materials");
+    } finally {
+      setMatSending(false);
+    }
   };
 
   /** Adds a copy of a part right under it (same shape, size and quantity) so its thickness / material / quantity can differ. */
@@ -2590,6 +2689,14 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
     setSolo({ g, c: c0 });
     setSoloOpen(true);
   };
+  const exactBox = (g: Group) => (
+    <Checkbox
+      aria-label={`Part #${snText(g)} is exact`}
+      title={isExact(g) ? "Exact: drawn as it will be cut" : "Approximate: a stand-in used for pricing"}
+      checked={isExact(g)}
+      onCheckedChange={(v) => setExact([g.id], v === true)}
+    />
+  );
   /** The "⋮" menu of a row: every action except dragging a piece out by hand (that one needs the visible button). */
   const rowMenu = (g: Group) => {
     const canNest = !running && !held && leftOf(g, placed) > 0;
@@ -2739,6 +2846,12 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
         actions={
           <>
             {workspaceId && <AutosaveBadge state={autosave.state} savedAt={autosave.savedAt} projectLabel={workspaceLabel} />}
+            <Button variant="outline" onClick={openRemnants} disabled={!canExport || !!held} title="Add the usable offcuts of this nest to the company stock, so later nests can use them">
+              <Recycle /> Register remnants
+            </Button>
+            <Button variant="outline" onClick={openMaterials} disabled={!canExport || !!held || !projectId} title={projectId ? "Send the sheets this nest needs, scrap included, to the project's Materials so they can be ordered" : "Open a project first"}>
+              <PackageCheck /> Send to Materials
+            </Button>
             <Button variant="outline" onClick={saveNest} disabled={!canExport || !!held} title="Keep this nest so you can try another one and compare them">
               <Save /> Save nest
             </Button>
@@ -3244,6 +3357,12 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
               <Button variant="outline" size="sm" className="h-8" onClick={() => duplicateParts(checkedVis)}>
                 <Copy /> Duplicate
               </Button>
+              <Button variant="outline" size="sm" className="h-8" onClick={() => setExact(checkedVis, true)} title="These parts are drawn exactly as they will be cut">
+                <Check /> Mark exact
+              </Button>
+              <Button variant="outline" size="sm" className="h-8" onClick={() => setExact(checkedVis, false)} title="These parts are only an approximation used for pricing">
+                <CircleIcon /> Mark approximate
+              </Button>
               <Button variant="outline" size="sm" className="h-8 text-destructive" onClick={() => setPendingRemove(checkedVis)}>
                 <Trash2 /> Delete selected
               </Button>
@@ -3296,6 +3415,19 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             </div>
           )}
 
+          {groups.length > 0 && (() => {
+            const nestable = groups.filter((x) => x.seg?.role !== "parent");
+            const exactN = nestable.filter(isExact).length;
+            const approxN = nestable.length - exactN;
+            return (
+              <p className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span><b className="text-foreground">{exactN}</b> exact</span>
+                <span><b className={approxN ? "text-amber-600" : "text-foreground"}>{approxN}</b> approximate</span>
+                {approxN > 0 && <span>— approximate parts are for pricing; draw them exactly (or tick Exact) before the project goes to execution.</span>}
+              </p>
+            );
+          })()}
+
           {!groups.length ? (
             <p className="text-sm text-muted-foreground">No parts yet.</p>
           ) : !visible.length ? (
@@ -3339,6 +3471,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                       <th className="hidden p-1 2xl:table-cell">Holes</th>
                       <th className="p-1">Thick (mm)</th>
                       <th className="p-1">Material</th>
+                      <th className="p-1" title="Exact = drawn exactly as it will be cut (real outline), ready for production. Unticked = an approximation used for pricing only.">Exact</th>
                       <th className="p-1">Qty</th>
                       <th className="hidden p-1 xl:table-cell">Placed</th>
                       <th className="p-1" title="Press a part's picture to take one piece and place it by hand">Left / place by hand</th>
@@ -3370,6 +3503,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                         <td className="hidden p-1 2xl:table-cell">{g.holes.length}</td>
                         <td className="p-1">{thInput(g)}</td>
                         <td className="p-1">{matInput(g)}</td>
+                        <td className="p-1">{exactBox(g)}</td>
                         <td className="p-1">{qtyInput(g)}</td>
                         <td className="hidden p-1 whitespace-nowrap tabular-nums xl:table-cell">{placed.get(g.id) ?? 0}</td>
                         <td className="p-1">{leftBtn(g)}</td>
@@ -3428,6 +3562,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                       <Field label="Material">{matInput(g)}</Field>
                       <Field label="Qty">{qtyInput(g)}</Field>
                     </div>
+                    <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">{exactBox(g)} Exact part (drawn as it will be cut)</label>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-muted-foreground">Placed {placed.get(g.id) ?? 0}</span>
                       {leftBtn(g)}
@@ -3702,6 +3837,88 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           setPendingResize(null);
         }}
       />
+
+      <Dialog open={remLines !== null} onOpenChange={(v) => !v && !remSending && setRemLines(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Register remnants</DialogTitle>
+            <DialogDescription>The biggest empty rectangles left on the sheets (at least 300 mm on each side, clear of the parts and the edge margin). They are added to the company stock, so later nests can use them.</DialogDescription>
+          </DialogHeader>
+          {remLines && (
+            <div className="space-y-3">
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/40 text-left text-muted-foreground"><tr><th className="p-2">Thickness</th><th className="p-2">Material</th><th className="p-2">Size (mm)</th><th className="p-2 text-right">Pieces</th></tr></thead>
+                  <tbody>
+                    {remLines.map((l) => (
+                      <tr key={`${l.thicknessMm}|${l.material}|${l.widthMm}|${l.heightMm}`} className="border-t border-border">
+                        <td className="p-2 tabular-nums">{l.thicknessMm} mm</td><td className="p-2">{l.material || "—"}</td>
+                        <td className="p-2 tabular-nums">{l.widthMm} × {l.heightMm}</td><td className="p-2 text-right font-semibold tabular-nums">{l.qty}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <label className="block space-y-1 text-xs">Location (optional)
+                <Input className="h-8" placeholder="Rack A" value={remLocation} onChange={(e) => setRemLocation(e.target.value)} />
+              </label>
+              <p className="text-xs text-muted-foreground">Register them after the sheets are actually cut. Sizes are rounded down, so a remnant is never bigger than the real offcut.</p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRemLines(null)} disabled={remSending}>Cancel</Button>
+            <Button onClick={() => void sendRemnants()} disabled={remSending || !remLines?.length}>{remSending ? <Loader2 className="animate-spin" /> : <Recycle />} Add to stock</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={matLines !== null} onOpenChange={(v) => !v && !matSending && setMatLines(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Send to Materials</DialogTitle>
+            <DialogDescription>These are the stock sheets this nest needs, scrap included. They are added to the project&apos;s Materials list so they can be ordered. Sending again updates the same lines.</DialogDescription>
+          </DialogHeader>
+          {matLines && (
+            <div className="space-y-3">
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/40 text-left text-muted-foreground">
+                    <tr><th className="p-2">Material</th><th className="p-2">Sheet (mm)</th><th className="p-2 text-right">Sheets</th><th className="p-2 text-right">Total kg</th><th className="p-2 text-right">Scrap kg</th><th className="p-2 text-right">Exact / approx</th></tr>
+                  </thead>
+                  <tbody>
+                    {matLines.map((l) => (
+                      <tr key={l.code} className="border-t border-border">
+                        <td className="p-2 font-medium">{l.description}</td>
+                        <td className="p-2 whitespace-nowrap tabular-nums">{l.widthMm} × {l.heightMm}</td>
+                        <td className="p-2 text-right tabular-nums">{l.sheets}</td>
+                        <td className="p-2 text-right tabular-nums">{l.sheetKg ?? "—"}</td>
+                        <td className="p-2 text-right tabular-nums">{l.scrapKg != null ? `${l.scrapKg} (${l.scrapPct}%)` : "—"}</td>
+                        <td className="p-2 text-right tabular-nums">{l.exactPieces} / <span className={l.approxPieces ? "font-semibold text-amber-600" : ""}>{l.approxPieces}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Order quantity in:</span>
+                <Button size="sm" variant={matUnit === "sheet" ? "default" : "outline"} className="h-8" onClick={() => setMatUnit("sheet")}>Sheets</Button>
+                <Button size="sm" variant={matUnit === "kg" ? "default" : "outline"} className="h-8" onClick={() => setMatUnit("kg")} title="Whole sheets by weight, scrap included">Kilograms (scrap included)</Button>
+              </div>
+              {matLines.some((l) => l.approxPieces > 0) && (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700">
+                  Some pieces are approximate shapes, so these quantities are an estimate until those parts are drawn exactly. The note on each material says so.
+                </p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMatLines(null)} disabled={matSending}>Cancel</Button>
+            <Button onClick={() => void sendMaterials()} disabled={matSending || !matLines?.length}>
+              {matSending ? <Loader2 className="animate-spin" /> : <PackageCheck />} Send to Materials
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {(() => {
         const dg = detailsId === null ? null : (groups.find((x) => x.id === detailsId) ?? null);

@@ -47,3 +47,18 @@ export const projectSchema = z
   });
 
 export type ProjectInput = z.infer<typeof projectSchema>;
+
+// "Convert to execution": the options the user can change before the project goes to execution.
+export const convertExecutionSchema = z.object({
+  /** first day of the schedule; defaults to the project's start date, then today */
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a YYYY-MM-DD date").optional(),
+  /** starting-guess durations (working days) of the BOQ activities; edited later in Planning */
+  supplyDays: z.number().finite().min(1).max(365).default(14),
+  installDays: z.number().finite().min(1).max(365).default(10),
+  /** how the nest's sheets are ordered in Materials */
+  materialUnit: z.enum(["sheet", "kg"]).default("sheet"),
+  /** the user saw the "approximate parts" warning and still wants to convert */
+  acceptApproximate: z.boolean().default(false),
+});
+
+export type ConvertExecutionInput = z.infer<typeof convertExecutionSchema>;

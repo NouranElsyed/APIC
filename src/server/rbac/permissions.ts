@@ -58,6 +58,21 @@ export const PERMISSIONS = {
   "quotations.view": ["ADMIN", "MANAGER"],
   "quotations.edit": ["ADMIN", "MANAGER"],
   "quotations.approve": ["ADMIN"],
+
+  // Procurement: suppliers and purchase orders carry prices, so creating them is for managers and admins;
+  // anyone who works on a project can see them and record what arrives on site.
+  "procurement.view": ["ADMIN", "MANAGER", "ENGINEER"],
+  "procurement.edit": ["ADMIN", "MANAGER"],
+  "procurement.receive": ["ADMIN", "MANAGER", "ENGINEER"],
+
+  // Sheet / remnant stock: engineers register the remnants of their nests.
+  "stock.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
+  "stock.edit": ["ADMIN", "MANAGER", "ENGINEER"],
+
+  // Production tracking: work orders per part, stage progress (cutting → painting) and the QR scan page.
+  "production.view": ["ADMIN", "MANAGER", "ENGINEER", "VIEWER"],
+  "production.edit": ["ADMIN", "MANAGER", "ENGINEER"], // release parts to the shop, delete an order, link the schedule
+  "production.update": ["ADMIN", "MANAGER", "ENGINEER"], // record finished stages
   "quotations.delete": ["ADMIN"],
 
   "users.manage": ["ADMIN"],

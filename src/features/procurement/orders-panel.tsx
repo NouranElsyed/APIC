@@ -1,0 +1,226 @@
+"use client";
+import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { ChevronDown, ChevronRight, Loader2, PackageCheck, Plus, Printer, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { receiptLimit, OVER_RECEIPT_TOLERANCE_PCT, type PoState } from "./procurement";
+import type { PurchaseOrderDTO } from "@/server/services/purchasing.service";
+import type { SupplierDTO } from "@/server/services/suppliers.service";
+import { api, Empty, Field, fmtDate, money, num, Pill, selectClass, Td, Th, today } from "./ui";
+
+export interface ProjectOpt { id: string; number: string; name: string }
+interface ToOrder { materialId: string; code: string | null; description: string; spec: string | null; unit: string; requiredQty: number; ordered: number; remaining: number }
+
+const STATE: Record<PoState, { label: string; tone: "good" | "warn" | "bad" | "muted" }> = {
+  NOT_RECEIVED: { label: "Not received", tone: "muted" }, PARTIAL: { label: "Partly received", tone: "warn" }, RECEIVED: { label: "Received", tone: "good" }, CANCELLED: { label: "Cancelled", tone: "bad" },
+};
+
+export function OrdersPanel({ orders, suppliers, projects, canEdit, canReceive }: { orders: PurchaseOrderDTO[]; suppliers: SupplierDTO[]; projects: ProjectOpt[]; canEdit: boolean; canReceive: boolean }) {
+  const router = useRouter();
+  const [open, setOpen] = React.useState<Set<string>>(new Set());
+  const [creating, setCreating] = React.useState(false);
+  const [receiving, setReceiving] = React.useState<PurchaseOrderDTO | null>(null);
+  const toggle = (id: string) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  async function cancel(po: PurchaseOrderDTO) {
+    if (!window.confirm(`Cancel ${po.number}? Its lines are removed from the project's Materials.`)) return;
+    try { await api(`/api/purchase-orders/${po.id}`, { method: "PATCH", body: { status: "CANCELLED" } }); toast.success(`${po.number} cancelled`); router.refresh(); }
+    catch (e) { toast.error(e instanceof Error ? e.message : "Could not cancel"); }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">{canEdit && <Button onClick={() => setCreating(true)}><Plus /> New purchase order</Button>}</div>
+      {orders.length === 0 ? <Empty text="No purchase orders yet. Create one from a project's materials." /> : (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead className="bg-muted/50"><tr><Th /><Th>PO</Th><Th>Project</Th><Th>Supplier</Th><Th>Date</Th><Th>Expected</Th><Th right>Total</Th><Th>Status</Th><Th /></tr></thead>
+            <tbody className="divide-y divide-border">
+              {orders.map((po) => {
+                const isOpen = open.has(po.id);
+                const st = STATE[po.state];
+                return (
+                  <React.Fragment key={po.id}>
+                    <tr className="hover:bg-muted/30">
+                      <Td className="w-8"><button className="text-muted-foreground" aria-label={isOpen ? "Hide lines" : "Show lines"} onClick={() => toggle(po.id)}>{isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</button></Td>
+                      <Td className="font-medium">{po.number}</Td>
+                      <Td><Link href={`/projects/${po.project.id}/planning`} className="hover:underline">{po.project.number}</Link><p className="max-w-[180px] truncate text-xs text-muted-foreground">{po.project.name}</p></Td>
+                      <Td>{po.supplier.name}</Td><Td>{fmtDate(po.orderDate)}</Td><Td>{fmtDate(po.expectedDate)}</Td>
+                      <Td right>{po.total > 0 ? money(po.total, po.currency) : "—"}</Td>
+                      <Td><Pill tone={st.tone}>{st.label}</Pill></Td>
+                      <Td className="whitespace-nowrap text-right">
+                        <a href={`/print/purchase-orders/${po.id}`} target="_blank" rel="noreferrer" aria-label={`Print ${po.number}`} className="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted"><Printer className="h-4 w-4" /></a>
+                        {canReceive && po.state !== "CANCELLED" && po.state !== "RECEIVED" && <Button size="sm" variant="outline" onClick={() => setReceiving(po)}><PackageCheck /> Receive</Button>}
+                        {canEdit && po.state === "NOT_RECEIVED" && po.receipts === 0 && <Button size="icon" variant="ghost" className="text-destructive" aria-label={`Cancel ${po.number}`} onClick={() => void cancel(po)}><XCircle /></Button>}
+                      </Td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-muted/20"><td /><td colSpan={8} className="px-3 pb-3">
+                        <table className="w-full text-xs">
+                          <thead className="text-muted-foreground"><tr><th className="py-1.5 text-left font-medium">Material</th><th className="text-right font-medium">Ordered</th><th className="text-right font-medium">Received</th><th className="text-right font-medium">Unit price</th></tr></thead>
+                          <tbody>{po.lines.map((l) => (
+                            <tr key={l.id} className="border-t border-border/60"><td className="py-1.5">{l.description}{l.spec && <span className="text-muted-foreground"> · {l.spec}</span>}</td><td className="text-right tabular-nums">{num(l.orderedQty)} {l.unit}</td><td className="text-right tabular-nums">{num(l.receivedQty)} {l.unit}</td><td className="text-right tabular-nums">{l.unitPrice != null ? money(l.unitPrice, po.currency) : "—"}</td></tr>
+                          ))}</tbody>
+                        </table>
+                        {(po.paymentTerms || po.notes) && <p className="mt-2 text-xs text-muted-foreground">{[po.paymentTerms && `Payment: ${po.paymentTerms}`, po.notes].filter(Boolean).join(" · ")}</p>}
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {creating && <NewOrderDialog suppliers={suppliers.filter((s) => s.active)} projects={projects} onClose={() => setCreating(false)} />}
+      {receiving && <ReceiveDialog po={receiving} onClose={() => setReceiving(null)} />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------------------ new PO
+
+function NewOrderDialog({ suppliers, projects, onClose }: { suppliers: SupplierDTO[]; projects: ProjectOpt[]; onClose: () => void }) {
+  const router = useRouter();
+  const [projectId, setProjectId] = React.useState("");
+  const [supplierId, setSupplierId] = React.useState("");
+  const [orderDate, setOrderDate] = React.useState(today());
+  const [expectedDate, setExpectedDate] = React.useState("");
+  const [terms, setTerms] = React.useState("");
+  const [notes, setNotes] = React.useState("");
+  const [items, setItems] = React.useState<ToOrder[] | null>(null);
+  const [pick, setPick] = React.useState<Record<string, { on: boolean; qty: string; price: string }>>({});
+  const [loading, setLoading] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+
+  async function load(id: string) {
+    setProjectId(id); setItems(null);
+    if (!id) return;
+    setLoading(true);
+    try {
+      const rows = await api<ToOrder[]>(`/api/procurement/to-order?projectId=${id}`);
+      setItems(rows);
+      setPick(Object.fromEntries(rows.map((r) => [r.materialId, { on: true, qty: String(r.remaining), price: "" }])));
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Could not load the materials"); } finally { setLoading(false); }
+  }
+  const chosen = (items ?? []).filter((m) => pick[m.materialId]?.on && Number(pick[m.materialId].qty) > 0);
+
+  async function create() {
+    setBusy(true);
+    try {
+      const po = await api<PurchaseOrderDTO>("/api/purchase-orders", {
+        method: "POST",
+        body: {
+          projectId, supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null,
+          lines: chosen.map((m) => ({ materialId: m.materialId, qty: Number(pick[m.materialId].qty), unitPrice: pick[m.materialId].price === "" ? null : Number(pick[m.materialId].price) })),
+        },
+      });
+      toast.success(`${po.number} created`);
+      onClose();
+      router.refresh();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Could not create the purchase order"); } finally { setBusy(false); }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader><DialogTitle>New purchase order</DialogTitle><DialogDescription>Pick the project, then the materials it still needs to order. The lines appear in the project&apos;s Materials with this PO number.</DialogDescription></DialogHeader>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Project"><select className={selectClass} value={projectId} onChange={(e) => void load(e.target.value)}><option value="">Choose a project…</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.number} — {p.name}</option>)}</select></Field>
+          <Field label="Supplier"><select className={selectClass} value={supplierId} onChange={(e) => setSupplierId(e.target.value)}><option value="">Choose a supplier…</option>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+          <Field label="Order date"><Input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} /></Field>
+          <Field label="Expected delivery"><Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></Field>
+          <Field label="Payment terms"><Input value={terms} onChange={(e) => setTerms(e.target.value)} placeholder="e.g. 30 days" /></Field>
+          <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
+        </div>
+        {loading && <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading materials…</p>}
+        {items && (items.length === 0 ? <Empty text="Everything this project needs is already ordered." /> : (
+          <div className="max-h-72 overflow-auto rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur"><tr><Th /><Th>Material</Th><Th right>Still to order</Th><Th right>Quantity</Th><Th right>Unit price</Th></tr></thead>
+              <tbody className="divide-y divide-border">{items.map((m) => {
+                const p = pick[m.materialId];
+                return (
+                  <tr key={m.materialId}>
+                    <Td className="w-8"><input type="checkbox" aria-label={`Include ${m.description}`} checked={p?.on ?? false} onChange={(e) => setPick((s) => ({ ...s, [m.materialId]: { ...s[m.materialId], on: e.target.checked } }))} /></Td>
+                    <Td>{m.description}{m.spec && <p className="text-xs text-muted-foreground">{m.spec}</p>}</Td>
+                    <Td right>{num(m.remaining)} {m.unit}</Td>
+                    <Td right><Input type="number" min={0} step="any" className="ml-auto h-8 w-28 text-right" value={p?.qty ?? ""} onChange={(e) => setPick((s) => ({ ...s, [m.materialId]: { ...s[m.materialId], qty: e.target.value } }))} /></Td>
+                    <Td right><Input type="number" min={0} step="any" className="ml-auto h-8 w-28 text-right" value={p?.price ?? ""} placeholder="—" onChange={(e) => setPick((s) => ({ ...s, [m.materialId]: { ...s[m.materialId], price: e.target.value } }))} /></Td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        ))}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void create()} disabled={busy || !projectId || !supplierId || chosen.length === 0}>{busy && <Loader2 className="animate-spin" />} Create PO ({chosen.length} line{chosen.length === 1 ? "" : "s"})</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ------------------------------------------------------------------------------------------ receive
+
+function ReceiveDialog({ po, onClose }: { po: PurchaseOrderDTO; onClose: () => void }) {
+  const router = useRouter();
+  const open = po.lines.filter((l) => l.receivedQty < l.orderedQty);
+  const [date, setDate] = React.useState(today());
+  const [note, setNote] = React.useState("");
+  const [rows, setRows] = React.useState<Record<string, { qty: string; ok: boolean; heat: string; cert: string }>>(() => Object.fromEntries(open.map((l) => [l.id, { qty: "", ok: true, heat: "", cert: "" }])));
+  const [busy, setBusy] = React.useState(false);
+  const set = (id: string, patch: Partial<{ qty: string; ok: boolean; heat: string; cert: string }>) => setRows((s) => ({ ...s, [id]: { ...s[id], ...patch } }));
+  const filled = open.filter((l) => Number(rows[l.id]?.qty) > 0);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api(`/api/purchase-orders/${po.id}/receipts`, {
+        method: "POST",
+        body: { receivedDate: date, deliveryNote: note || null, lines: filled.map((l) => ({ orderId: l.id, qty: Number(rows[l.id].qty), accepted: rows[l.id].ok, heatNo: rows[l.id].heat || null, certificateRef: rows[l.id].cert || null })) },
+      });
+      toast.success("Goods received");
+      onClose();
+      router.refresh();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Could not record the receipt"); } finally { setBusy(false); }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader><DialogTitle>Receive goods — {po.number}</DialogTitle><DialogDescription>{po.supplier.name} · enter what actually arrived, with the heat number and mill certificate of the steel. A delivery may exceed the open quantity by up to {OVER_RECEIPT_TOLERANCE_PCT}%.</DialogDescription></DialogHeader>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Received on"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Supplier delivery note"><Input value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+        </div>
+        <div className="max-h-72 overflow-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted/80 backdrop-blur"><tr><Th>Material</Th><Th right>Open</Th><Th right>Received</Th><Th>Heat no.</Th><Th>MTC no.</Th><Th>OK</Th></tr></thead>
+            <tbody className="divide-y divide-border">{open.map((l) => (
+              <tr key={l.id}>
+                <Td>{l.description}{l.spec && <p className="text-xs text-muted-foreground">{l.spec}</p>}</Td>
+                <Td right>{num(receiptLimit(l.orderedQty, l.receivedQty, 0))} {l.unit}</Td>
+                <Td right><Input type="number" min={0} step="any" className="ml-auto h-8 w-24 text-right" value={rows[l.id].qty} onChange={(e) => set(l.id, { qty: e.target.value })} /></Td>
+                <Td><Input className="h-8 w-28" value={rows[l.id].heat} onChange={(e) => set(l.id, { heat: e.target.value })} /></Td>
+                <Td><Input className="h-8 w-28" value={rows[l.id].cert} onChange={(e) => set(l.id, { cert: e.target.value })} /></Td>
+                <Td><input type="checkbox" aria-label={`${l.description} accepted`} checked={rows[l.id].ok} onChange={(e) => set(l.id, { ok: e.target.checked })} /></Td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <p className="text-xs text-muted-foreground">Untick “OK” for steel you reject: it is recorded but does not count as received.</p>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void save()} disabled={busy || filled.length === 0}>{busy && <Loader2 className="animate-spin" />} Record receipt</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
