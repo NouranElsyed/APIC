@@ -5,6 +5,8 @@
 // with the part — so a nest part is turned into a one-part DXF and goes through the same importer as any other DXF.
 // Pure functions only (no React, no fetch), so they are easy to test.
 
+import { loopsToDxf } from "@/server/calc/dxf-out";
+
 export type NestPt = [number, number];
 
 export interface NestPart {
@@ -84,15 +86,7 @@ export function nestPartDescription(p: Pick<NestPart, "name" | "w" | "h">): stri
 export const nestPartFileName = (p: Pick<NestPart, "name" | "w" | "h">) =>
   `${nestPartDescription(p).replace(/[\\/:*?"<>|]+/g, "-")}.dxf`;
 
-/** One part as a stand-alone DXF: closed LWPOLYLINEs in mm, moved to 0,0 (same layout the server writes for a cut-out part). */
+/** One part as a stand-alone DXF (R12, opens in AutoCAD; round contours are written as true circles). */
 export function nestPartToDxf(p: Pick<NestPart, "outer" | "holes">): string {
-  const minX = Math.min(...p.outer.map((q) => q[0]));
-  const minY = Math.min(...p.outer.map((q) => q[1]));
-  const lines: (string | number)[] = [0, "SECTION", 2, "HEADER", 9, "$INSUNITS", 70, 4, 0, "ENDSEC", 0, "SECTION", 2, "ENTITIES"];
-  for (const loop of [p.outer, ...p.holes]) {
-    lines.push(0, "LWPOLYLINE", 8, "0", 90, loop.length, 70, 1);
-    for (const q of loop) lines.push(10, +(q[0] - minX).toFixed(4), 20, +(q[1] - minY).toFixed(4));
-  }
-  lines.push(0, "ENDSEC", 0, "EOF");
-  return lines.join("\n") + "\n";
+  return loopsToDxf(p.outer, p.holes);
 }

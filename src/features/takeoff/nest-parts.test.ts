@@ -49,8 +49,18 @@ describe("nest parts -> Part List", () => {
       expect(list).toHaveLength(1);
       expect(list[0].bboxWidthMm).toBeCloseTo(p.w, 2);
       expect(list[0].bboxHeightMm).toBeCloseTo(p.h, 2);
-      expect(list[0].areaSqm * 1e6).toBeCloseTo(p.area, 0);
+      // a round contour is written as a true circle, so its area can differ from the polygon's by a hair
+      expect(Math.abs(list[0].areaSqm * 1e6 - p.area) / p.area).toBeLessThan(1e-4);
       expect(list[0].holes).toHaveLength(p.holes.length);
+    }
+  });
+
+  it("the DXF names its version and uses entities every CAD version opens (no LWPOLYLINE)", () => {
+    for (const p of parseNestParts(snapshot)) {
+      const dxf = nestPartToDxf(p);
+      expect(dxf).toContain("$ACADVER\n1\nAC1009");
+      expect(dxf).not.toContain("LWPOLYLINE");
+      expect(dxf).toMatch(/\nCIRCLE\n|\nPOLYLINE\n/);
     }
   });
 });

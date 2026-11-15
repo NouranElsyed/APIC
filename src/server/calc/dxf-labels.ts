@@ -8,6 +8,7 @@
 // in an editable table so the user always has the last word.
 
 import type { DxfText, DxfPartGeometry } from "./dxf";
+import { loopsToDxf } from "./dxf-out";
 
 export interface Box { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -179,15 +180,10 @@ export function assignLabels(boxes: Box[], texts: DxfText[]): PartLabels[] {
   return res;
 }
 
-/** One part as a stand-alone DXF (closed LWPOLYLINEs, mm, moved to 0,0). */
+/** One part as a stand-alone DXF (R12, mm, moved to 0,0; opens in AutoCAD). */
 export function partToDxf(part: DxfPartGeometry): string {
-  const b = boxOf(part);
-  const loops = [part.outer, ...part.holes];
-  const lines: (string | number)[] = [0, "SECTION", 2, "HEADER", 9, "$INSUNITS", 70, 4, 0, "ENDSEC", 0, "SECTION", 2, "ENTITIES"];
-  for (const loop of loops) {
-    lines.push(0, "LWPOLYLINE", 8, "0", 90, loop.length, 70, 1);
-    for (const p of loop) lines.push(10, +(p.x - b.minX).toFixed(4), 20, +(p.y - b.minY).toFixed(4));
-  }
-  lines.push(0, "ENDSEC", 0, "EOF");
-  return lines.join("\n") + "\n";
+  return loopsToDxf(
+    part.outer.map((p) => [p.x, p.y] as [number, number]),
+    part.holes.map((h) => h.map((p) => [p.x, p.y] as [number, number])),
+  );
 }
