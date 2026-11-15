@@ -75,10 +75,12 @@ Visit http://localhost:3000 — you'll be redirected to `/login`.
 
 | Name           | Role     | Email                         |
 | -------------- | -------- | ----------------------------- |
-| Nouran Elsayed | Engineer | nouran.elsayed@steelflow.com  |
-| Reham Elsayed  | Engineer | reham.elsayed@steelflow.com   |
-| Salma Mohamed  | Engineer | salma.mohamed@steelflow.com   |
+| Nouran Elsayed | Admin    | nouran.elsayed@steelflow.com  |
+| Reham Elsayed  | Admin    | reham.elsayed@steelflow.com   |
+| Salma Mohamed  | Admin    | salma.mohamed@steelflow.com   |
 | Nada Mohamed   | Engineer | nada.mohamed@steelflow.com    |
+| AbdElhamed Mohamed | Engineer | abdelhamed.mohamed@steelflow.com |
+| Mohamed Taher  | Engineer | mohamed.taher@steelflow.com   |
 
 On an existing database run `npm run db:replace-users` once to swap the old demo accounts for these.
 

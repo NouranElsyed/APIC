@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Check } from "lucide-react";
+import { Check, ChevronDown, ChevronRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -110,18 +110,24 @@ export interface PaneTab { id: string; label: React.ReactNode; content: React.Re
 
 /** Tab strip whose panes all stay MOUNTED (inactive ones are only hidden). */
 export function PaneTabs({
-  tabs, value, onValueChange, className, listClassName, paneClassName,
-}: { tabs: PaneTab[]; value: string; onValueChange: (id: string) => void; className?: string; listClassName?: string; paneClassName?: string }) {
+  tabs, value, onValueChange, className, listClassName, paneClassName, collapsible,
+}: {
+  tabs: PaneTab[]; value: string; onValueChange: (id: string) => void; className?: string; listClassName?: string; paneClassName?: string;
+  /** adds a Collapse / Expand button at the end of the tab row (open by default); every pane stays mounted while collapsed */
+  collapsible?: boolean;
+}) {
   const baseId = React.useId();
+  const [collapsed, setCollapsed] = React.useState(false);
+  const hide = collapsible && collapsed;
   return (
     <div className={className}>
-      <div role="tablist" className={cn("flex gap-1 border-b border-border", listClassName)}>
+      <div role="tablist" className={cn("flex items-center gap-1 border-b border-border", hide && "border-b-0", listClassName)}>
         {tabs.map((t) => {
-          const active = t.id === value;
+          const active = t.id === value && !hide;
           return (
             <button
               key={t.id} type="button" role="tab" id={`${baseId}-tab-${t.id}`} aria-selected={active} aria-controls={`${baseId}-pane-${t.id}`}
-              onClick={() => onValueChange(t.id)}
+              onClick={() => { onValueChange(t.id); setCollapsed(false); }}
               className={cn(
                 "-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 active ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground",
@@ -131,9 +137,19 @@ export function PaneTabs({
             </button>
           );
         })}
+        {collapsible && (
+          <button
+            type="button" onClick={() => setCollapsed((v) => !v)} aria-expanded={!collapsed}
+            title={collapsed ? "Expand" : "Collapse"}
+            className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            {collapsed ? "Expand" : "Collapse"}
+          </button>
+        )}
       </div>
       {tabs.map((t) => (
-        <div key={t.id} role="tabpanel" id={`${baseId}-pane-${t.id}`} aria-labelledby={`${baseId}-tab-${t.id}`} hidden={t.id !== value} className={paneClassName}>
+        <div key={t.id} role="tabpanel" id={`${baseId}-pane-${t.id}`} aria-labelledby={`${baseId}-tab-${t.id}`} hidden={t.id !== value || hide} className={paneClassName}>
           {t.content}
         </div>
       ))}

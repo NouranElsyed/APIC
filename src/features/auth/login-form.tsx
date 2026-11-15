@@ -22,6 +22,8 @@ const DEMO_USERS = [
   { name: "Reham Elsayed", email: "reham.elsayed@steelflow.com" },
   { name: "Salma Mohamed", email: "salma.mohamed@steelflow.com" },
   { name: "Nada Mohamed", email: "nada.mohamed@steelflow.com" },
+  { name: "AbdElhamed Mohamed", email: "abdelhamed.mohamed@steelflow.com" },
+  { name: "Mohamed Taher", email: "mohamed.taher@steelflow.com" },
 ];
 
 export function LoginForm() {

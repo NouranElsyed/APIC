@@ -1156,6 +1156,27 @@ function GapInputs({ mg, gp, disabled, onApply }: { mg: string; gp: string; disa
   );
 }
 
+/** A titled block of the results with a header that collapses / expands it (open by default). */
+function ResultSection({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(true);
+  return (
+    <section className="mt-4 overflow-hidden rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-muted/40 px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60"
+      >
+        {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+        {title}
+        {hint && <span className="text-xs font-normal text-muted-foreground">{hint}</span>}
+        <span className="ml-auto text-[11px] font-normal text-muted-foreground">{open ? "Collapse" : "Expand"}</span>
+      </button>
+      {open && <div className="p-3">{children}</div>}
+    </section>
+  );
+}
+
 export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const { projectId, nestingQueue, clearNestingQueue, ensureWorkspace, consumeFresh, workspaceId, workspaceLabel } = useTakeoffProject();
   const [reporting, setReporting] = React.useState(false);
@@ -1332,23 +1353,9 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
   const sheetCount = result?.sheets.length ?? 0;
   const fs = fsIdx !== null && fsIdx < sheetCount ? fsIdx : null; // a deleted sheet closes it
 
-  // How the sheets are shown on the page: all stacked under each other, or a TruTops-style strip of sheet
-  // pictures with only the selected sheet open below it (remembered between visits).
-  const [sheetView, setSheetViewRaw] = React.useState<"stack" | "strip">(() => {
-    try {
-      return typeof window !== "undefined" && window.localStorage.getItem("nest-sheet-view") === "strip" ? "strip" : "stack";
-    } catch {
-      return "stack";
-    }
-  });
-  const setSheetView = (v: "stack" | "strip") => {
-    setSheetViewRaw(v);
-    try {
-      window.localStorage.setItem("nest-sheet-view", v);
-    } catch {
-      /* private mode etc. — just don't remember */
-    }
-  };
+  // Sheets are always shown as a TruTops-style strip of sheet pictures with only the selected sheet open below it
+  // (the old "All sheets" stacked view was removed).
+  const sheetView = "strip" as "stack" | "strip";
   const [activeSheet, setActiveSheet] = React.useState(0);
   const act = Math.min(activeSheet, Math.max(0, sheetCount - 1));
   React.useEffect(() => {
@@ -3049,17 +3056,6 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           )}
           {/* fixed-height slot: the selection / held-part bar appears here without pushing the sheets down */}
           {actionBar}
-          {result && resS && (
-            <div className="mb-2 flex items-center gap-1 text-xs text-muted-foreground">
-              Sheet view
-              <Button variant={sheetView === "stack" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("stack")} title="Show every sheet under each other">
-                All sheets
-              </Button>
-              <Button variant={sheetView === "strip" ? "default" : "outline"} size="sm" className="h-7" onClick={() => setSheetView("strip")} title="Show a strip of sheet pictures (like TruTops) and open one sheet at a time">
-                Sheet strip
-              </Button>
-            </div>
-          )}
           {result && resS && sheetView === "strip" && (
             <SheetStrip
               sheets={result.sheets} S={resS} version={version} active={act}
@@ -3230,13 +3226,16 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
           </div>
           {kpi && result && resS && (
             <>
-              <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <ResultSection title="Results summary" hint={`${kpi.sheets} sheet(s) · ${kpi.util.toFixed(1)}% utilization`}>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <KpiTile icon={<Layers />} label="Sheets required" value={kpi.sheets} hint={kpi.sheets === 1 ? "sheet in this nest" : "sheets in this nest"} />
                 <KpiTile tone="success" icon={<Gauge />} label="Material utilization" value={`${kpi.util.toFixed(1)}%`} progress={kpi.util} />
                 <KpiTile tone="violet" icon={<Recycle />} label="Waste" value={`${kpi.waste.toFixed(1)}%`} hint="unused sheet area" />
                 <KpiTile tone={kpi.left > 0 ? "warning" : "primary"} icon={<PackageCheck />} label="Parts placed" value={kpi.parts} hint={kpi.left > 0 ? `${kpi.left} left to place` : "nothing left to place"} />
               </div>
-              <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+              </ResultSection>
+              <ResultSection title="Sheets" hint={`${result.sheets.length} sheet(s)`}>
+              <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full border-collapse text-xs">
                   <thead className="bg-muted/40 text-left text-muted-foreground">
                     <tr>
@@ -3285,6 +3284,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
                   </tbody>
                 </table>
               </div>
+              </ResultSection>
             </>
           )}
           <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
@@ -3319,6 +3319,7 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             <PaneTabs
               value={mainTab}
               onValueChange={(v) => setMainTab(v as "parts" | "saved")}
+              collapsible
               listClassName="px-2 pt-1"
               paneClassName="p-3 sm:p-4"
               tabs={[
