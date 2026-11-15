@@ -69,7 +69,7 @@ export interface EligibleNestingParts {
 
 export async function getEligibleNestingParts(projectId: string): Promise<EligibleNestingParts> {
   const parts = await prisma.takeoffPart.findMany({
-    where: { drawing: { projectId } },
+    where: { drawing: { projectId }, partType: { not: "ACCESSORY" } },
     include: { dxf: true, drawing: { select: { id: true, drawingNumber: true, title: true } } },
     orderBy: [{ drawing: { drawingNumber: "asc" } }, { itemNo: "asc" }],
   });

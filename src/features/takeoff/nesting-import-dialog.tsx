@@ -94,7 +94,10 @@ export function NestingImportDialog({
 
   // a part already taken into this drawing (same name and thickness) is not offered twice
   const taken = new Set((targetDrawing?.parts ?? []).map((p) => `${p.description.trim().toLowerCase()}|${p.thicknessMm ?? 0}`));
-  const isTaken = (r: Row) => taken.has(`${nestPartDescription(r).toLowerCase()}|${Number(r.thk) || 0}`);
+  // plates already linked to a part of THIS project's nest are never offered again (the link, not the name, decides)
+  const linkedIds = new Set(drawings.flatMap((d) => d.parts).filter((p) => p.nestKind === "2D" && p.nestPartId !== null).map((p) => p.nestPartId));
+  const isTaken = (r: Row) =>
+    (source === "project" && linkedIds.has(r.id)) || taken.has(`${nestPartDescription(r).toLowerCase()}|${Number(r.thk) || 0}`);
   const pick = rows.filter((r) => r.checked && r.status !== "done" && !isTaken(r));
   const noThk = pick.filter((r) => !(Number(r.thk) > 0)).length;
   const selectable = rows.filter((r) => r.status !== "done" && !isTaken(r));
@@ -135,6 +138,8 @@ export function NestingImportDialog({
             thicknessMm: Number(r.thk) > 0 ? Number(r.thk) : null,
             paintSides: 2,
             material: r.material || "Steel",
+            // only the project's own nest can be synced later; a history entry has no link to this project
+            ...(source === "project" ? { nestPartId: r.id } : {}),
           },
         ]),
       );

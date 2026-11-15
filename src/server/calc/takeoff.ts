@@ -30,7 +30,7 @@ import { evalFormula, FormulaError } from "./formula";
 
 export const STEEL_DENSITY_KG_PER_M2_MM = 7.85;
 
-export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
+export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE" | "ACCESSORY";
 export type PartSide = "INTERNAL" | "EXTERNAL";
 
 export interface PlateGeometry {
@@ -54,7 +54,13 @@ export interface HotRolledGeometry {
   paintAreaPerMeter?: number | null; // m2/m, optional
 }
 
-export type TakeoffGeometry = PlateGeometry | ConeGeometry | PipeGeometry | HotRolledGeometry;
+// Bought-out item: priced per unit (pcs / m / set...), never per kg. Weight is optional.
+export interface AccessoryGeometry {
+  unit: string;
+  unitWeightKg?: number | null;
+}
+
+export type TakeoffGeometry = PlateGeometry | ConeGeometry | PipeGeometry | HotRolledGeometry | AccessoryGeometry;
 
 export interface TakeoffPartInput {
   partType: PartType;
@@ -97,6 +103,7 @@ export function buildDefaultAreaFormula(partType: PartType, geometry: Record<str
     case "PIPE":
       return "PI()*od*length";
     case "HOT_ROLLED":
+    case "ACCESSORY":
     default:
       return "";
   }
@@ -124,7 +131,10 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
   let paintAreaSqm = 0;
   let formulaError: string | null = null;
 
-  if (input.partType === "HOT_ROLLED") {
+  if (input.partType === "ACCESSORY") {
+    // No area, no paint, no scrap: only a (possibly unknown) weight.
+    weightKg = n(g.unitWeightKg) * qty;
+  } else if (input.partType === "HOT_ROLLED") {
     const weightPerMeter = n(g.weightPerMeter);
     const length = n(g.length);
     weightKg = weightPerMeter * length * qty;
@@ -144,7 +154,7 @@ export function computeTakeoffPart(input: TakeoffPartInput): TakeoffPartComputed
     paintAreaSqm = totalArea * paintSides;
   }
 
-  const buyWeightKg = typeof input.buyWeightKg === "number" && Number.isFinite(input.buyWeightKg)
+  const buyWeightKg = input.partType !== "ACCESSORY" && typeof input.buyWeightKg === "number" && Number.isFinite(input.buyWeightKg)
     ? input.buyWeightKg
     : null;
   const scrapKg = buyWeightKg !== null ? buyWeightKg - weightKg : null;
@@ -170,6 +180,15 @@ export function explainTakeoffPart(input: TakeoffPartInput): TakeoffPartExplanat
   const thk = n(input.thicknessMm);
   const paintSides = input.paintSides === 1 ? 1 : 2;
   const lines: TakeoffPartExplanation["lines"] = [];
+
+  if (input.partType === "ACCESSORY") {
+    const g = (input.geometry ?? {}) as Record<string, unknown>;
+    const unitWeight = n(g.unitWeightKg);
+    lines.push(unitWeight > 0
+      ? { label: "Weight (unit weight × qty)", formula: `${fmtNum(unitWeight)} × ${qty}`, result: `${fmtNum(c.weightKg, 2)} kg` }
+      : { label: "Weight", formula: "no unit weight entered", result: "not counted" });
+    return { lines };
+  }
 
   if (input.partType === "HOT_ROLLED") {
     const g = (input.geometry ?? {}) as Record<string, unknown>;

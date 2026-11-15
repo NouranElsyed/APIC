@@ -158,6 +158,7 @@ model Project {
   documentFolders   DocumentFolder[]
   purchaseOrders    PurchaseOrder[]
   workOrders        WorkOrder[]
+  partGroups        PartGroup[]
 
   // ---------------------------------------------------------------------
   // Phase 2 extension point (do not remove): future models such as
@@ -263,6 +264,22 @@ model TakeoffPart {
   drawingId String
   drawing   TakeoffDrawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
 
+  // Assembly grouping (BOQ). `qty` stays the TOTAL quantity and is recomputed server-side as
+  // effective group qty x qtyPerAssembly whenever the part is grouped.
+  groupId        String?
+  group          PartGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  posNo          String?
+  qtyPerAssembly Int        @default(1)
+  remark         String?
+
+  // Link to the part of the project's nesting workspace this part came from (the workspace is unique per
+  // project + kind, so kind + part id is enough). `nestSyncedQty` is the quantity both sides had at the last sync:
+  // comparing it with each side's current quantity tells WHO changed (see src/server/calc/nest-sync.ts).
+  nestKind      String? // "2D"
+  nestPartId    Int?
+  nestSyncedQty Int?
+  nestSyncedAt  DateTime?
+
   // Optional DXF Nesting extension (Phase 1) — a TakeoffPart works exactly
   // as before whether or not these are ever populated.
   dxf               PartDxf?
@@ -271,7 +288,38 @@ model TakeoffPart {
   // runs. onDelete: Restrict on the placement side — see NestingPlacement.
   nestingPlacements NestingPlacement[] @relation("TakeoffPartNestingPlacements")
 
+  @@index([groupId])
+  @@index([nestKind, nestPartId])
   @@map("takeoff_parts")
+}
+
+// BOQ assemblies. Drawing -> Assembly (PartGroup) -> Part. Groups can nest (a hatch inside a wall):
+//   - without a parent, `qty` is the number of assemblies of this kind in the project;
+//   - with a parent, `qty` is the number needed PER parent assembly.
+// Effective quantity = qty x the parent's effective quantity (see src/server/calc/boq-groups.ts).
+model PartGroup {
+  id        String   @id @default(cuid())
+  code      String
+  name      String
+  dwgNo     String?
+  qty       Int      @default(1)
+  remark    String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  parentId String?
+  parent   PartGroup?  @relation("PartGroupTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children PartGroup[] @relation("PartGroupTree")
+
+  parts TakeoffPart[]
+
+  @@unique([projectId, code])
+  @@index([projectId, sortOrder])
+  @@map("part_groups")
 }
 
 enum PartType {
@@ -279,6 +327,10 @@ enum PartType {
   HOT_ROLLED
   CONE
   PIPE
+  // Bought-out item (bolts, hinges, gaskets, insulation...). Never nested, never part of the steel
+  // material usage / scrap figures and not fabricated, so it gets no work order of its own.
+  // Its shape lives in `geometry`: { unit: "pcs" | "m" | "set"..., unitWeightKg?: number }.
+  ACCESSORY
 }
 
 enum PartSide {
@@ -795,6 +847,8 @@ model NestingWorkspace {
   id        String   @id @default(cuid())
   kind      String // "2D" | "1D"
   dataJson  Json
+  // Bumped by every save. A save that names an older version is refused (see nesting-workspace.service).
+  version   Int      @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

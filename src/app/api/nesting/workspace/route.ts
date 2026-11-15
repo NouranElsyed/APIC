@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/server/api/guard";
-import { getWorkspace, saveWorkspace, type WorkspaceKind } from "@/server/services/nesting-workspace.service";
+import { getWorkspace, getWorkspaceVersion, saveWorkspace, type WorkspaceKind } from "@/server/services/nesting-workspace.service";
 import { getHistoryData, saveHistoryData } from "@/server/services/nesting-history.service";
 
 const kindOf = (v: unknown): WorkspaceKind | null => (v === "2D" || v === "1D" ? v : null);
@@ -18,8 +18,10 @@ export async function GET(req: NextRequest) {
     if (h === undefined) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(h.data ? { data: h.data, updatedAt: h.updatedAt } : { data: null });
   }
+  // ?versionOnly=1: a cheap poll so an open tab notices that the nest was changed from the BOQ
+  if (req.nextUrl.searchParams.get("versionOnly") === "1") return NextResponse.json({ version: await getWorkspaceVersion(projectId!, kind) });
   const ws = await getWorkspace(projectId!, kind);
-  return NextResponse.json(ws ? { data: ws.dataJson, updatedAt: ws.updatedAt } : { data: null });
+  return NextResponse.json(ws ? { data: ws.dataJson, updatedAt: ws.updatedAt, version: ws.version } : { data: null, version: null });
 }
 
 export async function PUT(req: NextRequest) {
@@ -36,6 +38,9 @@ export async function PUT(req: NextRequest) {
     if (!(await saveHistoryData(session!.user.id, historyId, kind, body.data))) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ ok: true, updatedAt: new Date().toISOString() });
   }
-  const saved = await saveWorkspace(projectId!, kind, body.data, session!.user.id);
-  return NextResponse.json({ ok: true, updatedAt: saved.updatedAt });
+  const baseVersion = Number.isInteger(body?.baseVersion) ? (body.baseVersion as number) : undefined;
+  const saved = await saveWorkspace(projectId!, kind, body.data, session!.user.id, baseVersion);
+  // 409: the nest changed on the server since this tab loaded it (e.g. a quantity synced from the BOQ)
+  if (!saved.ok) return NextResponse.json({ error: "STALE", version: saved.version }, { status: 409 });
+  return NextResponse.json({ ok: true, updatedAt: saved.updatedAt, version: saved.version });
 }

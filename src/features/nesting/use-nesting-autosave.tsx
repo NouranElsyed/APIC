@@ -3,7 +3,7 @@ import * as React from "react";
 import { CheckCircle2, CloudOff, Loader2 } from "lucide-react";
 import { useTakeoffProject } from "@/features/takeoff/project-context";
 
-export type AutosaveState = "idle" | "loading" | "saving" | "saved" | "error";
+export type AutosaveState = "idle" | "loading" | "saving" | "saved" | "error" | "reloaded";
 
 interface Options {
   kind: "2D" | "1D";
@@ -49,13 +49,28 @@ export function useNestingAutosave(opts: Options) {
   const lastBody = React.useRef("");
   const prevProject = React.useRef("");
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // version of the project workspace this tab last loaded / saved (history entries are not versioned)
+  const version = React.useRef<number | null>(null);
+
+  // Reads the workspace again and puts it into the tool — used when the server copy moved on (e.g. the BOQ changed a quantity).
+  const reload = React.useCallback(async (pid: string) => {
+    const res = await fetch(`/api/nesting/workspace?${scopeQuery(pid)}&kind=${kind}`);
+    if (!res.ok) throw new Error(String(res.status));
+    const json = (await res.json()) as { data: unknown | null; version?: number | null };
+    if (loadedFor.current !== pid) return;
+    if (json.data) { latest.current.restore(json.data); lastBody.current = JSON.stringify(json.data); }
+    version.current = json.version ?? null;
+    dirty.current = false;
+    setState("reloaded");
+  }, [kind]);
 
   const save = React.useCallback(async (pid: string, keepalive = false) => {
     if (!pid || loadedFor.current !== pid) return;
     const data = JSON.stringify(latest.current.capture());
     if (data === lastBody.current) { dirty.current = false; return; }
     const scope = JSON.stringify(scopeParam(pid)).slice(1, -1); // "projectId":"…"  or  "historyId":"…"
-    const body = `{${scope},"kind":"${kind}","data":${data}}`;
+    const baseVersion = !pid.startsWith("h:") && version.current !== null ? `,"baseVersion":${version.current}` : "";
+    const body = `{${scope},"kind":"${kind}"${baseVersion},"data":${data}}`;
     setState("saving");
     try {
       const res = await fetch("/api/nesting/workspace", {
@@ -64,7 +79,14 @@ export function useNestingAutosave(opts: Options) {
         body,
         keepalive: keepalive && body.length < 60000,
       });
+      if (res.status === 409) {
+        // The server copy is newer (a quantity was synced from the BOQ): take it instead of overwriting it.
+        await reload(pid);
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
+      const saved = (await res.json().catch(() => null)) as { version?: number } | null;
+      if (typeof saved?.version === "number") version.current = saved.version;
       lastBody.current = data;
       dirty.current = false;
       if (loadedFor.current !== pid) return; // the user already moved on to another workspace
@@ -73,7 +95,7 @@ export function useNestingAutosave(opts: Options) {
     } catch {
       if (loadedFor.current === pid) setState("error");
     }
-  }, [kind]);
+  }, [kind, reload]);
 
   // "Save as project" asks every open tool to write its pending changes first.
   const flushNow = React.useCallback(async () => {
@@ -99,8 +121,9 @@ export function useNestingAutosave(opts: Options) {
     setState("loading");
     fetch(`/api/nesting/workspace?${scopeQuery(projectId)}&kind=${kind}`)
       .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
-      .then((json: { data: unknown | null }) => {
+      .then((json: { data: unknown | null; version?: number | null }) => {
         if (cancelled) return;
+        version.current = json.version ?? null;
         if (json.data) {
           latest.current.restore(json.data);
           lastBody.current = JSON.stringify(json.data);
@@ -134,6 +157,21 @@ export function useNestingAutosave(opts: Options) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, save, ...deps]);
 
+  // While nothing is pending, notice (every 15 s) that the project's nest changed on the server and load it.
+  React.useEffect(() => {
+    if (!projectId || projectId.startsWith("h:")) return;
+    const id = setInterval(async () => {
+      if (loadedFor.current !== projectId || dirty.current || latest.current.busy?.() || version.current === null) return;
+      try {
+        const r = await fetch(`/api/nesting/workspace?${scopeQuery(projectId)}&kind=${kind}&versionOnly=1`);
+        if (!r.ok) return;
+        const { version: v } = (await r.json()) as { version: number | null };
+        if (v !== null && version.current !== null && v > version.current && !dirty.current) await reload(projectId);
+      } catch { /* the next tick tries again */ }
+    }, 15000);
+    return () => clearInterval(id);
+  }, [projectId, kind, reload]);
+
   // Leaving the page / closing the tab: save what is pending.
   React.useEffect(() => {
     const flush = () => { if (dirty.current) void save(prevProject.current, true); };
@@ -151,6 +189,8 @@ export function AutosaveBadge({ state, savedAt, projectLabel }: { state: Autosav
     <p className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
       {state === "saving" || state === "loading" ? (
         <><Loader2 className="h-3.5 w-3.5 animate-spin" /> {state === "loading" ? "Loading saved nest…" : "Saving…"}</>
+      ) : state === "reloaded" ? (
+        <><CheckCircle2 className="h-3.5 w-3.5 text-amber-600" /> Updated from the BOQ — the nest was reloaded</>
       ) : state === "error" ? (
         <><CloudOff className="h-3.5 w-3.5 text-destructive" /> Auto-save failed — keep this page open and try changing something again</>
       ) : (

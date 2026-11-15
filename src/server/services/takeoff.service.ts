@@ -2,26 +2,33 @@ import { prisma } from "@/server/db/client";
 import { computeTakeoffPart, buildDefaultAreaFormula } from "@/server/calc/takeoff";
 import type { TakeoffDrawingInput, TakeoffPartInputData } from "@/server/validators/takeoff";
 import { logActivity } from "./activity-log.service";
+import { resolvePartQty } from "./part-group.service";
 
 // computeTakeoffPart() returns a `formulaError` field for the UI's benefit —
 // it isn't a persisted column, so it's stripped out before every write.
 // The area formula is resolved to whatever was actually used (falling back
 // to the type's default) so the stored value always matches the numbers,
 // and stays editable Excel-style afterwards.
-function persistedFields(data: TakeoffPartInputData) {
-  const resolvedAreaFormula = data.partType === "HOT_ROLLED"
+function persistedFields(data: TakeoffPartInputData, qty: number) {
+  const resolvedAreaFormula = data.partType === "HOT_ROLLED" || data.partType === "ACCESSORY"
     ? null
     : (data.areaFormula?.trim() || buildDefaultAreaFormula(data.partType, data.geometry));
   const { formulaError: _formulaError, unitArea: _unitArea, ...computed } = computeTakeoffPart({
     partType: data.partType,
     geometry: data.geometry,
-    qty: data.qty,
+    qty,
     thicknessMm: data.thicknessMm ?? null,
     paintSides: data.paintSides,
     areaFormula: resolvedAreaFormula,
     buyWeightKg: data.buyWeightKg,
   });
   return { resolvedAreaFormula, computed };
+}
+
+async function projectOfDrawing(drawingId: string) {
+  const drawing = await prisma.takeoffDrawing.findUnique({ where: { id: drawingId }, select: { projectId: true } });
+  if (!drawing) throw new Error("NOT_FOUND");
+  return drawing.projectId;
 }
 
 export async function listDrawingsForProject(projectId: string) {
@@ -65,59 +72,56 @@ export async function deleteDrawing(id: string, userId: string) {
   return drawing;
 }
 
+// A grouped part's quantity is always derived from its assembly (group qty x qtyPerAssembly); the qty the client
+// sent only counts for an ungrouped part.
 export async function createPart(data: TakeoffPartInputData, userId: string) {
-  const { resolvedAreaFormula, computed } = persistedFields(data);
+  const groupId = data.groupId ?? null;
+  const qtyPerAssembly = data.qtyPerAssembly ?? 1;
+  const qty = groupId ? await resolvePartQty(await projectOfDrawing(data.drawingId), groupId, qtyPerAssembly, data.qty) : data.qty;
+  const { resolvedAreaFormula, computed } = persistedFields(data, qty);
   const part = await prisma.takeoffPart.create({
     data: {
-      drawingId: data.drawingId,
-      itemNo: data.itemNo,
-      description: data.description,
-      material: data.material ?? null,
-      partType: data.partType,
-      side: data.side,
-      qty: data.qty,
-      thicknessMm: data.thicknessMm ?? null,
-      geometry: data.geometry,
-      areaFormula: resolvedAreaFormula,
-      paintSides: data.paintSides,
-      ...computed,
+      drawingId: data.drawingId, itemNo: data.itemNo, description: data.description, material: data.material ?? null,
+      partType: data.partType, side: data.side,
+      groupId, posNo: data.posNo?.trim() || null, qtyPerAssembly, remark: data.remark?.trim() || null,
+      qty, thicknessMm: data.thicknessMm ?? null, geometry: data.geometry, areaFormula: resolvedAreaFormula,
+      paintSides: data.paintSides, ...computed,
     },
   });
-  await logActivity({
-    userId,
-    action: "CREATE",
-    entity: "TAKEOFF_PART",
-    entityId: part.id,
-    detail: part.description,
-  });
+  await logActivity({ userId, action: "CREATE", entity: "TAKEOFF_PART", entityId: part.id, detail: part.description });
   return part;
 }
 
 export async function updatePart(id: string, data: TakeoffPartInputData, userId: string) {
-  const { resolvedAreaFormula, computed } = persistedFields(data);
+  const existing = await prisma.takeoffPart.findUnique({
+    where: { id },
+    select: { drawingId: true, groupId: true, qtyPerAssembly: true, posNo: true, remark: true, qty: true, nestPartId: true },
+  });
+  if (!existing) throw new Error("NOT_FOUND");
+
+  // Fields left out of the payload keep their stored value; groupId: null un-groups.
+  const groupId = data.groupId === undefined ? existing.groupId : data.groupId;
+  const qtyPerAssembly = data.qtyPerAssembly ?? existing.qtyPerAssembly;
+  const posNo = data.posNo === undefined ? existing.posNo : data.posNo?.trim() || null;
+  const remark = data.remark === undefined ? existing.remark : data.remark?.trim() || null;
+
+  const qty = groupId ? await resolvePartQty(await projectOfDrawing(existing.drawingId), groupId, qtyPerAssembly, data.qty) : data.qty;
+  const { resolvedAreaFormula, computed } = persistedFields(data, qty);
   const part = await prisma.takeoffPart.update({
     where: { id },
     data: {
-      itemNo: data.itemNo,
-      description: data.description,
-      material: data.material ?? null,
-      partType: data.partType,
-      side: data.side,
-      qty: data.qty,
-      thicknessMm: data.thicknessMm ?? null,
-      geometry: data.geometry,
-      areaFormula: resolvedAreaFormula,
-      paintSides: data.paintSides,
-      ...computed,
+      itemNo: data.itemNo, description: data.description, material: data.material ?? null,
+      partType: data.partType, side: data.side,
+      groupId, posNo, qtyPerAssembly, remark,
+      qty, thicknessMm: data.thicknessMm ?? null, geometry: data.geometry, areaFormula: resolvedAreaFormula,
+      paintSides: data.paintSides, ...computed,
     },
   });
-  await logActivity({
-    userId,
-    action: "UPDATE",
-    entity: "TAKEOFF_PART",
-    entityId: part.id,
-    detail: part.description,
-  });
+  await logActivity({ userId, action: "UPDATE", entity: "TAKEOFF_PART", entityId: part.id, detail: part.description });
+  // a quantity changed on a plate that came from the nest: carry it over (best effort, never fails the edit)
+  if (existing.nestPartId !== null && existing.qty !== qty) {
+    await (await import("./nest-sync.service")).autoSyncAfterBoqChange(await projectOfDrawing(existing.drawingId), userId);
+  }
   return part;
 }
 

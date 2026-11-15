@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X, PackagePlus } from "lucide-react";
+import { Plus, Trash2, Ruler, FolderKanban, Layers, Filter, X, PackagePlus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,6 +9,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DrawingForm } from "./drawing-form";
 import { NestingImportDialog } from "./nesting-import-dialog";
 import { PartsGrid } from "./parts-grid";
+import { BoqPanel } from "./boq-panel";
 import { useTakeoffProject } from "./project-context";
 import type { TakeoffDrawingRow, TakeoffPartRow, PartType, PartSide } from "./types";
 import { toast } from "sonner";
@@ -26,6 +27,7 @@ const PART_TYPE_LABEL: Record<PartType, string> = {
   HOT_ROLLED: "Hot Rolled",
   CONE: "Cone",
   PIPE: "Pipe",
+  ACCESSORY: "Accessory",
 };
 
 interface Filters {
@@ -74,6 +76,30 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
 
   const selectedProject = projects.find((p) => p.id === projectId);
 
+  const [syncing, setSyncing] = React.useState(false);
+  // Pulls quantity changes made in the 2D nest into the BOQ; everything that needs a decision is listed, not guessed.
+  async function syncWithNest() {
+    setSyncing(true);
+    const res = await fetch("/api/takeoff/nest-sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }) }).catch(() => null);
+    setSyncing(false);
+    if (!res?.ok) { toast.error("Could not sync with the nest"); return; }
+    const r = (await res.json()) as { hasNest: boolean; applied: number; pushed: number; summary: { boq_changed: number; conflict: number; orphan: number; unlinked: number }; items: { status: string; label: string; reason?: string }[] };
+    if (!r.hasNest) { toast.info("This project has no saved 2D nest yet"); return; }
+    if (r.applied || r.pushed) loadDrawings(projectId);
+    const issues = r.items.filter((i) => i.status === "conflict" || i.status === "orphan" || i.status === "boq_changed");
+    const lines = [
+      r.summary.conflict ? `${r.summary.conflict} conflict(s) need a decision` : "",
+      r.summary.boq_changed ? `${r.summary.boq_changed} changed in the BOQ but not yet in the nest` : "",
+      r.summary.orphan ? `${r.summary.orphan} no longer in the nest` : "",
+      r.summary.unlinked ? `${r.summary.unlinked} nest part(s) not in the BOQ yet` : "",
+    ].filter(Boolean);
+    const detail = [...lines, ...issues.slice(0, 4).map((i) => `• ${i.label}: ${i.reason ?? i.status}`)].join("\n");
+    const moved = [r.applied ? `${r.applied} quantity change(s) taken from the nest` : "", r.pushed ? `${r.pushed} written into the nest` : ""].filter(Boolean).join(" · ");
+    if (moved) toast.success(moved, { description: detail || undefined });
+    else if (lines.length) toast.warning("Nest and BOQ are not fully in step", { description: detail });
+    else toast.success("Nest and BOQ are in step");
+  }
+
   async function handleDeleteDrawing() {
     if (!deletingDrawing) return;
     setDeleteLoading(true);
@@ -109,6 +135,9 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
     <div className="space-y-6">
       {canCreate && (
         <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={syncWithNest} disabled={!projectId || syncing} title="Bring quantity changes made in the 2D nest into this list and show what still differs">
+            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} /> Sync with nest
+          </Button>
           <Button
             variant="outline"
             onClick={() => setNestImport((n) => ({ open: true, key: n.key + 1 }))}
@@ -174,6 +203,10 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
             <span>Total Internal: <span className="font-semibold text-foreground">{fmt(grandInternalWeight, 1)} kg</span></span>
           </div>
         </div>
+      )}
+
+      {projectId && drawings.length > 0 && (
+        <BoqPanel projectId={projectId} drawings={drawings} canCreate={canCreate} canDelete={canDelete} refreshKey={drawings} onChanged={() => loadDrawings(projectId)} />
       )}
 
       {!projectId ? (

@@ -12,6 +12,8 @@ const itemSchema = z.object({
   thicknessMm: z.number().positive().nullable(),
   paintSides: z.union([z.literal(1), z.literal(2)]),
   material: z.string(),
+  // set when the plate comes from the project's 2D nest: links it to that nest part
+  nestPartId: z.number().int().nonnegative().optional(),
 });
 
 // POST multipart: `file` (.dxf) + `items` (JSON array, one entry per part to

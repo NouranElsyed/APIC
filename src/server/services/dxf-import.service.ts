@@ -10,7 +10,7 @@ export interface DxfImportItem extends ImportRowConfig {
   /** Index in the deterministic part list of the file (see importableParts). */
   partIndex: number;
 }
-export interface DxfImportResult { partIndex: number; ok: boolean; error?: string }
+export interface DxfImportResult { partIndex: number; ok: boolean; error?: string; skipped?: boolean }
 
 // One DXF file -> one takeoff part per selected contour (+ each part's own DXF).
 // A file with several contours (a sheet with labelled parts) is split: every
@@ -35,6 +35,14 @@ export async function importDxfParts(
   const results: DxfImportResult[] = [];
   for (const item of items) {
     try {
+      // Idempotent: a nest part that is already linked to a plate of this project is never created twice.
+      if (item.nestPartId !== undefined) {
+        const dup = await prisma.takeoffPart.findFirst({
+          where: { drawing: { projectId: drawing.projectId }, nestKind: "2D", nestPartId: item.nestPartId },
+          select: { id: true },
+        });
+        if (dup) { results.push({ partIndex: item.partIndex, ok: true, skipped: true }); continue; }
+      }
       const part = list[item.partIndex];
       if (!part) throw new Error("Part not found in file");
       const built = buildPartFromDxf(sizeOfPart(part), { ...item, partType: "PLATE" });
@@ -51,6 +59,12 @@ export async function importDxfParts(
         : new File([partToDxf(part)], `${base}_${item.partIndex + 1}.dxf`, { type: "application/dxf" });
 
       const created = await createPart(validated.data, userId);
+      if (item.nestPartId !== undefined) {
+        await prisma.takeoffPart.update({
+          where: { id: created.id },
+          data: { nestKind: "2D", nestPartId: item.nestPartId, nestSyncedQty: created.qty, nestSyncedAt: new Date() },
+        });
+      }
       try {
         await saveAndParseDxf(created.id, stored, userId);
       } catch (err) {

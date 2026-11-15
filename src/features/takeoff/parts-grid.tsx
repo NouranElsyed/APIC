@@ -25,6 +25,7 @@ const PART_TYPE_LABEL: Record<PartType, string> = {
   HOT_ROLLED: "Hot Rolled",
   CONE: "Cone",
   PIPE: "Pipe",
+  ACCESSORY: "Accessory",
 };
 
 function geometrySummary(part: TakeoffPartRow): string {
@@ -39,6 +40,8 @@ function geometrySummary(part: TakeoffPartRow): string {
       return `OD ${num(g.od) || "—"} m × L ${num(g.length) || "—"} m`;
     case "HOT_ROLLED":
       return `${String(g.profile ?? "—")}, L ${num(g.length) || "—"} m`;
+    case "ACCESSORY":
+      return `per ${String(g.unit ?? "pcs")}${num(g.unitWeightKg) > 0 ? `, ${num(g.unitWeightKg)} kg each` : ", no weight"}`;
     default:
       return "—";
   }

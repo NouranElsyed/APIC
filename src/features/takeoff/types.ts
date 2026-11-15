@@ -1,4 +1,4 @@
-export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
+export type PartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE" | "ACCESSORY";
 export type PartSide = "INTERNAL" | "EXTERNAL";
 
 export interface PartDxfInfo {
@@ -23,6 +23,14 @@ export interface TakeoffPartRow {
   material: string | null;
   partType: PartType;
   side: PartSide;
+  /** assembly this part belongs to (BOQ grouping) */
+  groupId: string | null;
+  posNo: string | null;
+  qtyPerAssembly: number;
+  remark: string | null;
+  /** link to the part of the project's 2D nest this plate came from */
+  nestKind: string | null;
+  nestPartId: number | null;
   qty: number;
   thicknessMm: number | null;
   geometry: Record<string, unknown>;

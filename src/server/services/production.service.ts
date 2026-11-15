@@ -33,7 +33,7 @@ export interface ProductionData {
 const pieceSelect = { id: true, seq: true, cutAt: true, assembledAt: true, weldedAt: true, paintedAt: true } as const;
 
 async function projectTotalKg(projectId: string) {
-  const agg = await prisma.takeoffPart.aggregate({ where: { drawing: { projectId } }, _sum: { weightKg: true } });
+  const agg = await prisma.takeoffPart.aggregate({ where: { drawing: { projectId }, partType: { not: "ACCESSORY" } }, _sum: { weightKg: true } });
   return agg._sum.weightKg ?? 0;
 }
 
@@ -43,7 +43,7 @@ export async function getProduction(projectId: string): Promise<ProductionData |
 
   const [orders, parts, totalKg, schedule] = await Promise.all([
     prisma.workOrder.findMany({ where: { projectId }, include: { pieces: { select: pieceSelect } }, orderBy: { number: "asc" } }),
-    prisma.takeoffPart.findMany({ where: { drawing: { projectId } }, select: { id: true, itemNo: true, description: true, qty: true, weightKg: true, material: true }, orderBy: { itemNo: "asc" } }),
+    prisma.takeoffPart.findMany({ where: { drawing: { projectId }, partType: { not: "ACCESSORY" } }, select: { id: true, itemNo: true, description: true, qty: true, weightKg: true, material: true }, orderBy: { itemNo: "asc" } }),
     projectTotalKg(projectId),
     prisma.planSchedule.findUnique({ where: { projectId }, select: { wbs: { select: { id: true, code: true, name: true, parentId: true, sortOrder: true }, orderBy: [{ code: "asc" }] }, activities: { select: { id: true, type: true, wbsId: true } } } }),
   ]);
@@ -93,7 +93,7 @@ async function createOne(projectId: string, part: { id: string; itemNo: number; 
 
 /** One work order per takeoff part that has none yet (all of them, or the given ones). */
 export async function createWorkOrders(projectId: string, opts: { partIds?: string[]; dueDate?: string | null }, by: Actor) {
-  const parts = await prisma.takeoffPart.findMany({ where: { drawing: { projectId }, ...(opts.partIds ? { id: { in: opts.partIds } } : {}) }, select: { id: true, itemNo: true, description: true, qty: true, weightKg: true, material: true }, orderBy: { itemNo: "asc" } });
+  const parts = await prisma.takeoffPart.findMany({ where: { drawing: { projectId }, partType: { not: "ACCESSORY" }, ...(opts.partIds ? { id: { in: opts.partIds } } : {}) }, select: { id: true, itemNo: true, description: true, qty: true, weightKg: true, material: true }, orderBy: { itemNo: "asc" } });
   const existing = await prisma.workOrder.findMany({ where: { projectId, partId: { in: parts.map((p) => p.id) } }, select: { partId: true } });
   const have = new Set(existing.map((e) => e.partId));
   const todo = parts.filter((p) => !have.has(p.id) && p.qty > 0);

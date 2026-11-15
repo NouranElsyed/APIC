@@ -1605,7 +1605,9 @@ export function NestBoost({ active = true }: { active?: boolean } = {}) {
             // Only plates are nested in 2D; everything else goes to the 1D tool.
             if (nestKindOf(part.partType) !== "2D") {
               if (!wanted) continue; // bulk import: silently leave 1D parts to the 1D tool
-              skipped.push(`${label}: ${part.partType} is not a plate — use the 1D tool`);
+              skipped.push(part.partType === "ACCESSORY"
+                ? `${label}: accessories are bought-out items and are not nested`
+                : `${label}: ${part.partType} is not a plate — use the 1D tool`);
               continue;
             }
             if (importedIds.current.has(part.id)) { skipped.push(`${label}: already imported`); continue; }

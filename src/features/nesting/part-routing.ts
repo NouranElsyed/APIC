@@ -4,10 +4,13 @@ import type { TakeoffPartRow } from "@/features/takeoff/types";
  * Which nesting tool a Standard Calculations part belongs to.
  *   PLATE                       -> 2D (sheet nesting, needs a DXF)
  *   HOT_ROLLED / PIPE (anything else linear) -> 1D (cut from stock bars)
+ *   ACCESSORY                   -> not nested at all
  */
-export type NestKind = "1D" | "2D";
+export type NestKind = "1D" | "2D" | "NONE";
 
+/** Accessories are bought-out items: they are never nested ("NONE"). */
 export function nestKindOf(partType: string): NestKind {
+  if (partType === "ACCESSORY") return "NONE";
   return partType === "PLATE" ? "2D" : "1D";
 }
 

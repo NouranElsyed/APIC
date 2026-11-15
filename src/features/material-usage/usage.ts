@@ -6,7 +6,7 @@
 //   scrap    = buyWeightKg - weightKg
 // Prices are inputs (EGP per kg), because the system does not store material prices per project.
 
-export type UsagePartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE";
+export type UsagePartType = "PLATE" | "HOT_ROLLED" | "CONE" | "PIPE" | "ACCESSORY";
 
 export interface UsagePart {
   partType: UsagePartType;
@@ -54,6 +54,7 @@ export function groupName(p: Pick<UsagePart, "partType" | "thicknessMm">): strin
     case "PLATE": return `Steel Plates${thk(p.thicknessMm)}`;
     case "CONE": return `Cones${thk(p.thicknessMm)}`;
     case "PIPE": return `Pipes${thk(p.thicknessMm)}`;
+    case "ACCESSORY": return "Accessories"; // never loaded by the service (bought-out items have no scrap)
     default: return "Steel Sections";
   }
 }

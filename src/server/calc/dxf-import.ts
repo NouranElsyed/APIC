@@ -39,6 +39,8 @@ export interface ImportRowConfig {
   thicknessMm: number | null;
   paintSides: 1 | 2;
   material: string;
+  /** part of the project's 2D nest this plate is created from (stored as the nest link) */
+  nestPartId?: number;
   // HOT_ROLLED only
   profile?: string;
   weightPerMeter?: number | null;

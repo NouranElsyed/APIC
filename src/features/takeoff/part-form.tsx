@@ -31,6 +31,8 @@ interface FormState {
   d1: string; d2: string; height: string; // CONE
   od: string; pipeLength: string; // PIPE
   profile: string; hrLength: string; weightPerMeter: string; paintAreaPerMeter: string; // HOT_ROLLED
+  accUnit: string; accUnitWeight: string; // ACCESSORY (bought-out: priced per unit, weight optional)
+  posNo: string; remark: string;
 }
 
 function emptyForm(itemNo: number): FormState {
@@ -50,6 +52,8 @@ function emptyForm(itemNo: number): FormState {
     d1: "", d2: "", height: "",
     od: "", pipeLength: "",
     profile: "", hrLength: "", weightPerMeter: "", paintAreaPerMeter: "",
+    accUnit: "pcs", accUnitWeight: "",
+    posNo: "", remark: "",
   };
 }
 
@@ -73,6 +77,8 @@ function fromPart(part: TakeoffPartRow): FormState {
     od: s(g.od), pipeLength: part.partType === "PIPE" ? s(g.length) : "",
     profile: s(g.profile), hrLength: part.partType === "HOT_ROLLED" ? s(g.length) : "",
     weightPerMeter: s(g.weightPerMeter), paintAreaPerMeter: s(g.paintAreaPerMeter),
+    accUnit: part.partType === "ACCESSORY" ? s(g.unit) || "pcs" : "pcs", accUnitWeight: part.partType === "ACCESSORY" ? s(g.unitWeightKg) : "",
+    posNo: part.posNo ?? "", remark: part.remark ?? "",
   };
 }
 
@@ -96,30 +102,34 @@ function buildGeometry(f: FormState): Record<string, unknown> {
         weightPerMeter: num(f.weightPerMeter),
         paintAreaPerMeter: f.paintAreaPerMeter.trim() ? num(f.paintAreaPerMeter) : null,
       };
+    case "ACCESSORY":
+      return { unit: f.accUnit.trim(), unitWeightKg: f.accUnitWeight.trim() ? num(f.accUnitWeight) : null };
   }
 }
 
 function isFormUsable(f: FormState): boolean {
   if (f.description.trim() === "" || num(f.qty) <= 0) return false;
-  if (f.partType !== "HOT_ROLLED" && num(f.thicknessMm) <= 0) return false;
+  if (f.partType !== "HOT_ROLLED" && f.partType !== "ACCESSORY" && num(f.thicknessMm) <= 0) return false;
   switch (f.partType) {
     case "PLATE": return num(f.width) > 0 && num(f.length) > 0;
     case "CONE": return num(f.d1) > 0 && num(f.d2) > 0 && num(f.height) > 0;
     case "PIPE": return num(f.od) > 0 && num(f.pipeLength) > 0;
     case "HOT_ROLLED": return f.profile.trim() !== "" && num(f.hrLength) > 0 && num(f.weightPerMeter) > 0;
+    case "ACCESSORY": return f.accUnit.trim() !== "";
   }
 }
 
 function toComputeInput(f: FormState) {
   const geometry = buildGeometry(f);
-  const areaFormula = f.partType === "HOT_ROLLED"
+  const noSheet = f.partType === "HOT_ROLLED" || f.partType === "ACCESSORY";
+  const areaFormula = noSheet
     ? null
     : (f.areaFormula.trim() || buildDefaultAreaFormula(f.partType, geometry));
   return {
     partType: f.partType,
     geometry,
     qty: num(f.qty),
-    thicknessMm: f.partType === "HOT_ROLLED" ? null : num(f.thicknessMm),
+    thicknessMm: noSheet ? null : num(f.thicknessMm),
     paintSides: Number(f.paintSides),
     areaFormula,
     buyWeightKg: f.buyWeightKg.trim() ? num(f.buyWeightKg) : null,
@@ -136,10 +146,16 @@ function toPayload(f: FormState, drawingId: string) {
     qty: num(f.qty),
     paintSides: (f.paintSides === "1" ? 1 : 2) as 1 | 2,
     buyWeightKg: f.buyWeightKg.trim() ? num(f.buyWeightKg) : null,
+    posNo: f.posNo.trim() || null,
+    remark: f.remark.trim() || null,
+    // groupId / qtyPerAssembly are deliberately not sent: the server keeps them (assemblies are managed in the BOQ groups).
   };
   const geometry = buildGeometry(f);
   if (f.partType === "HOT_ROLLED") {
     return { ...base, partType: "HOT_ROLLED" as const, thicknessMm: null, geometry };
+  }
+  if (f.partType === "ACCESSORY") {
+    return { ...base, partType: "ACCESSORY" as const, thicknessMm: null, buyWeightKg: null, geometry };
   }
   return {
     ...base,
@@ -155,6 +171,7 @@ const PART_TYPE_LABEL: Record<PartType, string> = {
   HOT_ROLLED: "Hot Rolled",
   CONE: "Cone",
   PIPE: "Pipe",
+  ACCESSORY: "Accessory",
 };
 
 export function PartForm({
@@ -187,7 +204,7 @@ export function PartForm({
   // types into it directly — same behaviour as an Excel default that gets
   // overwritten the moment you edit the cell yourself.
   const geometry = buildGeometry(f);
-  const defaultFormula = f.partType === "HOT_ROLLED" ? "" : buildDefaultAreaFormula(f.partType, geometry);
+  const defaultFormula = f.partType === "HOT_ROLLED" || f.partType === "ACCESSORY" ? "" : buildDefaultAreaFormula(f.partType, geometry);
   React.useEffect(() => {
     if (!f.areaFormulaTouched) {
       setF((prev) => (prev.areaFormula === defaultFormula ? prev : { ...prev, areaFormula: defaultFormula }));
@@ -337,8 +354,24 @@ export function PartForm({
             </div>
           )}
 
+          {f.partType === "ACCESSORY" && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Unit</Label>
+                <Input value={f.accUnit} onChange={(e) => set("accUnit", e.target.value)} placeholder="pcs, m, set…" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Unit weight (kg) — optional</Label>
+                <Input type="number" step="any" value={f.accUnitWeight} onChange={(e) => set("accUnitWeight", e.target.value)} placeholder="Leave blank if unknown" />
+              </div>
+              <p className="col-span-2 text-[11px] text-muted-foreground">
+                Bought-out item: not nested, not fabricated, priced per unit. Without a weight it adds nothing to the weight totals.
+              </p>
+            </div>
+          )}
+
           {/* Excel-style area formula — locked/read-only until the pencil is pressed, to avoid accidental edits */}
-          {f.partType !== "HOT_ROLLED" && (
+          {f.partType !== "HOT_ROLLED" && f.partType !== "ACCESSORY" && (
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Area formula (per piece, single face)</Label>
@@ -377,7 +410,8 @@ export function PartForm({
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <Label>Qty</Label>
-              <Input type="number" value={f.qty} onChange={(e) => set("qty", e.target.value)} />
+              <Input type="number" value={f.qty} onChange={(e) => set("qty", e.target.value)} disabled={!!editing?.groupId} />
+              {editing?.groupId && <p className="text-[11px] text-muted-foreground">From the assembly: {editing.qtyPerAssembly} per assembly</p>}
             </div>
             <div className="space-y-1.5">
               <Label>Side</Label>
@@ -389,15 +423,28 @@ export function PartForm({
                 </SelectContent>
               </Select>
             </div>
+            {f.partType !== "ACCESSORY" && (
+              <div className="space-y-1.5">
+                <Label>Paint</Label>
+                <Select value={f.paintSides} onValueChange={(v) => set("paintSides", v as "1" | "2")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 side</SelectItem>
+                    <SelectItem value="2">2 sides</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
-              <Label>Paint</Label>
-              <Select value={f.paintSides} onValueChange={(v) => set("paintSides", v as "1" | "2")}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1">1 side</SelectItem>
-                  <SelectItem value="2">2 sides</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Pos. no. (optional)</Label>
+              <Input value={f.posNo} onChange={(e) => set("posNo", e.target.value)} placeholder="e.g. 12" />
+            </div>
+            <div className="col-span-2 space-y-1.5">
+              <Label>Remark (optional)</Label>
+              <Input value={f.remark} onChange={(e) => set("remark", e.target.value)} placeholder="e.g. Assembly in 0518" />
             </div>
           </div>
 
@@ -407,8 +454,8 @@ export function PartForm({
               <span className="text-muted-foreground">{showEquation ? "Hide" : "Show"}</span>
             </button>
             <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-              <div><span className="text-muted-foreground">Total Area</span><div className="font-semibold tabular-nums">{usable ? computed.totalArea.toFixed(3) : "—"} m²</div></div>
-              <div><span className="text-muted-foreground">Paint Area</span><div className="font-semibold tabular-nums">{usable ? computed.paintAreaSqm.toFixed(3) : "—"} m²</div></div>
+              {f.partType !== "ACCESSORY" && <div><span className="text-muted-foreground">Total Area</span><div className="font-semibold tabular-nums">{usable ? computed.totalArea.toFixed(3) : "—"} m²</div></div>}
+              {f.partType !== "ACCESSORY" && <div><span className="text-muted-foreground">Paint Area</span><div className="font-semibold tabular-nums">{usable ? computed.paintAreaSqm.toFixed(3) : "—"} m²</div></div>}
               <div><span className="text-muted-foreground">Weight</span><div className="font-semibold tabular-nums text-primary">{usable ? computed.weightKg.toFixed(1) : "—"} kg</div></div>
             </div>
             {showEquation && (

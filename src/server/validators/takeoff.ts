@@ -21,6 +21,12 @@ const commonFields = {
   qty: z.number().int().positive(),
   paintSides: z.union([z.literal(1), z.literal(2)]).default(2),
   buyWeightKg: z.number().nonnegative().optional().nullable(),
+  // BOQ grouping. For a grouped part the server derives `qty` (group qty x qtyPerAssembly). On update, a field left
+  // OUT keeps its stored value; `groupId: null` takes the part out of its assembly.
+  groupId: z.string().min(1).optional().nullable(),
+  posNo: z.string().trim().max(40).optional().nullable(),
+  qtyPerAssembly: z.number().int().positive().optional(),
+  remark: z.string().trim().max(500).optional().nullable(),
 };
 
 const plateSchema = z.object({
@@ -71,10 +77,23 @@ const hotRolledSchema = z.object({
   areaFormula: z.string().optional().nullable(),
 });
 
+// Bought-out item: priced per unit, never nested. The weight is optional.
+const accessorySchema = z.object({
+  ...commonFields,
+  partType: z.literal("ACCESSORY"),
+  thicknessMm: z.number().positive().optional().nullable(),
+  geometry: z.object({
+    unit: z.string().trim().min(1, "Unit is required").max(20),
+    unitWeightKg: z.number().nonnegative().optional().nullable(),
+  }),
+  areaFormula: z.string().optional().nullable(),
+});
+
 export const takeoffPartSchema = z.discriminatedUnion("partType", [
   plateSchema,
   coneSchema,
   pipeSchema,
   hotRolledSchema,
+  accessorySchema,
 ]);
 export type TakeoffPartInputData = z.infer<typeof takeoffPartSchema>;

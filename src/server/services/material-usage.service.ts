@@ -26,7 +26,7 @@ export async function getMaterialUsage(projectId: string, access: { planning: bo
 
   const [parts, planning, materials, settings] = await Promise.all([
     prisma.takeoffPart.findMany({
-      where: { drawing: { projectId } },
+      where: { drawing: { projectId }, partType: { not: "ACCESSORY" } },
       select: { partType: true, material: true, thicknessMm: true, weightKg: true, buyWeightKg: true, scrapKg: true },
     }),
     access.planning ? getPlanningData(projectId) : null,
