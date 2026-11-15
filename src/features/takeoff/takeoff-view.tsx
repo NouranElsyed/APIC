@@ -75,20 +75,43 @@ export function TakeoffView({ canCreate, canDelete }: { canCreate: boolean; canD
     return list;
   }, []);
 
-  // Opening the Part List brings in every part of the project's 2D nest that is not in it yet (once per project).
-  const autoRan = React.useRef<string>("");
+  // Automatic: opening the Part List (or coming back to this browser tab) brings in the nest's new parts (once per
+  // project) and carries quantity changes between the nest and the BOQ. The "Sync with nest" button stays for a manual run.
+  const autoImported = React.useRef<string>("");
+  const autoBusy = React.useRef(false);
+  const autoSync = React.useCallback(async (pid: string, first: boolean) => {
+    if (!pid || !canCreate || autoBusy.current) return;
+    autoBusy.current = true;
+    try {
+      const list = await loadDrawings(pid);
+      let imported = 0;
+      if (autoImported.current !== pid) {
+        autoImported.current = pid;
+        const r = await autoImportNestParts(pid, list);
+        imported = r.imported;
+        if (r.imported) toast.success(`${r.imported} part(s) added from the 2D nest`);
+        if (r.failed) toast.error(`${r.failed} nest part(s) could not be added — use "Take parts from 2D Nesting" to see why`);
+      }
+      const res = await fetch("/api/takeoff/nest-sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: pid }) }).catch(() => null);
+      const r = res?.ok ? ((await res.json().catch(() => null)) as { hasNest: boolean; applied: number; pushed: number; summary: { conflict: number } } | null) : null;
+      if (r?.hasNest) {
+        if (r.applied) toast.success(`${r.applied} quantity change(s) taken from the nest`);
+        if (r.pushed) toast.success(`${r.pushed} quantity change(s) written into the nest`);
+        if (first && r.summary.conflict) toast.warning(`${r.summary.conflict} part(s) changed on both sides — press "Sync with nest" to see them`);
+      }
+      if (imported || r?.applied || r?.pushed) await loadDrawings(pid);
+    } finally {
+      autoBusy.current = false;
+    }
+  }, [canCreate, loadDrawings]);
+
   React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const list = await loadDrawings(projectId);
-      if (cancelled || !projectId || !canCreate || autoRan.current === projectId) return;
-      autoRan.current = projectId;
-      const r = await autoImportNestParts(projectId, list);
-      if (r.imported) { toast.success(`${r.imported} part(s) added from the 2D nest`); await loadDrawings(projectId); }
-      if (r.failed) toast.error(`${r.failed} nest part(s) could not be added — use "Take parts from 2D Nesting" to see why`);
-    })();
-    return () => { cancelled = true; };
-  }, [projectId, loadDrawings, canCreate]);
+    if (!projectId) return;
+    void (canCreate ? autoSync(projectId, true) : loadDrawings(projectId));
+    const onVisible = () => { if (document.visibilityState === "visible") void autoSync(projectId, false); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [projectId, canCreate, autoSync, loadDrawings]);
 
   const selectedProject = projects.find((p) => p.id === projectId);
 
