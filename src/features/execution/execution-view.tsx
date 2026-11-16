@@ -170,7 +170,7 @@ function Converted({ data, result, projectId }: { data: ExecutionPreflight; resu
           <Go href={`/projects/${projectId}/planning`} label="Planning — edit durations and logic" />
           <Go href={`/projects/${projectId}/planning`} label="Planning › Materials — place the orders" />
           <Go href={`/projects/${projectId}/reports`} label="Reports — progress against the budget" />
-          <Go href={`/projects/${projectId}/material-usage`} label="Material & Usage" />
+          <Go href={`/projects/${projectId}/material-usage`} label="Material Requirements" />
         </CardContent>
       </Card>
     </div>

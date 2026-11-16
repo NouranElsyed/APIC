@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { SessionProvider } from "next-auth/react";
+import { SplashLoader } from "@/components/shared/splash-loader";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full">
         <SessionProvider>
+          <SplashLoader />
           {children}
           <Toaster position="top-right" />
         </SessionProvider>

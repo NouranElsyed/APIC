@@ -20,8 +20,8 @@ export function ProjectTabs({ projectId, showPlanning = true, showQuotations = f
       ? { href: `/projects/${projectId}/reports`, label: "Reports", icon: BarChart3, active: pathname.startsWith(`/projects/${projectId}/reports`) }
       : { label: "Reports", icon: BarChart3 },
     showMaterials
-      ? { href: `/projects/${projectId}/material-usage`, label: "Material & Usage", icon: Boxes, active: pathname.startsWith(`/projects/${projectId}/material-usage`) }
-      : { label: "Material & Usage", icon: Boxes },
+      ? { href: `/projects/${projectId}/material-usage`, label: "Material Requirements", icon: Boxes, active: pathname.startsWith(`/projects/${projectId}/material-usage`) }
+      : { label: "Material Requirements", icon: Boxes },
     ...(showProduction ? [{ href: `/projects/${projectId}/production`, label: "Production", icon: Factory, active: pathname.startsWith(`/projects/${projectId}/production`) }] : []),
     ...(showExecution ? [{ href: `/projects/${projectId}/execution`, label: "Execution", icon: Rocket, active: pathname.startsWith(`/projects/${projectId}/execution`) }] : []),
   ] as { href?: string; label: string; icon: typeof FileText; active?: boolean }[];
