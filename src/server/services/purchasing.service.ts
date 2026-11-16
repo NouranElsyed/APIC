@@ -109,6 +109,7 @@ export async function updatePurchaseOrder(id: string, input: PurchaseOrderUpdate
   const own = new Set(p.lines.map((l) => l.id));
   const existing = input.lines.filter((l) => l.id) as { id: string; qty: number; unitPrice?: number | null }[];
   const added = input.lines.filter((l) => l.materialId) as { materialId: string; qty: number; unitPrice?: number | null }[];
+  const customs = input.lines.filter((l) => l.custom) as { custom: { description: string; spec: string | null; unit: string }; qty: number; unitPrice?: number | null }[];
   const ids = existing.map((l) => l.id);
   if (ids.some((x) => !own.has(x))) throw new PlanningError("A line does not belong to this purchase order", 400);
   if (new Set(ids).size !== ids.length) throw new PlanningError("A line is listed twice", 400);
@@ -120,12 +121,20 @@ export async function updatePurchaseOrder(id: string, input: PurchaseOrderUpdate
 
   const orderDate = isoToDate(input.orderDate);
   const expectedDate = input.expectedDate ? isoToDate(input.expectedDate) : null;
-  await prisma.$transaction([
-    prisma.planMaterialOrder.deleteMany({ where: { purchaseOrderId: id, id: { notIn: ids } } }),
-    prisma.purchaseOrder.update({ where: { id }, data: { supplierId: supplier.id, orderDate, expectedDate, paymentTerms: input.paymentTerms, notes: input.notes } }),
-    ...existing.map((l) => prisma.planMaterialOrder.update({ where: { id: l.id }, data: { orderedQty: l.qty, unitPrice: l.unitPrice ?? null, supplier: supplier.name, orderDate, expectedDate } })),
-    ...(added.length ? [prisma.planMaterialOrder.createMany({ data: added.map((l) => ({ materialId: l.materialId, supplier: supplier.name, poNumber: p.number, orderedQty: l.qty, unitPrice: l.unitPrice ?? null, orderDate, expectedDate, purchaseOrderId: id })) })] : []),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await tx.planMaterialOrder.deleteMany({ where: { purchaseOrderId: id, id: { notIn: ids } } });
+    await tx.purchaseOrder.update({ where: { id }, data: { supplierId: supplier.id, orderDate, expectedDate, paymentTerms: input.paymentTerms, notes: input.notes } });
+    for (const l of existing) await tx.planMaterialOrder.update({ where: { id: l.id }, data: { orderedQty: l.qty, unitPrice: l.unitPrice ?? null, supplier: supplier.name, orderDate, expectedDate } });
+    // a free item typed in while editing becomes a material of the project (so it shows in Materials and can be received)
+    const base = await tx.planMaterial.count({ where: { projectId: p.projectId } });
+    const created: { materialId: string; qty: number; unitPrice?: number | null }[] = [];
+    for (const [i, c] of customs.entries()) {
+      const m = await tx.planMaterial.create({ data: { description: c.custom.description, spec: c.custom.spec, unit: c.custom.unit, requiredQty: c.qty, sortOrder: base + i, projectId: p.projectId, createdById: by.id } });
+      created.push({ materialId: m.id, qty: c.qty, unitPrice: c.unitPrice });
+    }
+    const all = [...added, ...created];
+    if (all.length) await tx.planMaterialOrder.createMany({ data: all.map((l) => ({ materialId: l.materialId, supplier: supplier.name, poNumber: p.number, orderedQty: l.qty, unitPrice: l.unitPrice ?? null, orderDate, expectedDate, purchaseOrderId: id })) });
+  });
   await logActivity({ userId: by.id, action: "UPDATE", entity: "PURCHASE_ORDER", entityId: id, detail: `${p.number} edited` });
   return (await getPurchaseOrder(id))!;
 }

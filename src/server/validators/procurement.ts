@@ -36,12 +36,12 @@ export const purchaseOrderUpdateSchema = z.object({
   expectedDate: iso.optional().nullable(),
   paymentTerms: text(200),
   notes: text(1000),
-  // an existing line is sent with its `id`; a line added while editing is sent with the `materialId` of the project's material
+  // an existing line is sent with its `id`; a line added while editing is a project material (`materialId`) or a new free item (`custom`)
   lines: z
     .array(
       z
-        .object({ id: z.string().min(1).optional(), materialId: z.string().min(1).optional(), qty: z.number().finite().positive().max(1e9), unitPrice: z.number().finite().min(0).max(1e9).nullable().optional() })
-        .refine((l) => !!l.id !== !!l.materialId, "A line needs either an id or a materialId"),
+        .object({ id: z.string().min(1).optional(), materialId: z.string().min(1).optional(), custom: z.object({ description: z.string().trim().min(2, "Describe the item").max(200), spec: text(200), unit: z.string().trim().min(1).max(20) }).optional(), qty: z.number().finite().positive().max(1e9), unitPrice: z.number().finite().min(0).max(1e9).nullable().optional() })
+        .refine((l) => [l.id, l.materialId, l.custom].filter(Boolean).length === 1, "A line is an existing line, a project material, or a new item"),
     )
     .min(1, "An order needs at least one line (cancel the order instead)")
     .max(200),

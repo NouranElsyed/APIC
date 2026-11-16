@@ -256,14 +256,19 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
     setPick("");
   };
   const addedOk = added.filter((a) => Number(a.qty) > 0);
+  // free items (not in the project's Materials yet): typed in by hand
+  const [custom, setCustom] = React.useState<{ key: string; description: string; unit: string; qty: string; price: string }[]>([]);
+  const customOk = custom.filter((c) => c.description.trim().length >= 2 && Number(c.qty) > 0 && c.unit.trim());
+  const upC = (key: string, patch: Partial<(typeof custom)[number]>) => setCustom((x) => x.map((y) => (y.key === key ? { ...y, ...patch } : y)));
+  const total = kept.length + addedOk.length + customOk.length;
 
   async function save() {
-    if (!kept.length && !addedOk.length) return toast.error("Keep at least one line, or cancel the order instead");
+    if (!total) return toast.error("Keep at least one line, or cancel the order instead");
     setBusy(true);
     try {
       await api(`/api/purchase-orders/${po.id}`, {
         method: "PATCH",
-        body: { supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null, lines: [...kept.map((l) => ({ id: l.id, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) })), ...addedOk.map((a) => ({ materialId: a.materialId, qty: Number(a.qty), unitPrice: a.price.trim() === "" ? null : Number(a.price) }))] },
+        body: { supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null, lines: [...kept.map((l) => ({ id: l.id, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) })), ...addedOk.map((a) => ({ materialId: a.materialId, qty: Number(a.qty), unitPrice: a.price.trim() === "" ? null : Number(a.price) })), ...customOk.map((c) => ({ custom: { description: c.description.trim(), unit: c.unit.trim() }, qty: Number(c.qty), unitPrice: c.price.trim() === "" ? null : Number(c.price) }))] },
       });
       toast.success(`${po.number} updated`);
       router.refresh();
@@ -310,6 +315,14 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
                     </tr>
                   );
                 })}
+                {custom.map((c) => (
+                  <tr key={c.key} className="bg-primary/5">
+                    <Td className="w-8"><button type="button" aria-label="Remove item" className="text-destructive" onClick={() => setCustom((x) => x.filter((y) => y.key !== c.key))}><XCircle className="h-4 w-4" /></button></Td>
+                    <Td><Input value={c.description} onChange={(e) => upC(c.key, { description: e.target.value })} placeholder="Item description (e.g. Welding electrodes E7018)" maxLength={200} className="h-9" /></Td>
+                    <Td right><div className="ml-auto flex w-36 items-center gap-1.5"><Input type="number" min={0} step="any" value={c.qty} onChange={(e) => upC(c.key, { qty: e.target.value })} className="h-9 text-right" /><Input value={c.unit} onChange={(e) => upC(c.key, { unit: e.target.value })} maxLength={20} aria-label="Unit" className="h-9 w-14 px-1.5 text-xs" /></div></Td>
+                    <Td right><Input type="number" min={0} step="any" placeholder="—" value={c.price} onChange={(e) => upC(c.key, { price: e.target.value })} className="ml-auto h-9 w-32 text-right" /></Td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -319,12 +332,13 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
               {left.map((m) => <option key={m.materialId} value={m.materialId}>{m.description}{m.spec ? ` · ${m.spec}` : ""} — {num(m.remaining)} {m.unit} left</option>)}
             </select>
             <Button type="button" size="sm" variant="outline" onClick={addLine} disabled={!left.length}><Plus /> Add line</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setCustom((x) => [...x, { key: `c${Date.now()}${x.length}`, description: "", unit: "pcs", qty: "1", price: "" }])}><Plus /> Add new item</Button>
           </div>
-          <p className="text-xs text-muted-foreground">Untick a line to remove it from this order (its quantity goes back to &ldquo;still to order&rdquo;), or add more lines from the project&rsquo;s materials.</p>
+          <p className="text-xs text-muted-foreground">Untick a line to remove it from this order (its quantity goes back to &ldquo;still to order&rdquo;), add more lines from the project&rsquo;s materials, or type a new item with <b>Add new item</b> (it is also added to the project&rsquo;s Materials).</p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={busy || (!kept.length && !addedOk.length)}>{busy ? <Loader2 className="animate-spin" /> : <Pencil />} Save changes</Button>
+          <Button onClick={() => void save()} disabled={busy || !total}>{busy ? <Loader2 className="animate-spin" /> : <Pencil />} Save changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
