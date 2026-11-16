@@ -1,5 +1,6 @@
 "use client";
 import { Printer } from "lucide-react";
+import { parseTerms } from "./terms-editor";
 import { Button } from "@/components/ui/button";
 import type { PurchaseOrderDTO } from "@/server/services/purchasing.service";
 import { fmtDate, money, num } from "./ui";
@@ -34,7 +35,7 @@ export function PrintPurchaseOrder({ po, company }: { po: PurchaseOrderDTO; comp
         </tbody>
         <tfoot><tr className="font-bold"><td colSpan={5} className="border border-gray-300 p-2 text-right">Total</td><td className="border border-gray-300 p-2 text-right tabular-nums">{po.total > 0 ? money(po.total, po.currency) : "—"}</td></tr></tfoot>
       </table>
-      {(po.paymentTerms || po.notes) && <div className="text-xs">{po.paymentTerms && <p><b>Payment terms:</b> {po.paymentTerms}</p>}{po.notes && <p><b>Notes:</b> {po.notes}</p>}</div>}
+      {(po.paymentTerms || po.notes) && <div className="text-xs">{po.paymentTerms && (parseTerms(po.paymentTerms).length === 1 ? <p><b>Payment terms:</b> {parseTerms(po.paymentTerms)[0]}</p> : <div><p><b>Payment terms:</b></p><ol className="ml-5 list-decimal">{parseTerms(po.paymentTerms).map((t, i) => <li key={i}>{t}</li>)}</ol></div>)}{po.notes && <p><b>Notes:</b> {po.notes}</p>}</div>}
       <p className="pt-6 text-xs text-gray-600">Please state the heat number and attach the mill test certificate (MTC) for every delivery of steel. Prepared by {po.createdByName}.</p>
     </div>
   );

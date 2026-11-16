@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { receiptLimit, OVER_RECEIPT_TOLERANCE_PCT, type PoState } from "./procurement";
 import type { PurchaseOrderDTO } from "@/server/services/purchasing.service";
 import type { SupplierDTO } from "@/server/services/suppliers.service";
+import { joinTerms, parseTerms, TermsEditor } from "./terms-editor";
 import { api, Empty, Field, fmtDate, money, num, Pill, selectClass, Td, Th, today } from "./ui";
 
 export interface ProjectOpt { id: string; number: string; name: string }
@@ -69,7 +70,7 @@ export function OrdersPanel({ orders, suppliers, projects, canEdit, canReceive }
                             <tr key={l.id} className="border-t border-border/60"><td className="py-1.5">{l.description}{l.spec && <span className="text-muted-foreground"> · {l.spec}</span>}</td><td className="text-right tabular-nums">{num(l.orderedQty)} {l.unit}</td><td className="text-right tabular-nums">{num(l.receivedQty)} {l.unit}</td><td className="text-right tabular-nums">{l.unitPrice != null ? money(l.unitPrice, po.currency) : "—"}</td></tr>
                           ))}</tbody>
                         </table>
-                        {(po.paymentTerms || po.notes) && <p className="mt-2 text-xs text-muted-foreground">{[po.paymentTerms && `Payment: ${po.paymentTerms}`, po.notes].filter(Boolean).join(" · ")}</p>}
+                        {(po.paymentTerms || po.notes) && <p className="mt-2 text-xs text-muted-foreground">{[po.paymentTerms && `Payment: ${parseTerms(po.paymentTerms).join("; ")}`, po.notes].filter(Boolean).join(" · ")}</p>}
                       </td></tr>
                     )}
                   </React.Fragment>
@@ -94,7 +95,7 @@ function NewOrderDialog({ suppliers, projects, onClose }: { suppliers: SupplierD
   const [supplierId, setSupplierId] = React.useState("");
   const [orderDate, setOrderDate] = React.useState(today());
   const [expectedDate, setExpectedDate] = React.useState("");
-  const [terms, setTerms] = React.useState("");
+  const [terms, setTerms] = React.useState<string[]>([]);
   const [notes, setNotes] = React.useState("");
   const [items, setItems] = React.useState<ToOrder[] | null>(null);
   const [pick, setPick] = React.useState<Record<string, { on: boolean; qty: string; price: string }>>({});
@@ -119,7 +120,7 @@ function NewOrderDialog({ suppliers, projects, onClose }: { suppliers: SupplierD
       const po = await api<PurchaseOrderDTO>("/api/purchase-orders", {
         method: "POST",
         body: {
-          projectId, supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null,
+          projectId, supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: joinTerms(terms), notes: notes || null,
           lines: chosen.map((m) => ({ materialId: m.materialId, qty: Number(pick[m.materialId].qty), unitPrice: pick[m.materialId].price === "" ? null : Number(pick[m.materialId].price) })),
         },
       });
@@ -138,7 +139,7 @@ function NewOrderDialog({ suppliers, projects, onClose }: { suppliers: SupplierD
           <Field label="Supplier"><select className={selectClass} value={supplierId} onChange={(e) => setSupplierId(e.target.value)}><option value="">Choose a supplier…</option>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
           <Field label="Order date"><Input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} /></Field>
           <Field label="Expected delivery"><Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></Field>
-          <Field label="Payment terms"><Input value={terms} onChange={(e) => setTerms(e.target.value)} placeholder="e.g. 30 days" /></Field>
+          <div className="sm:col-span-2"><TermsEditor terms={terms} onChange={setTerms} /></div>
           <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
         </div>
         {loading && <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading materials…</p>}
@@ -236,7 +237,7 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
   const [supplierId, setSupplierId] = React.useState(po.supplier.id);
   const [orderDate, setOrderDate] = React.useState(po.orderDate.slice(0, 10));
   const [expectedDate, setExpectedDate] = React.useState(po.expectedDate?.slice(0, 10) ?? "");
-  const [terms, setTerms] = React.useState(po.paymentTerms ?? "");
+  const [terms, setTerms] = React.useState<string[]>(parseTerms(po.paymentTerms));
   const [notes, setNotes] = React.useState(po.notes ?? "");
   const [lines, setLines] = React.useState(po.lines.map((l) => ({ id: l.id, on: true, qty: String(l.orderedQty), price: l.unitPrice != null ? String(l.unitPrice) : "" })));
   const [busy, setBusy] = React.useState(false);
@@ -268,7 +269,7 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
     try {
       await api(`/api/purchase-orders/${po.id}`, {
         method: "PATCH",
-        body: { supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null, lines: [...kept.map((l) => ({ id: l.id, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) })), ...addedOk.map((a) => ({ materialId: a.materialId, qty: Number(a.qty), unitPrice: a.price.trim() === "" ? null : Number(a.price) })), ...customOk.map((c) => ({ custom: { description: c.description.trim(), unit: c.unit.trim() }, qty: Number(c.qty), unitPrice: c.price.trim() === "" ? null : Number(c.price) }))] },
+        body: { supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: joinTerms(terms), notes: notes || null, lines: [...kept.map((l) => ({ id: l.id, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) })), ...addedOk.map((a) => ({ materialId: a.materialId, qty: Number(a.qty), unitPrice: a.price.trim() === "" ? null : Number(a.price) })), ...customOk.map((c) => ({ custom: { description: c.description.trim(), unit: c.unit.trim() }, qty: Number(c.qty), unitPrice: c.price.trim() === "" ? null : Number(c.price) }))] },
       });
       toast.success(`${po.number} updated`);
       router.refresh();
@@ -286,7 +287,7 @@ function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; sup
             <Field label="Supplier"><select className={selectClass} value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
             <Field label="Order date"><Input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} /></Field>
             <Field label="Expected delivery"><Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></Field>
-            <Field label="Payment terms"><Input value={terms} onChange={(e) => setTerms(e.target.value)} maxLength={200} /></Field>
+            <div className="sm:col-span-2"><TermsEditor terms={terms} onChange={setTerms} /></div>
             <Field label="Notes" className="sm:col-span-2"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} rows={2} /></Field>
           </div>
           <div className="overflow-x-auto rounded-lg border border-border">

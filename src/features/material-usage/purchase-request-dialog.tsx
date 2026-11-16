@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { ReqRow } from "./requirements";
+import { joinTerms, TermsEditor } from "@/features/procurement/terms-editor";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const unitLabel = (u: string) => (u.toLowerCase() === "sheet" ? "sheets" : u);
@@ -25,7 +26,7 @@ export function PurchaseRequestDialog({ open, onOpenChange, rows, suppliers: ini
   const [savingSup, setSavingSup] = React.useState(false);
   const [supplierId, setSupplierId] = React.useState("");
   const [expected, setExpected] = React.useState("");
-  const [terms, setTerms] = React.useState("");
+  const [terms, setTerms] = React.useState<string[]>([]);
   const [notes, setNotes] = React.useState("");
   const [lines, setLines] = React.useState<Record<string, { on: boolean; qty: string; price: string }>>({});
   const [busy, setBusy] = React.useState(false);
@@ -75,7 +76,7 @@ export function PurchaseRequestDialog({ open, onOpenChange, rows, suppliers: ini
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId, supplierId, currency, orderDate: today(), expectedDate: expected || null, paymentTerms: terms || null, notes: notes || null,
+          projectId, supplierId, currency, orderDate: today(), expectedDate: expected || null, paymentTerms: joinTerms(terms), notes: notes || null,
           lines: picked.map((r) => { const l = lines[r.materialId!]; return { materialId: r.materialId, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) }; }),
         }),
       });
@@ -123,8 +124,8 @@ export function PurchaseRequestDialog({ open, onOpenChange, rows, suppliers: ini
                   </select>
                 </div>
                 <div className="space-y-1.5"><Label className="text-xs">Expected delivery</Label><Input type="date" value={expected} min={today()} onChange={(e) => setExpected(e.target.value)} /></div>
-                <div className="space-y-1.5"><Label className="text-xs">Payment terms (optional)</Label><Input value={terms} onChange={(e) => setTerms(e.target.value)} maxLength={200} /></div>
-                <div className="space-y-1.5"><Label className="text-xs">Notes (optional)</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} /></div>
+                <div className="space-y-1.5 sm:col-span-2"><Label className="text-xs">Notes (optional)</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} /></div>
+                <div className="sm:col-span-2"><TermsEditor terms={terms} onChange={setTerms} label="Payment terms (optional)" /></div>
               </div>
               {adding && (
                 <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">

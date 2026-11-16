@@ -20,7 +20,7 @@ export const purchaseOrderSchema = z.object({
   orderDate: iso,
   expectedDate: iso.optional().nullable(),
   currency: z.string().trim().min(3).max(3).default("EGP"),
-  paymentTerms: text(200),
+  paymentTerms: text(1500),
   notes: text(1000),
   lines: z
     .array(z.object({ materialId: z.string().min(1), qty: z.number().finite().positive().max(1e9), unitPrice: z.number().finite().min(0).max(1e9).nullable().optional() }))
@@ -34,7 +34,7 @@ export const purchaseOrderUpdateSchema = z.object({
   supplierId: z.string().min(1, "Choose a supplier"),
   orderDate: iso,
   expectedDate: iso.optional().nullable(),
-  paymentTerms: text(200),
+  paymentTerms: text(1500),
   notes: text(1000),
   // an existing line is sent with its `id`; a line added while editing is a project material (`materialId`) or a new free item (`custom`)
   lines: z
