@@ -5,7 +5,7 @@ import { logActivity } from "./activity-log.service";
 import { PlanningError } from "./planning.service";
 import { dateToIso, isoToDate } from "@/features/planning/calendar";
 import { docNumber, nextSequence, poState, poTotal, remainingToOrder, validatePoLines, validateReceipt, type PoState } from "@/features/procurement/procurement";
-import type { PurchaseOrderInput, ReceiptInput } from "@/server/validators/procurement";
+import type { PurchaseOrderInput, PurchaseOrderUpdateInput, ReceiptInput } from "@/server/validators/procurement";
 
 const i2 = (d: Date | null | undefined) => (d ? dateToIso(d) : null);
 const isUnique = (e: unknown) => typeof e === "object" && e !== null && (e as { code?: string }).code === "P2002";
@@ -95,6 +95,39 @@ export async function createPurchaseOrder(input: PurchaseOrderInput, by: Actor):
   );
   await logActivity({ userId: by.id, action: "CREATE", entity: "PURCHASE_ORDER", entityId: po.id, detail: `${po.number} — ${supplier.name}` });
   return (await getPurchaseOrder(po.id))!;
+}
+
+/** An order can be edited (supplier, dates, terms, quantities, prices, removing lines) until something is received against it. */
+export async function updatePurchaseOrder(id: string, input: PurchaseOrderUpdateInput, by: Actor): Promise<PurchaseOrderDTO> {
+  const p = await prisma.purchaseOrder.findUnique({ where: { id }, include: { lines: true, _count: { select: { receipts: true } } } });
+  if (!p) throw new PlanningError("Purchase order not found", 404);
+  if (p.status === "CANCELLED") throw new PlanningError("This purchase order is cancelled", 409);
+  if (p._count.receipts > 0 || p.lines.some((l) => l.receivedQty > 0)) throw new PlanningError("Goods were already received against this purchase order, so it can no longer be edited.", 409);
+  const supplier = await prisma.supplier.findUnique({ where: { id: input.supplierId }, select: { id: true, name: true, active: true } });
+  if (!supplier) throw new PlanningError("Supplier not found", 404);
+  if (!supplier.active && supplier.id !== p.supplierId) throw new PlanningError("This supplier is inactive", 409);
+  const own = new Set(p.lines.map((l) => l.id));
+  const existing = input.lines.filter((l) => l.id) as { id: string; qty: number; unitPrice?: number | null }[];
+  const added = input.lines.filter((l) => l.materialId) as { materialId: string; qty: number; unitPrice?: number | null }[];
+  const ids = existing.map((l) => l.id);
+  if (ids.some((x) => !own.has(x))) throw new PlanningError("A line does not belong to this purchase order", 400);
+  if (new Set(ids).size !== ids.length) throw new PlanningError("A line is listed twice", 400);
+  if (added.length) {
+    const mats = await prisma.planMaterial.findMany({ where: { projectId: p.projectId }, select: { id: true } });
+    const bad = validatePoLines(added, new Set(mats.map((m) => m.id)));
+    if (bad) throw new PlanningError(bad);
+  }
+
+  const orderDate = isoToDate(input.orderDate);
+  const expectedDate = input.expectedDate ? isoToDate(input.expectedDate) : null;
+  await prisma.$transaction([
+    prisma.planMaterialOrder.deleteMany({ where: { purchaseOrderId: id, id: { notIn: ids } } }),
+    prisma.purchaseOrder.update({ where: { id }, data: { supplierId: supplier.id, orderDate, expectedDate, paymentTerms: input.paymentTerms, notes: input.notes } }),
+    ...existing.map((l) => prisma.planMaterialOrder.update({ where: { id: l.id }, data: { orderedQty: l.qty, unitPrice: l.unitPrice ?? null, supplier: supplier.name, orderDate, expectedDate } })),
+    ...(added.length ? [prisma.planMaterialOrder.createMany({ data: added.map((l) => ({ materialId: l.materialId, supplier: supplier.name, poNumber: p.number, orderedQty: l.qty, unitPrice: l.unitPrice ?? null, orderDate, expectedDate, purchaseOrderId: id })) })] : []),
+  ]);
+  await logActivity({ userId: by.id, action: "UPDATE", entity: "PURCHASE_ORDER", entityId: id, detail: `${p.number} edited` });
+  return (await getPurchaseOrder(id))!;
 }
 
 /** Cancelling is only possible while nothing has been received; the order lines are removed from Materials. */

@@ -29,6 +29,25 @@ export const purchaseOrderSchema = z.object({
 });
 export type PurchaseOrderInput = z.infer<typeof purchaseOrderSchema>;
 
+/** Editing an order before anything is received: header fields + the lines to keep (by order-line id). */
+export const purchaseOrderUpdateSchema = z.object({
+  supplierId: z.string().min(1, "Choose a supplier"),
+  orderDate: iso,
+  expectedDate: iso.optional().nullable(),
+  paymentTerms: text(200),
+  notes: text(1000),
+  // an existing line is sent with its `id`; a line added while editing is sent with the `materialId` of the project's material
+  lines: z
+    .array(
+      z
+        .object({ id: z.string().min(1).optional(), materialId: z.string().min(1).optional(), qty: z.number().finite().positive().max(1e9), unitPrice: z.number().finite().min(0).max(1e9).nullable().optional() })
+        .refine((l) => !!l.id !== !!l.materialId, "A line needs either an id or a materialId"),
+    )
+    .min(1, "An order needs at least one line (cancel the order instead)")
+    .max(200),
+});
+export type PurchaseOrderUpdateInput = z.infer<typeof purchaseOrderUpdateSchema>;
+
 export const receiptSchema = z.object({
   receivedDate: iso,
   deliveryNote: text(80),

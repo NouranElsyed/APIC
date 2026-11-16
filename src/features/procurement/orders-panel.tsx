@@ -3,7 +3,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Loader2, PackageCheck, Plus, Printer, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, PackageCheck, Pencil, Plus, Printer, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ export function OrdersPanel({ orders, suppliers, projects, canEdit, canReceive }
   const [open, setOpen] = React.useState<Set<string>>(new Set());
   const [creating, setCreating] = React.useState(false);
   const [receiving, setReceiving] = React.useState<PurchaseOrderDTO | null>(null);
+  const [editing, setEditing] = React.useState<PurchaseOrderDTO | null>(null);
   const toggle = (id: string) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   async function cancel(po: PurchaseOrderDTO) {
@@ -55,6 +56,7 @@ export function OrdersPanel({ orders, suppliers, projects, canEdit, canReceive }
                       <Td><Pill tone={st.tone}>{st.label}</Pill></Td>
                       <Td className="whitespace-nowrap text-right">
                         <a href={`/print/purchase-orders/${po.id}`} target="_blank" rel="noreferrer" aria-label={`Print ${po.number}`} className="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted"><Printer className="h-4 w-4" /></a>
+                        {canEdit && po.state === "NOT_RECEIVED" && po.receipts === 0 && <Button size="icon" variant="ghost" aria-label={`Edit ${po.number}`} onClick={() => setEditing(po)}><Pencil /></Button>}
                         {canReceive && po.state !== "CANCELLED" && po.state !== "RECEIVED" && <Button size="sm" variant="outline" onClick={() => setReceiving(po)}><PackageCheck /> Receive</Button>}
                         {canEdit && po.state === "NOT_RECEIVED" && po.receipts === 0 && <Button size="icon" variant="ghost" className="text-destructive" aria-label={`Cancel ${po.number}`} onClick={() => void cancel(po)}><XCircle /></Button>}
                       </Td>
@@ -79,6 +81,7 @@ export function OrdersPanel({ orders, suppliers, projects, canEdit, canReceive }
       )}
       {creating && <NewOrderDialog suppliers={suppliers.filter((s) => s.active)} projects={projects} onClose={() => setCreating(false)} />}
       {receiving && <ReceiveDialog po={receiving} onClose={() => setReceiving(null)} />}
+      {editing && <EditOrderDialog po={editing} suppliers={suppliers.filter((s) => s.active || s.id === editing.supplier.id)} onClose={() => setEditing(null)} />}
     </div>
   );
 }
@@ -219,6 +222,109 @@ function ReceiveDialog({ po, onClose }: { po: PurchaseOrderDTO; onClose: () => v
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
           <Button onClick={() => void save()} disabled={busy || filled.length === 0}>{busy && <Loader2 className="animate-spin" />} Record receipt</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+// ------------------------------------------------------------------------------------------ edit PO (before anything is received)
+
+function EditOrderDialog({ po, suppliers, onClose }: { po: PurchaseOrderDTO; suppliers: SupplierDTO[]; onClose: () => void }) {
+  const router = useRouter();
+  const [supplierId, setSupplierId] = React.useState(po.supplier.id);
+  const [orderDate, setOrderDate] = React.useState(po.orderDate.slice(0, 10));
+  const [expectedDate, setExpectedDate] = React.useState(po.expectedDate?.slice(0, 10) ?? "");
+  const [terms, setTerms] = React.useState(po.paymentTerms ?? "");
+  const [notes, setNotes] = React.useState(po.notes ?? "");
+  const [lines, setLines] = React.useState(po.lines.map((l) => ({ id: l.id, on: true, qty: String(l.orderedQty), price: l.unitPrice != null ? String(l.unitPrice) : "" })));
+  const [busy, setBusy] = React.useState(false);
+  const set = (id: string, patch: Partial<(typeof lines)[number]>) => setLines((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const kept = lines.filter((l) => l.on && Number(l.qty) > 0);
+  // lines added while editing: one at a time, from the project's materials that still have something left to order
+  const [avail, setAvail] = React.useState<ToOrder[]>([]);
+  const [added, setAdded] = React.useState<{ key: string; materialId: string; qty: string; price: string }[]>([]);
+  const [pick, setPick] = React.useState("");
+  React.useEffect(() => { api<ToOrder[]>(`/api/procurement/to-order?projectId=${po.project.id}`).then(setAvail).catch(() => setAvail([])); }, [po.project.id]);
+  const left = avail.filter((m) => !added.some((a) => a.materialId === m.materialId));
+  const matOf = (id: string) => avail.find((m) => m.materialId === id);
+  const addLine = () => {
+    const m = left.find((x) => x.materialId === pick) ?? left[0];
+    if (!m) return;
+    setAdded((a) => [...a, { key: `${m.materialId}-${a.length}`, materialId: m.materialId, qty: String(m.remaining), price: "" }]);
+    setPick("");
+  };
+  const addedOk = added.filter((a) => Number(a.qty) > 0);
+
+  async function save() {
+    if (!kept.length && !addedOk.length) return toast.error("Keep at least one line, or cancel the order instead");
+    setBusy(true);
+    try {
+      await api(`/api/purchase-orders/${po.id}`, {
+        method: "PATCH",
+        body: { supplierId, orderDate, expectedDate: expectedDate || null, paymentTerms: terms || null, notes: notes || null, lines: [...kept.map((l) => ({ id: l.id, qty: Number(l.qty), unitPrice: l.price.trim() === "" ? null : Number(l.price) })), ...addedOk.map((a) => ({ materialId: a.materialId, qty: Number(a.qty), unitPrice: a.price.trim() === "" ? null : Number(a.price) }))] },
+      });
+      toast.success(`${po.number} updated`);
+      router.refresh();
+      onClose();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Could not save the changes"); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader><DialogTitle>Edit {po.number}</DialogTitle><DialogDescription>You can change the order until goods are received against it. Print it again after saving.</DialogDescription></DialogHeader>
+        <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Supplier"><select className={selectClass} value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+            <Field label="Order date"><Input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} /></Field>
+            <Field label="Expected delivery"><Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></Field>
+            <Field label="Payment terms"><Input value={terms} onChange={(e) => setTerms(e.target.value)} maxLength={200} /></Field>
+            <Field label="Notes" className="sm:col-span-2"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} rows={2} /></Field>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead className="bg-muted/50"><tr><Th /><Th>Material</Th><Th right>Qty</Th><Th right>Unit price ({po.currency})</Th></tr></thead>
+              <tbody className="divide-y divide-border">
+                {po.lines.map((pl) => {
+                  const l = lines.find((x) => x.id === pl.id)!;
+                  return (
+                    <tr key={pl.id} className={l.on ? "" : "opacity-50"}>
+                      <Td className="w-8"><input type="checkbox" checked={l.on} onChange={(e) => set(pl.id, { on: e.target.checked })} aria-label={`Keep ${pl.description}`} /></Td>
+                      <Td>{pl.description}{pl.spec && <span className="text-muted-foreground"> · {pl.spec}</span>}</Td>
+                      <Td right><div className="ml-auto flex w-36 items-center gap-1.5"><Input type="number" min={0} step="any" value={l.qty} onChange={(e) => set(pl.id, { qty: e.target.value })} className="h-9 text-right" /><span className="w-10 text-left text-xs text-muted-foreground">{pl.unit}</span></div></Td>
+                      <Td right><Input type="number" min={0} step="any" placeholder="—" value={l.price} onChange={(e) => set(pl.id, { price: e.target.value })} className="ml-auto h-9 w-32 text-right" /></Td>
+                    </tr>
+                  );
+                })}
+                {added.map((a) => {
+                  const m = matOf(a.materialId);
+                  return (
+                    <tr key={a.key} className="bg-primary/5">
+                      <Td className="w-8"><button type="button" aria-label="Remove added line" className="text-destructive" onClick={() => setAdded((x) => x.filter((y) => y.key !== a.key))}><XCircle className="h-4 w-4" /></button></Td>
+                      <Td>{m?.description ?? "Material"}{m?.spec && <span className="text-muted-foreground"> · {m.spec}</span>}<span className="ml-2 rounded bg-primary/10 px-1.5 text-[10px] font-medium text-primary">NEW</span></Td>
+                      <Td right><div className="ml-auto flex w-36 items-center gap-1.5"><Input type="number" min={0} step="any" value={a.qty} onChange={(e) => setAdded((x) => x.map((y) => (y.key === a.key ? { ...y, qty: e.target.value } : y)))} className="h-9 text-right" /><span className="w-10 text-left text-xs text-muted-foreground">{m?.unit}</span></div></Td>
+                      <Td right><Input type="number" min={0} step="any" placeholder="—" value={a.price} onChange={(e) => setAdded((x) => x.map((y) => (y.key === a.key ? { ...y, price: e.target.value } : y)))} className="ml-auto h-9 w-32 text-right" /></Td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select className={selectClass + " max-w-sm"} value={pick} onChange={(e) => setPick(e.target.value)} disabled={!left.length}>
+              <option value="">{left.length ? "Choose a material to add…" : "No other materials left to order"}</option>
+              {left.map((m) => <option key={m.materialId} value={m.materialId}>{m.description}{m.spec ? ` · ${m.spec}` : ""} — {num(m.remaining)} {m.unit} left</option>)}
+            </select>
+            <Button type="button" size="sm" variant="outline" onClick={addLine} disabled={!left.length}><Plus /> Add line</Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Untick a line to remove it from this order (its quantity goes back to &ldquo;still to order&rdquo;), or add more lines from the project&rsquo;s materials.</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void save()} disabled={busy || (!kept.length && !addedOk.length)}>{busy ? <Loader2 className="animate-spin" /> : <Pencil />} Save changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
